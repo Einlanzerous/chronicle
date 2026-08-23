@@ -114,8 +114,9 @@ the decision costs one message to review before the code exists.
 
 ### Mechanics
 
-- One worktree per epic. Branch `type/slug-chrn-NN` per ticket, so per-ticket
-  spend attributes correctly.
+- One worktree per epic. Branch `chrn-NN-description` per ticket, so per-ticket
+  spend attributes correctly. Release-please reads the commit message, so the
+  `feat:` / `fix:` prefix belongs there and not in the branch name.
 - `./verify.sh` green before anything is handed over: every check that does not
   need hardware, in one command.
 - Every ticket closes with a Switchyard transition **and** a comment carrying its

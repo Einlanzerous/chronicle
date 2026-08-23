@@ -14,6 +14,12 @@ import (
 
 func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
+// jsonLogger captures structured output so a test can assert on what a log line
+// does — and does not — carry.
+func jsonLogger(w io.Writer) *slog.Logger {
+	return slog.New(slog.NewJSONHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
 // TestServeDrainsInFlightRequest is the Done-when for CHRN-15: SIGTERM must not
 // drop work already in hand. A request is in a handler when shutdown is
 // signalled; it must still get its response.

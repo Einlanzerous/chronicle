@@ -61,11 +61,99 @@ CREATE TABLE public.schema_migrations (
 
 
 --
+-- Name: user_tokens; Type: TABLE; Schema: tier2; Owner: -
+--
+
+CREATE TABLE tier2.user_tokens (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    user_id uuid NOT NULL,
+    kind text NOT NULL,
+    token_hash text NOT NULL,
+    label text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_used_at timestamp with time zone,
+    used_at timestamp with time zone,
+    expires_at timestamp with time zone,
+    CONSTRAINT user_tokens_kind_check CHECK ((kind = ANY (ARRAY['invite'::text, 'session'::text])))
+);
+
+
+--
+-- Name: users; Type: TABLE; Schema: tier2; Owner: -
+--
+
+CREATE TABLE tier2.users (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    email text NOT NULL,
+    display_name text NOT NULL,
+    kind text DEFAULT 'person'::text NOT NULL,
+    is_owner boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT users_kind_check CHECK ((kind = ANY (ARRAY['person'::text, 'agent'::text]))),
+    CONSTRAINT users_owner_is_a_person CHECK (((NOT is_owner) OR (kind = 'person'::text)))
+);
+
+
+--
 -- Name: schema_migrations schema_migrations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.schema_migrations
     ADD CONSTRAINT schema_migrations_pkey PRIMARY KEY (version);
+
+
+--
+-- Name: user_tokens user_tokens_pkey; Type: CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.user_tokens
+    ADD CONSTRAINT user_tokens_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: user_tokens user_tokens_token_hash_key; Type: CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.user_tokens
+    ADD CONSTRAINT user_tokens_token_hash_key UNIQUE (token_hash);
+
+
+--
+-- Name: users users_email_key; Type: CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.users
+    ADD CONSTRAINT users_email_key UNIQUE (email);
+
+
+--
+-- Name: users users_pkey; Type: CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.users
+    ADD CONSTRAINT users_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: user_tokens_user_id; Type: INDEX; Schema: tier2; Owner: -
+--
+
+CREATE INDEX user_tokens_user_id ON tier2.user_tokens USING btree (user_id);
+
+
+--
+-- Name: users_single_owner; Type: INDEX; Schema: tier2; Owner: -
+--
+
+CREATE UNIQUE INDEX users_single_owner ON tier2.users USING btree (is_owner) WHERE is_owner;
+
+
+--
+-- Name: user_tokens user_tokens_user_id_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.user_tokens
+    ADD CONSTRAINT user_tokens_user_id_fkey FOREIGN KEY (user_id) REFERENCES tier2.users(id) ON DELETE CASCADE;
 
 
 --

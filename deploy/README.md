@@ -24,9 +24,20 @@ Purser's is.
    signet sync
    ```
 3. **Image** — published by CI as `ghcr.io/einlanzerous/chronicle` (CHRN-17).
-4. **Compose** — paste `compose.chronicle.yml`, `docker compose up -d chronicle`.
-5. **Traefik** — paste `traefik-chronicle.yml`. Dynamic config; no restart needed.
-6. **Cloudflare** — see below. This part is **not** in any repo.
+4. **Compose** — paste `compose.chronicle.yml`, set `CHRONICLE_OWNER_EMAIL` in
+   `.env`, `docker compose up -d chronicle`. The service refuses to start
+   without it: auth is unconditional (CHRN-71) and the owner is who the first
+   invite belongs to.
+5. **First sign-in** — the first boot logs a single-use invite at `warn`:
+   `docker compose logs chronicle | grep first-boot`. It expires in seven days
+   and is never shown again; `docker compose exec chronicle chronicle
+   mint-invite` issues another.
+6. **Traefik** — paste `traefik-chronicle.yml`. Dynamic config; no restart needed.
+7. **Cloudflare** — see below. This part is **not** in any repo. Once the Access
+   application exists, set `CHRONICLE_CF_ACCESS_TEAM_DOMAIN` and
+   `CHRONICLE_CF_ACCESS_AUD` so a browser arriving through it is signed in
+   without a second login. Chronicle verifies the JWT itself rather than
+   trusting the header, so a forged one on the direct host authenticates nobody.
 
 ## The Cloudflare half is dashboard-managed
 

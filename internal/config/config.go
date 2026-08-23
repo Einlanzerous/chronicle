@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Einlanzerous/chronicle/internal/invite"
 )
 
 // Default listen port. 4009 is the lowest free slot in the estate's 40xx block
@@ -23,6 +25,40 @@ type Config struct {
 	LogLevel      slog.Level    // debug | info | warn | error
 	LogFormat     string        // json | text
 	ShutdownGrace time.Duration // how long in-flight work has to finish on SIGTERM
+
+	// CHRN-71 — accounts. There is no CHRONICLE_AUTH: auth is unconditional,
+	// so there is no flag to leave off by accident.
+	OwnerEmail string // reconciled onto the owner row at boot
+	OwnerName  string // display name; defaults to the email
+
+	// Cloudflare Access SSO. Both or neither — exactly one is a boot error,
+	// because a half-configured verifier fails every browser sign-in with a
+	// message that says the token was invalid rather than that the server was.
+	CFAccessTeamDomain string
+	CFAccessAUD        string
+
+	// MobileBaseURL is the origin baked into an invite's sign-in link, and the
+	// only origin a phone is told about. Empty omits the link.
+	MobileBaseURL string
+}
+
+// SSOEnabled reports whether Cloudflare Access sign-in is configured.
+func (c Config) SSOEnabled() bool { return c.CFAccessTeamDomain != "" && c.CFAccessAUD != "" }
+
+// ValidateForServe checks what only a running server needs. It is separate
+// from Load because `migrate` and `mint-invite` genuinely do not need an owner
+// identity — migrate applies SQL, and the owner row is seeded with a
+// placeholder by migration 0002 — so requiring it there would be a papercut on
+// every schema operation.
+//
+// Serving does need it. Left unset the owner keeps that placeholder, which can
+// never match a Cloudflare-verified email, so browser sign-in would look
+// configured and silently never work. A named boot error beats that.
+func (c Config) ValidateForServe() error {
+	if c.OwnerEmail == "" {
+		return fmt.Errorf("config: CHRONICLE_OWNER_EMAIL is required to serve (the account the first invite is minted for)")
+	}
+	return nil
 }
 
 // Load reads configuration from the environment, naming the offending variable
@@ -63,6 +99,24 @@ func Load() (Config, error) {
 		if err != nil || c.ShutdownGrace <= 0 {
 			return c, fmt.Errorf("config: CHRONICLE_SHUTDOWN_GRACE %q is not a positive duration", v)
 		}
+	}
+
+	c.OwnerEmail = strings.ToLower(strings.TrimSpace(os.Getenv("CHRONICLE_OWNER_EMAIL")))
+	c.OwnerName = strings.TrimSpace(os.Getenv("CHRONICLE_OWNER_NAME"))
+
+	c.CFAccessTeamDomain = strings.TrimSpace(os.Getenv("CHRONICLE_CF_ACCESS_TEAM_DOMAIN"))
+	c.CFAccessAUD = strings.TrimSpace(os.Getenv("CHRONICLE_CF_ACCESS_AUD"))
+	if (c.CFAccessTeamDomain == "") != (c.CFAccessAUD == "") {
+		return c, fmt.Errorf("config: CHRONICLE_CF_ACCESS_TEAM_DOMAIN and CHRONICLE_CF_ACCESS_AUD must be set together (got one of the two)")
+	}
+
+	// A malformed base is refused rather than shrugged at: clients prefer the
+	// server's URL over one they would have built, so an unusable value both
+	// produces a QR that scans to nothing and suppresses the fallback that
+	// would have worked. Lyceum learned this as LYCM-102.
+	c.MobileBaseURL, err = invite.NormalizeBase(os.Getenv("CHRONICLE_MOBILE_BASE_URL"))
+	if err != nil {
+		return c, fmt.Errorf("config: CHRONICLE_MOBILE_BASE_URL %w", err)
 	}
 	return c, nil
 }

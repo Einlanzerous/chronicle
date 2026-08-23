@@ -29,6 +29,21 @@ services:
       - CHRONICLE_LOG_LEVEL=${CHRONICLE_LOG_LEVEL:-info}
       - CHRONICLE_LOG_FORMAT=${CHRONICLE_LOG_FORMAT:-json}
       - CHRONICLE_SHUTDOWN_GRACE=${CHRONICLE_SHUTDOWN_GRACE:-20s}
+      # CHRN-71. Auth is unconditional — there is no flag to leave off — so the
+      # owner identity is required to serve. Unset, the owner keeps migration
+      # 0002's placeholder, which can never match a Cloudflare-verified email,
+      # and browser sign-in would look configured and silently never work.
+      - CHRONICLE_OWNER_EMAIL=${CHRONICLE_OWNER_EMAIL}
+      - CHRONICLE_OWNER_NAME=${CHRONICLE_OWNER_NAME:-}
+      # Cloudflare Access SSO: both or neither. Chronicle verifies the JWT
+      # itself rather than trusting the header the edge injects, so these are
+      # the team domain and the Access application's audience tag.
+      - CHRONICLE_CF_ACCESS_TEAM_DOMAIN=${CHRONICLE_CF_ACCESS_TEAM_DOMAIN:-}
+      - CHRONICLE_CF_ACCESS_AUD=${CHRONICLE_CF_ACCESS_AUD:-}
+      # The origin baked into an invite's sign-in QR. It must be the direct
+      # host: a link built from the Access-gated hostname walks a phone into an
+      # SSO wall a bearer token cannot open.
+      - CHRONICLE_MOBILE_BASE_URL=${CHRONICLE_MOBILE_BASE_URL:-}
     networks:
       - construct_net
     depends_on:
