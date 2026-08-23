@@ -1,0 +1,404 @@
+{
+  "updatedAt": "2026-05-14T04:51:24.233Z",
+  "createdAt": "2026-05-14T01:59:24.960Z",
+  "id": "vox-dictate-001",
+  "name": "Vox-Dictate",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "node-vd-trigger",
+      "name": "Google Drive Trigger",
+      "type": "n8n-nodes-base.googleDriveTrigger",
+      "typeVersion": 1,
+      "position": [
+        220,
+        300
+      ],
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "triggerOn": "specificFolder",
+        "folderToWatch": {
+          "__rl": true,
+          "value": "1tWqTsfftxfTU_VSRDJgU1UH-5Vh981FH",
+          "mode": "list",
+          "cachedResultName": "Codegen Transcripts",
+          "cachedResultUrl": "https://drive.google.com/drive/folders/1tWqTsfftxfTU_VSRDJgU1UH-5Vh981FH"
+        },
+        "event": "fileCreated",
+        "options": {}
+      },
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "CTYD7lnakTRUaA0r",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "id": "node-vd-download",
+      "name": "Download Transcript",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        440,
+        300
+      ],
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.id }}"
+        },
+        "options": {
+          "binaryPropertyName": "data"
+        }
+      },
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "CTYD7lnakTRUaA0r",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "id": "node-vd-extract-text",
+      "name": "Extract Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Extract text from the file Google Drive downloaded. Dispatches on mime\n// type:\n//   - .docx (wordprocessingml.document) → mammoth.extractRawText() unzips\n//     the OOXML archive and pulls the paragraph text out cleanly.\n//   - text/* or .txt/.md → UTF-8 decode of the raw buffer.\n//   - anything else → UTF-8 attempt with a decode_error flag for triage.\n// n8n's binary storage may be filesystem-backed, so we go through the\n// helpers.getBinaryDataBuffer accessor regardless of storage mode.\nconst item = $input.first();\nconst meta = (item.binary && item.binary.data) || {};\nconst mime = (meta.mimeType || '').toLowerCase();\nconst fileName = meta.fileName || '';\nconst ext = (meta.fileExtension || fileName.split('.').pop() || '').toLowerCase();\n\nlet text = '';\nlet decodeError = '';\nlet decodePath = '';\n\ntry {\n  const buf = await this.helpers.getBinaryDataBuffer(0, 'data');\n  if (mime.includes('wordprocessingml.document') || ext === 'docx') {\n    const mammoth = require('mammoth');\n    const result = await mammoth.extractRawText({ buffer: buf });\n    text = result.value || '';\n    decodePath = 'mammoth';\n    if ((result.messages || []).length > 0) {\n      decodeError = result.messages.map((m) => m.message).join('; ');\n    }\n  } else if (mime.startsWith('text/') || ['txt','md','markdown','log'].includes(ext)) {\n    text = buf.toString('utf-8');\n    decodePath = 'utf-8 (text)';\n  } else if (mime.includes('vnd.google-apps.document')) {\n    decodeError = 'Source is a native Google Doc — change Download Transcript to use the Export operation with text/plain mime type.';\n    decodePath = 'unsupported-google-doc';\n  } else {\n    text = buf.toString('utf-8');\n    decodePath = 'utf-8 (fallback)';\n    if (/[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f]/.test(text.substring(0, 500))) {\n      decodeError = 'Unknown mime ' + mime + ' (ext=' + ext + ') — decoded as UTF-8 but result looks binary. Add a handler for this format.';\n    }\n  }\n} catch (e) {\n  decodeError = e && e.message || String(e);\n}\n\ntext = text.replace(/\\u0000/g, '').trim().substring(0, 20000);\nconst source = item.json || {};\nreturn [{\n  json: {\n    transcript: text,\n    transcript_length: text.length,\n    decode_path: decodePath,\n    decode_error: decodeError,\n    source_file_id: source.id,\n    source_file_name: source.name,\n    source_mime_type: meta.mimeType || '',\n  },\n}];"
+      }
+    },
+    {
+      "id": "node-vd-list-projects",
+      "name": "List Switchyard Projects",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        300
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "http://switchyard:4002/v1/projects",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.SWITCHYARD_TOKEN_N8N_VOX_DICTATE }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      }
+    },
+    {
+      "id": "node-vd-build-request",
+      "name": "Build Scribe Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Build the Gemma 4 prompt for the Scribe. Asks for a STRUCTURED ticket:\n// markdown description with named sections, an inferred ticket type from\n// Switchyard's enum, and extracted custom-field hints. Lighter prompt\n// variants (e.g. \"cleaned-up version\") cause Gemma 4 to produce a\n// single prose paragraph — that's the failure mode we're fixing here.\nconst extract = $('Extract Text').first().json;\nconst transcript = extract.transcript || '';\nconst projects = ($('List Switchyard Projects').first().json.items) || [];\n\nconst projectList = projects.map((p) =>\n  '- ' + p.key + ' — ' + p.name + (p.description ? ': ' + p.description.substring(0, 150) : '')\n).join('\\n');\n\nconst prompt =\n  'You are a senior engineer turning a raw voice transcript into a clean, structured Switchyard ticket. Rewrite — do not paraphrase. Output JSON ONLY.\\n\\n' +\n  'PROJECT ROUTING (critical — `project_key` is immutable after ticket creation):\\n' +\n  '- Pick the BEST MATCH from the projects listed below based on what the transcript talks about.\\n' +\n  '- If you cannot tell which project applies, return empty string \"\" for project_key — DO NOT default to one.\\n' +\n  '- Project keys are case-sensitive (always uppercase).\\n\\n' +\n  'Available projects:\\n' + projectList + '\\n\\n' +\n  'TYPE (Switchyard enum, pick ONE):\\n' +\n  '- \"spike\"  — research/investigation/spike work; outcome is learning, not shipped code\\n' +\n  '- \"task\"   — default; a discrete piece of work\\n' +\n  '- \"bug\"    — fixing something broken\\n' +\n  '- \"epic\"   — large multi-piece initiative that will spawn child tickets\\n\\n' +\n  'TITLE: imperative, action-oriented, max 100 chars, no marketing fluff.\\n\\n' +\n  'DESCRIPTION format (markdown, REQUIRED sections in this order, no extra preamble):\\n' +\n  '## Summary\\n' +\n  '1-2 sentences describing what the ticket is about, written as if by a senior engineer (not transcribed).\\n\\n' +\n  '## Goals\\n' +\n  '- Bullet list of what the work should accomplish. Each bullet is concrete and testable. Strip filler.\\n\\n' +\n  '## Approach\\n' +\n  '- Bullets describing HOW (if the transcript suggests an approach). If the transcript only describes WHAT, write: \"_TBD — surface during planning._\"\\n\\n' +\n  '## Open questions\\n' +\n  '- Bullets of unresolved questions raised by the transcript. OMIT this entire section (no header) if there are none.\\n\\n' +\n  'Rules: NO disfluencies (um/uh/like). NO filler (\"basically\", \"kinda\"). Fix speech-to-text errors based on context (e.g. \"field or an injury\" → \"field or section\" when context is clear). DO NOT invent details the transcript does not support. Preserve all concrete requirements. PRESERVE actor distinctions verbatim: if the transcript says \"agents\" do NOT silently rewrite to \"users\" (or vice versa); the difference between human-driven and agent-driven affects planning.\\n\\n' +\n  'Other fields:\\n' +\n  '- mode: \"modify\" (change to existing repo), \"scaffold\" (new project from template), or \"greenfield\" (open-ended creation requiring agent iteration). For changes to an existing project that has a known repo, use \"modify\".\\n' +\n  '- repo_url: GitHub URL ONLY if explicitly mentioned in the transcript. Otherwise empty. NEVER invent a URL.\\n' +\n  '- test_cmd: shell test command ONLY if explicitly mentioned. Otherwise empty.\\n' +\n  '- template: \"vue\" | \"go\" | \"node\" if scaffold and clear. Otherwise empty.\\n' +\n  '- scaffold_project: kebab-case name if scaffold. Otherwise empty.\\n\\n' +\n  'Respond with EXACT JSON ONLY (no markdown fences):\\n' +\n  '{\"project_key\":\"\",\"type\":\"\",\"title\":\"\",\"description\":\"\",\"mode\":\"\",\"repo_url\":\"\",\"test_cmd\":\"\",\"template\":\"\",\"scaffold_project\":\"\"}\\n\\n' +\n  'Transcript:\\n' + transcript;\n\nconst scribeBody = JSON.stringify({\n  model: 'gemma4:31b',\n  stream: false,\n  format: 'json',\n  prompt,\n});\n\nreturn [{ json: { scribe_body: scribeBody, transcript_length: transcript.length } }];\n"
+      }
+    },
+    {
+      "id": "node-vd-scribe",
+      "name": "The Scribe (Gemma 4)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/generate",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.scribe_body }}",
+        "options": {
+          "timeout": 120000
+        }
+      }
+    },
+    {
+      "id": "node-vd-parse",
+      "name": "Parse Scribe Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Parse Gemma 4's JSON, validate project_key against the live project list,\n// and build the Switchyard CreateTicket body. When project inference is\n// uncertain we fall back to LOOP and flag the ticket so a human can triage —\n// project_key is immutable, so we accept the cost of moving via delete+recreate\n// in exchange for never blocking the pipeline.\nconst llmRaw = $input.first().json.response || '';\nlet parsed = {};\ntry {\n  parsed = typeof llmRaw === 'string' ? JSON.parse(llmRaw) : llmRaw;\n} catch (e) {\n  const match = (llmRaw || '').match(/```json?\\s*([\\s\\S]*?)```/);\n  if (match) { try { parsed = JSON.parse(match[1]); } catch (e2) {} }\n}\n\nconst projects = ($('List Switchyard Projects').first().json.items) || [];\nconst allowed = projects.map((p) => p.key);\n\nlet projectKey = (parsed.project_key || '').toUpperCase().trim();\nlet projectFallback = false;\nlet fallbackReason = '';\nif (!projectKey) {\n  projectKey = 'LOOP';\n  projectFallback = true;\n  fallbackReason = 'Scribe returned empty project_key (transcript context was unclear).';\n} else if (!allowed.includes(projectKey)) {\n  fallbackReason = 'Scribe returned project_key=\"' + projectKey + '\" which is not in the live project list.';\n  projectKey = 'LOOP';\n  projectFallback = true;\n}\n\nconst allowedTypes = ['spike', 'task', 'bug', 'epic'];\nlet ticketType = (parsed.type || '').toLowerCase().trim();\nif (!allowedTypes.includes(ticketType)) ticketType = 'task';\nconst title = (parsed.title || 'Untitled voice note').toString().substring(0, 500);\nconst mode = (parsed.mode || 'modify').toLowerCase();\nconst metadata = { mode };\nif (parsed.repo_url) metadata.repo_url = parsed.repo_url;\nif (parsed.test_cmd) metadata.test_cmd = parsed.test_cmd;\nif (parsed.template) metadata.template = parsed.template;\nif (parsed.scaffold_project) metadata.scaffold_project = parsed.scaffold_project;\n\nconst descriptionLines = [\n  (parsed.description || '').toString(),\n];\nif (parsed.repo_url) descriptionLines.push('repo: ' + parsed.repo_url);\nif (parsed.test_cmd) descriptionLines.push('test_cmd: ' + parsed.test_cmd);\nif (parsed.template) descriptionLines.push('template: ' + parsed.template);\nif (parsed.scaffold_project) descriptionLines.push('project: ' + parsed.scaffold_project);\nconst description = descriptionLines.filter(Boolean).join('\\n\\n');\n\nconst ticketBody = JSON.stringify({\n  project_key: projectKey,\n  type: ticketType,\n  title,\n  description,\n  metadata,\n});\n\nconst triageBody = projectFallback\n  ? JSON.stringify({\n      body:\n        ':warning: **Project routing fell back to LOOP** — needs human triage.\\n\\n' +\n        fallbackReason + '\\n\\n' +\n        'If this ticket belongs to a different project, please delete it and recreate manually ' +\n        '(project_key is immutable on Switchyard tickets). Re-train the Scribe by clarifying the transcript next time.',\n    })\n  : '';\n\n\n// Idempotency-Key fingerprint: same Drive file + same inferred routing +\n// same title → same ticket (legitimate retry replays). Re-parsing the same\n// file with a different project_key (e.g. after fixing decode) treats it\n// as a fresh request and creates a new ticket.\nconst slugify = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').substring(0, 40);\nlet _h = 0;\nconst _fpInput = projectKey + '|' + title + '|' + mode;\nfor (let i = 0; i < _fpInput.length; i++) _h = ((_h << 5) - _h + _fpInput.charCodeAt(i)) | 0;\nconst fingerprint = Math.abs(_h).toString(36) + '-' + slugify(title).substring(0, 20);\n\nreturn [{\n  json: {\n    ticket_body: ticketBody,\n    triage_body: triageBody,\n    project_key: projectKey,\n    project_fallback: projectFallback,\n    parsed_title: title,\n    parsed_mode: mode,\n    parsed_type: ticketType,\n    idempotency_fingerprint: fingerprint,\n  },\n}];"
+      }
+    },
+    {
+      "id": "node-vd-create-ticket",
+      "name": "Create Switchyard Ticket",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1760,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://switchyard:4002/v1/tickets",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.SWITCHYARD_TOKEN_N8N_VOX_DICTATE }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Idempotency-Key",
+              "value": "={{ 'voxdictate-' + $('Extract Text').first().json.source_file_id + '-' + $('Parse Scribe Output').first().json.idempotency_fingerprint }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $('Parse Scribe Output').first().json.ticket_body }}",
+        "options": {
+          "timeout": 15000
+        }
+      }
+    },
+    {
+      "id": "node-vd-needs-triage",
+      "name": "Needs Triage?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1980,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "caseSensitive": true
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "needs-triage-check",
+              "leftValue": "={{ $('Parse Scribe Output').first().json.project_fallback }}",
+              "rightValue": "={{ true }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "node-vd-triage-comment",
+      "name": "Post Triage Note",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2200,
+        200
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'http://switchyard:4002/v1/tickets/' + $('Create Switchyard Ticket').first().json.key + '/comments' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.SWITCHYARD_TOKEN_N8N_VOX_DICTATE }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $('Parse Scribe Output').first().json.triage_body }}",
+        "options": {
+          "timeout": 15000
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Google Drive Trigger": {
+      "main": [
+        [
+          {
+            "node": "Download Transcript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Transcript": {
+      "main": [
+        [
+          {
+            "node": "Extract Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Text": {
+      "main": [
+        [
+          {
+            "node": "List Switchyard Projects",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List Switchyard Projects": {
+      "main": [
+        [
+          {
+            "node": "Build Scribe Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Scribe Request": {
+      "main": [
+        [
+          {
+            "node": "The Scribe (Gemma 4)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "The Scribe (Gemma 4)": {
+      "main": [
+        [
+          {
+            "node": "Parse Scribe Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Scribe Output": {
+      "main": [
+        [
+          {
+            "node": "Create Switchyard Ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Switchyard Ticket": {
+      "main": [
+        [
+          {
+            "node": "Needs Triage?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Triage?": {
+      "main": [
+        [
+          {
+            "node": "Post Triage Note",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": {
+    "node:Google Drive Trigger": {
+      "lastTimeChecked": "2026-05-21T01:39:31Z"
+    }
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "nodeGroups": [],
+  "pinData": {},
+  "versionId": "b62e6ebe-7d1c-4fd3-8ff1-904482695091",
+  "activeVersionId": "b62e6ebe-7d1c-4fd3-8ff1-904482695091",
+  "versionCounter": 65,
+  "triggerCount": 1,
+  "sourceWorkflowId": null,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-05-14T01:59:24.962Z",
+      "createdAt": "2026-05-14T01:59:24.962Z",
+      "role": "workflow:owner",
+      "workflowId": "vox-dictate-001",
+      "projectId": "fG3YU4AvT8X8vfY5",
+      "project": {
+        "updatedAt": "2025-12-14T05:58:51.082Z",
+        "createdAt": "2025-12-14T01:29:22.854Z",
+        "id": "fG3YU4AvT8X8vfY5",
+        "name": "Ashley Dodson <construct@dodson.mozmail.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "customTelemetryTags": [],
+        "creatorId": "7c5db4d7-6d91-4bbf-bbda-bf3fb7ab7883"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}
