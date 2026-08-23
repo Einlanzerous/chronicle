@@ -7,12 +7,14 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
 	"syscall"
 	"time"
 
+	"github.com/Einlanzerous/chronicle/internal/api"
 	"github.com/Einlanzerous/chronicle/internal/config"
 	"github.com/Einlanzerous/chronicle/internal/store"
 )
@@ -37,6 +39,8 @@ func run(args []string) error {
 	case "version":
 		fmt.Println(version)
 		return nil
+	case "serve":
+		return runServe(args[1:])
 	case "migrate":
 		return runMigrate(args[1:])
 	case "-h", "--help", "help":
@@ -52,11 +56,53 @@ func usage() {
 	fmt.Fprint(os.Stderr, `chronicle — voice-note ingestion into a notes and discussion wiki
 
 usage:
+  chronicle serve                      run the HTTP service
   chronicle migrate [up|down] [-n N]   apply or roll back migrations
   chronicle version                    print the build version
 
 migrate defaults to "up". "down" without -n rolls everything back.
 `)
+}
+
+func runServe(args []string) error {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	logger := cfg.Logger(os.Stdout)
+
+	// SIGTERM is what docker stop sends; Ctrl-C sends SIGINT. Both mean the
+	// same thing here: stop accepting work, finish what is in hand.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	pool, err := store.ConnectWithRetry(ctx, cfg.DatabaseURL, 30*time.Second)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	// Migrations are applied on boot, as the house pattern does — the binary
+	// and its schema ship together, so there is no window where they disagree.
+	if err := store.Migrate(ctx, pool); err != nil {
+		return err
+	}
+	logger.Info("migrations applied")
+
+	handler := api.NewRouter(api.Deps{DB: pool, Logger: logger, Version: version})
+	srv := &http.Server{
+		Addr:              cfg.Addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	logger.Info("chronicle starting", "version", version, "addr", cfg.Addr, "log_format", cfg.LogFormat)
+	return api.Serve(ctx, srv, cfg.ShutdownGrace, logger)
 }
 
 func runMigrate(args []string) error {
