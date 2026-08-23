@@ -1,0 +1,152 @@
+name: ci
+
+# Build, test, lint, and the migration staleness guard.
+#
+# Database-backed tests skip without CHRONICLE_TEST_DATABASE_URL, so a Postgres
+# service container provides one. The image tag is PINNED rather than floating
+# on 16-alpine: the schema job byte-compares pg_dump output, and pg_dump's
+# format can shift between patch releases.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PG_IMAGE: postgres:16.15-alpine
+  # CI-only, for an ephemeral container that never leaves the runner. Real
+  # credentials live in Signet and are not needed here.
+  PGPW: ci-not-a-secret
+
+jobs:
+  verify:
+    name: build, vet, test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16.15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-not-a-secret
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      CHRONICLE_TEST_DATABASE_URL: postgres://chronicle:ci-not-a-secret@localhost:5432/chronicle_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The migrations grant to chronicle_tier1, and the tier-isolation test
+      # asserts against it, so both roles have to exist before anything runs.
+      - name: Provision roles and test database
+        run: |
+          docker run --rm --network host -i "$PG_IMAGE" \
+            psql "postgres://postgres:${PGPW}@localhost:5432/postgres?sslmode=disable" \
+            -v ON_ERROR_STOP=1 <<SQL
+          CREATE ROLE chronicle LOGIN PASSWORD '${PGPW}';
+          CREATE ROLE chronicle_tier1 LOGIN PASSWORD '${PGPW}';
+          CREATE DATABASE chronicle_test OWNER chronicle;
+          SQL
+
+      - name: gofmt
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then echo "unformatted:"; echo "$out"; exit 1; fi
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race ./... -count=1
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.12.2
+
+  schema:
+    name: migration staleness guard
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16.15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-not-a-secret
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # schema.sql is generated from the migrations. Regenerate it and require
+      # the result to match what is committed. This catches both halves of the
+      # drift: a migration added without regenerating, and a hand-edit of the
+      # generated file.
+      - name: Regenerate schema.sql
+        env:
+          SCHEMAGEN_SUPERUSER_DSN: postgres://postgres:ci-not-a-secret@localhost:5432/postgres?sslmode=disable
+        run: scripts/gen-schema.sh
+
+      - name: Fail if schema.sql is stale
+        run: |
+          if ! git diff --exit-code -- schema.sql; then
+            echo "::error file=schema.sql::schema.sql does not match the migrations."
+            echo "Run scripts/gen-schema.sh and commit the result."
+            exit 1
+          fi
+          echo "schema.sql matches the migrations."
+
+  branch-name:
+    name: branch name carries a ticket
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      # The working agreement wants branches named type/slug-chrn-NN so
+      # per-ticket spend attributes correctly. This NOTICES a branch that does
+      # not; it does not block the merge, because a naming convention is not
+      # worth failing a green build over.
+      - name: Check
+        run: |
+          branch="${{ github.head_ref }}"
+          if printf '%s' "$branch" | grep -qiE '^[a-z]+/[a-z0-9._-]+-chrn-[0-9]+$'; then
+            echo "branch '$branch' carries a ticket number."
+          else
+            echo "::warning::branch '$branch' does not match type/slug-chrn-NN — per-ticket spend will not attribute correctly."
+          fi

@@ -64,7 +64,7 @@ func TestServeDrainsInFlightRequest(t *testing.T) {
 	case err := <-getErr:
 		t.Fatalf("in-flight request was dropped: %v", err)
 	case resp := <-respCh:
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("status = %d, want 200", resp.StatusCode)
 		}
@@ -111,7 +111,7 @@ func TestServeReportsWhenGraceExpires(t *testing.T) {
 	go func() {
 		resp, err := http.Get(url)
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 	}()
 
