@@ -1,0 +1,59 @@
+# Chronicle routers for config/traefik/dynamic/routers.yml.
+#
+# Paste into the existing `http.routers` map in that file — this is a fragment,
+# not a loadable standalone config.
+
+http:
+  routers:
+    # ------------- INTERNAL entrypoint: tunneled, Access-enforced -------------
+    # Reachable only via cloudflared. Carries cf-access-jwt like every other
+    # router on this entrypoint (SERV-106); check-edge-auth.sh fails if a new
+    # one is added without it.
+    chronicle:
+      entryPoints:
+        - internal
+      rule: "Host(`chronicle.zerogravity.industries`)"
+      service: chronicle
+      middlewares:
+        - cf-access-jwt
+      # No TLS: internal is plain HTTP. Cloudflare terminates at the edge and
+      # the tunnel encrypts the wire.
+
+    # ------------- NOT DEPLOYED: the app / MCP path -------------
+    # CHRN-16 wants the Android app and MCP surfaces reachable WITHOUT browser
+    # SSO. On this estate that means a direct router on the `public`
+    # entrypoint, in the shape of Lyceum's SERV-60 path — because every router
+    # on `internal` must carry cf-access-jwt, and `public` is the only
+    # entrypoint that serves anything else.
+    #
+    # It is written out and left disabled deliberately. The estate allows
+    # exactly one Access exemption today (Switchyard's GitHub webhook), and the
+    # standard it is held to is explicit: the endpoint must authenticate "with
+    # something Cloudflare Access cannot express" — there, an HMAC verified one
+    # layer down. Chronicle has no authentication of any kind yet. Enabling
+    # this router before it does would put an unauthenticated service on the
+    # WAN-forwarded entrypoint.
+    #
+    # Blocked on Chronicle's own credential surface. See deploy/README.md.
+    #
+    # chronicle-direct:
+    #   entryPoints:
+    #     - public
+    #   rule: "Host(`chronicle-direct.zerogravity.industries`)"
+    #   service: chronicle
+    #   middlewares:
+    #     - crowdsec-bouncer
+    #     - strip-cf-access
+    #     - chronicle-login-ratelimit   # to be defined alongside the auth surface
+    #   tls:
+    #     certResolver: cloudflare
+    #     domains:
+    #       - main: "zerogravity.industries"
+    #         sans:
+    #           - "*.zerogravity.industries"
+
+  services:
+    chronicle:
+      loadBalancer:
+        servers:
+          - url: "http://chronicle:4009"

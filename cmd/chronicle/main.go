@@ -20,7 +20,23 @@ import (
 )
 
 // version is stamped at build time with -ldflags "-X main.version=...".
-var version = "dev"
+// It defaults to EMPTY, not to "dev": an -X flag passed with an empty value
+// overwrites whatever default is written here, so the fallback has to live in
+// code rather than in the variable. buildVersion() is the only reader.
+var version = ""
+
+// commit is the full 40-char git SHA, stamped the same way. Reported verbatim
+// by /healthz — the SWY-192 delivery-reconciler contract reads it to record
+// what is actually running.
+var commit = ""
+
+// buildVersion reports the stamped build identity, or "dev" for a local build.
+func buildVersion() string {
+	if version == "" {
+		return "dev"
+	}
+	return version
+}
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -37,7 +53,10 @@ func run(args []string) error {
 
 	switch args[0] {
 	case "version":
-		fmt.Println(version)
+		fmt.Println(buildVersion())
+		if commit != "" {
+			fmt.Println(commit)
+		}
 		return nil
 	case "serve":
 		return runServe(args[1:])
@@ -94,14 +113,14 @@ func runServe(args []string) error {
 	}
 	logger.Info("migrations applied")
 
-	handler := api.NewRouter(api.Deps{DB: pool, Logger: logger, Version: version})
+	handler := api.NewRouter(api.Deps{DB: pool, Logger: logger, Version: buildVersion(), Commit: commit})
 	srv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	logger.Info("chronicle starting", "version", version, "addr", cfg.Addr, "log_format", cfg.LogFormat)
+	logger.Info("chronicle starting", "version", buildVersion(), "addr", cfg.Addr, "log_format", cfg.LogFormat)
 	return api.Serve(ctx, srv, cfg.ShutdownGrace, logger)
 }
 

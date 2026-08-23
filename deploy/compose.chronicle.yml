@@ -1,0 +1,49 @@
+# Chronicle service fragment for construct-server's docker-compose.yml.
+#
+# NOT a standalone stack — this is the block to paste into
+# ~/construct-server/docker-compose.yml, which owns the shared networks,
+# Postgres and Traefik. Kept here so Chronicle's deploy shape is reviewable in
+# Chronicle's own repo rather than only in the server repo.
+#
+# Prerequisites, in order:
+#   1. deploy/provision-db.sh has run (database + roles exist)
+#   2. CHRONICLE_DB_PASSWORD reaches .env — add the Signet target:
+#        signet target add-key --project construct-server \
+#          --path /home/magos/construct-server/.env --name CHRONICLE_DB_PASSWORD
+#        signet target add-key --project construct-server \
+#          --path /opt/construct-server/.env --name CHRONICLE_DB_PASSWORD
+#        signet sync
+#   3. The image exists: ghcr.io/einlanzerous/chronicle (CHRN-17 publishes it)
+
+services:
+  chronicle:
+    image: ghcr.io/einlanzerous/chronicle:${CHRONICLE_TAG:-latest}
+    container_name: chronicle
+    restart: unless-stopped
+    # No `ports:` on purpose. Chronicle is reached through Traefik on the
+    # internal entrypoint, never from the host. Publishing a port here would
+    # put an unauthenticated listener on the host and bypass the edge entirely.
+    environment:
+      - CHRONICLE_PORT=4009
+      - CHRONICLE_DATABASE_URL=postgres://chronicle:${CHRONICLE_DB_PASSWORD}@postgres:5432/chronicle?sslmode=disable
+      - CHRONICLE_LOG_LEVEL=${CHRONICLE_LOG_LEVEL:-info}
+      - CHRONICLE_LOG_FORMAT=${CHRONICLE_LOG_FORMAT:-json}
+      - CHRONICLE_SHUTDOWN_GRACE=${CHRONICLE_SHUTDOWN_GRACE:-20s}
+    networks:
+      - construct_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # /healthz takes no dependencies, so this reports on the process only.
+      # Readiness (which pings Postgres) is deliberately NOT the healthcheck:
+      # restarting the container is the wrong remedy for a database blip.
+      test: ["CMD", "wget", "-qO-", "http://localhost:4009/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # Graceful shutdown needs longer than Docker's 10s default or a redeploy
+    # kills in-flight ingest, which loses memos. Must exceed
+    # CHRONICLE_SHUTDOWN_GRACE.
+    stop_grace_period: 30s

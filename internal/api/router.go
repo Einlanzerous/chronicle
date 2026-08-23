@@ -21,6 +21,7 @@ type Deps struct {
 	DB      Pinger
 	Logger  *slog.Logger
 	Version string
+	Commit  string
 }
 
 // NewRouter builds the HTTP handler.
@@ -37,10 +38,11 @@ func NewRouter(d Deps) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{
-			"status":  "ok",
-			"version": d.Version,
-		})
+		body := map[string]string{"status": "ok", "version": d.Version}
+		if d.Commit != "" {
+			body["commit"] = d.Commit
+		}
+		writeJSON(w, http.StatusOK, body)
 	})
 
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
