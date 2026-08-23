@@ -1,0 +1,10 @@
+# Pinned so `golangci-lint run` locally and the CI job agree on the linter set
+# rather than drifting with whatever default the action's version ships.
+version: "2"
+
+linters:
+  default: standard   # errcheck, govet, ineffassign, staticcheck, unused
+
+formatters:
+  enable:
+    - gofmt
