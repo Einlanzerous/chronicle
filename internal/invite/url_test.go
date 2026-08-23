@@ -50,3 +50,22 @@ func TestSignInURL(t *testing.T) {
 		t.Errorf("SignInURL did not escape the token: %q", got)
 	}
 }
+
+// A base carrying a query or fragment is the same failure NormalizeBase exists
+// to catch, one step later: SignInURL concatenates onto it and produces a link
+// that parses, scans, and goes nowhere.
+func TestNormalizeBaseRejectsQueryAndFragment(t *testing.T) {
+	for _, in := range []string{
+		"https://chronicle.example.com/?a=b",
+		"https://chronicle.example.com?",
+		"https://chronicle.example.com/#frag",
+		"https://chronicle.example.com/path?x=1#y",
+	} {
+		if got, err := NormalizeBase(in); err == nil {
+			// Show what would have been produced, so a regression reads as the
+			// broken URL it actually is.
+			t.Errorf("NormalizeBase(%q) = %q, want an error; SignInURL would build %q",
+				in, got, SignInURL(got, "chr_abc"))
+		}
+	}
+}

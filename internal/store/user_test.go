@@ -219,11 +219,151 @@ func TestRevokeSessionIsScopedToItsOwner(t *testing.T) {
 		t.Fatalf("ListSessions: %v", err)
 	}
 
-	if err := s.RevokeSession(ctx, other.ID, list[0].ID); !errors.Is(err, ErrNotFound) {
+	if _, err := s.RevokeSession(ctx, other.ID, list[0].ID, ""); !errors.Is(err, ErrNotFound) {
 		t.Errorf("cross-account revoke = %v, want ErrNotFound", err)
 	}
 	if _, err := s.UserByToken(ctx, victim); err != nil {
 		t.Errorf("the owner's device was revoked by another account: %v", err)
+	}
+
+	// Revoking your own device reports whether it was the one you are holding,
+	// which is what the handler uses to decide about the cookie.
+	wasCurrent, err := s.RevokeSession(ctx, owner.ID, list[0].ID, victim)
+	if err != nil {
+		t.Fatalf("RevokeSession: %v", err)
+	}
+	if !wasCurrent {
+		t.Error("revoking the calling device did not report itself as current")
+	}
+}
+
+// The retire-and-mint pair is one transaction, so concurrent taps cannot leave
+// two live device keys — the failure the retirement exists to prevent.
+func TestReplaceDeviceInviteIsAtomicUnderConcurrency(t *testing.T) {
+	s, ctx := newTestStore(t)
+	owner, err := s.GetOwner(ctx)
+	if err != nil {
+		t.Fatalf("GetOwner: %v", err)
+	}
+
+	const taps = 6
+	var wg sync.WaitGroup
+	tokens := make([]string, taps)
+	for i := 0; i < taps; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			tok, err := s.ReplaceDeviceInvite(ctx, owner.ID)
+			if err != nil {
+				t.Errorf("tap %d: %v", i, err)
+				return
+			}
+			tokens[i] = tok
+		}(i)
+	}
+	wg.Wait()
+
+	var live int
+	if err := s.Pool().QueryRow(ctx,
+		`SELECT count(*) FROM tier2.user_tokens
+		  WHERE user_id = $1 AND kind = 'invite' AND label = $2 AND used_at IS NULL`,
+		owner.ID, InviteLabelDevice).Scan(&live); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if live != 1 {
+		t.Errorf("%d live device invites after %d concurrent taps; want exactly 1", live, taps)
+	}
+
+	// And exactly one of the handed-out tokens still redeems.
+	var redeemable int
+	for _, tok := range tokens {
+		if tok == "" {
+			continue
+		}
+		if _, _, err := s.RedeemInvite(ctx, tok, "device"); err == nil {
+			redeemable++
+		}
+	}
+	if redeemable != 1 {
+		t.Errorf("%d of the issued device invites still redeem; want exactly 1", redeemable)
+	}
+}
+
+// last_used_at is throttled, so the auth middleware is not a write per request,
+// but it still moves when it should.
+func TestUserByTokenThrottlesTheLastUsedWrite(t *testing.T) {
+	s, ctx := newTestStore(t)
+	owner, err := s.GetOwner(ctx)
+	if err != nil {
+		t.Fatalf("GetOwner: %v", err)
+	}
+	session := redeemFresh(t, s, ctx, owner.ID, "phone")
+
+	read := func() time.Time {
+		t.Helper()
+		var ts time.Time
+		if err := s.Pool().QueryRow(ctx,
+			`SELECT last_used_at FROM tier2.user_tokens WHERE token_hash = $1`,
+			hashToken(session)).Scan(&ts); err != nil {
+			t.Fatalf("read last_used_at: %v", err)
+		}
+		return ts
+	}
+
+	first := read()
+	for i := 0; i < 3; i++ {
+		if _, err := s.UserByToken(ctx, session); err != nil {
+			t.Fatalf("UserByToken: %v", err)
+		}
+	}
+	if got := read(); !got.Equal(first) {
+		t.Errorf("last_used_at moved on a request inside the throttle window: %v -> %v", first, got)
+	}
+
+	// Age the row past the window; the next authenticated request stamps it.
+	if _, err := s.Pool().Exec(ctx,
+		`UPDATE tier2.user_tokens SET last_used_at = now() - $2::interval * 2
+		  WHERE token_hash = $1`, hashToken(session), sessionTouchInterval.String()); err != nil {
+		t.Fatalf("age the row: %v", err)
+	}
+	aged := read()
+	if _, err := s.UserByToken(ctx, session); err != nil {
+		t.Fatalf("UserByToken: %v", err)
+	}
+	if got := read(); !got.After(aged) {
+		t.Errorf("last_used_at did not move once past the throttle window: %v -> %v", aged, got)
+	}
+}
+
+// ReconcileOwner with no configured name must land the EMAIL, not migration
+// 0002's "Owner" placeholder — the decision doc documents the email as the
+// default and this is the case that actually happens.
+func TestReconcileOwnerDefaultsTheNameToTheEmail(t *testing.T) {
+	s, ctx := newTestStore(t)
+
+	// Fresh install, CHRONICLE_OWNER_NAME unset: the placeholder must go.
+	owner, err := s.ReconcileOwner(ctx, "magos@example.com", "")
+	if err != nil {
+		t.Fatalf("ReconcileOwner: %v", err)
+	}
+	if owner.DisplayName == OwnerPlaceholderName {
+		t.Error("the owner kept migration 0002's placeholder display name")
+	}
+	if owner.DisplayName != "magos@example.com" {
+		t.Errorf("DisplayName = %q, want the email", owner.DisplayName)
+	}
+
+	// A name the person chose survives every subsequent boot. Resetting it to
+	// the email each restart would silently undo PATCH /auth/me.
+	if _, err := s.UpdateDisplayName(ctx, owner.ID, "Magos"); err != nil {
+		t.Fatalf("UpdateDisplayName: %v", err)
+	}
+	again, err := s.ReconcileOwner(ctx, "magos@example.com", "")
+	if err != nil {
+		t.Fatalf("ReconcileOwner: %v", err)
+	}
+	if again.DisplayName != "Magos" {
+		t.Errorf("DisplayName = %q after a restart; the chosen name was overwritten", again.DisplayName)
 	}
 }
 
@@ -282,17 +422,14 @@ func TestSelfInviteRetiresThePreviousUnredeemedOne(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	guestInvite, err := s.MintInvite(ctx, guest.ID, TokenInvite)
+	guestInvite, err := s.MintInvite(ctx, guest.ID, InviteLabelIssued)
 	if err != nil {
 		t.Fatalf("MintInvite: %v", err)
 	}
 
-	if _, err := s.RevokeUnredeemedInvites(ctx, owner.ID, InviteLabelDevice); err != nil {
-		t.Fatalf("RevokeUnredeemedInvites: %v", err)
-	}
-	second, err := s.MintInvite(ctx, owner.ID, InviteLabelDevice)
+	second, err := s.ReplaceDeviceInvite(ctx, owner.ID)
 	if err != nil {
-		t.Fatalf("MintInvite: %v", err)
+		t.Fatalf("ReplaceDeviceInvite: %v", err)
 	}
 
 	if _, _, err := s.RedeemInvite(ctx, first, "stale"); !errors.Is(err, ErrNotFound) {
@@ -351,7 +488,7 @@ func TestListMembersReportsHouseholdState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	if _, err := s.MintInvite(ctx, pending.ID, TokenInvite); err != nil {
+	if _, err := s.MintInvite(ctx, pending.ID, InviteLabelIssued); err != nil {
 		t.Fatalf("MintInvite: %v", err)
 	}
 
@@ -387,7 +524,8 @@ func TestReconcileOwnerAppliesConfiguredIdentity(t *testing.T) {
 		t.Errorf("owner = %+v, want the configured identity, normalized", owner)
 	}
 
-	// Empty values leave what is there rather than blanking it.
+	// Empty values leave a chosen name alone rather than resetting it: boot
+	// must not undo PATCH /auth/me on every restart.
 	again, err := s.ReconcileOwner(ctx, "", "")
 	if err != nil {
 		t.Fatalf("ReconcileOwner: %v", err)
@@ -445,14 +583,28 @@ func TestTier1RoleCannotReachCredentials(t *testing.T) {
 		t.Fatal("chronicle_tier1 cannot reach its own schema; the grants in 0001 are not applied")
 	}
 
+	// Every probe scans into `any`. An earlier version scanned all three into an
+	// int, which made the third one — `SELECT token_hash`, the query that most
+	// directly expresses the invariant — unable to fail: scanning a TEXT column
+	// into an int errors whatever the privileges are, so `err == nil` was
+	// unreachable and the assertion passed for the wrong reason.
 	for _, q := range []string{
 		`SELECT count(*) FROM tier2.user_tokens`,
 		`SELECT count(*) FROM tier2.users`,
 		`SELECT token_hash FROM tier2.user_tokens LIMIT 1`,
+		`SELECT email FROM tier2.users WHERE is_owner`,
 	} {
-		var n int
-		if err := pool.QueryRow(ctx, q).Scan(&n); err == nil {
+		var got any
+		err := pool.QueryRow(ctx, q).Scan(&got)
+		if err == nil {
 			t.Errorf("chronicle_tier1 executed %q; tier-2 credentials are reachable from a tier-1 path", q)
+			continue
+		}
+		// The refusal has to be a permission refusal. "relation does not exist"
+		// would also be a non-nil error, and would mean this test is passing
+		// because the migration never ran.
+		if !strings.Contains(err.Error(), "permission denied") {
+			t.Errorf("chronicle_tier1 running %q failed with %v; want a permission denial", q, err)
 		}
 	}
 }

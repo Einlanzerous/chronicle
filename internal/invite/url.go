@@ -34,6 +34,17 @@ func NormalizeBase(base string) (string, error) {
 	if u.Host == "" {
 		return "", fmt.Errorf("%q has no host", base)
 	}
+	// A query or fragment on the base is the same failure this function exists
+	// to catch, one step later: SignInURL concatenates "/sign-in?token=…" onto
+	// it, so "https://host/?a=b" becomes "https://host/?a=b/sign-in?token=…" —
+	// a URL that parses, scans, and goes nowhere. Refusing it here keeps the
+	// client-side fallback in place, which is the whole point.
+	if u.RawQuery != "" || u.ForceQuery {
+		return "", fmt.Errorf("%q must not carry a query string", base)
+	}
+	if u.Fragment != "" {
+		return "", fmt.Errorf("%q must not carry a fragment", base)
+	}
 	return trimmed, nil
 }
 

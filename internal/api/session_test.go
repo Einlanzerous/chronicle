@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -20,16 +21,20 @@ import (
 // better failure than a zero value quietly satisfying an assertion.
 type fakeAccounts struct {
 	Accounts
-	sessions map[string]store.User // plaintext -> account
-	invites  map[string]store.User // plaintext -> account, single use
-	minted   string
-	revoked  []string
+	sessions       map[string]store.User // plaintext -> account
+	invites        map[string]store.User // plaintext -> account, single use
+	byEmail        map[string]store.User
+	createErr      error
+	minted         string
+	mintedSessions []string
+	revoked        []string
 }
 
 func newFakeAccounts() *fakeAccounts {
 	return &fakeAccounts{
 		sessions: map[string]store.User{},
 		invites:  map[string]store.User{},
+		byEmail:  map[string]store.User{},
 	}
 }
 
@@ -63,14 +68,45 @@ func (f *fakeAccounts) MintInvite(_ context.Context, _ uuid.UUID, _ string) (str
 	return f.minted, nil
 }
 
-func (f *fakeAccounts) RevokeUnredeemedInvites(context.Context, uuid.UUID, string) (int64, error) {
-	return 0, nil
+func (f *fakeAccounts) ReplaceDeviceInvite(context.Context, uuid.UUID) (string, error) {
+	f.minted = "chr_invite_new"
+	return f.minted, nil
+}
+
+func (f *fakeAccounts) MintToken(_ context.Context, _ uuid.UUID, _, label string, _ *time.Time) (string, error) {
+	tok := "chr_minted_" + label
+	f.mintedSessions = append(f.mintedSessions, tok)
+	return tok, nil
+}
+
+func (f *fakeAccounts) GetUserByEmail(_ context.Context, email string) (store.User, error) {
+	u, ok := f.byEmail[email]
+	if !ok {
+		return store.User{}, store.ErrNotFound
+	}
+	return u, nil
 }
 
 func (f *fakeAccounts) ListMembers(context.Context) ([]store.Member, error) { return nil, nil }
 
+func (f *fakeAccounts) CreateUser(_ context.Context, email, name, kind string) (store.User, error) {
+	if f.createErr != nil {
+		return store.User{}, f.createErr
+	}
+	return store.User{ID: uuid.New(), Email: email, DisplayName: name, Kind: kind}, nil
+}
+
 func (f *fakeAccounts) ListSessions(context.Context, uuid.UUID, string) ([]store.Session, error) {
 	return nil, nil
+}
+
+// jsonReq builds a request the API will accept. Every JSON endpoint now
+// requires the correct Content-Type, which is what closes the login-CSRF hole;
+// tests have to send it like a real client does.
+func jsonReq(method, path, body string) *http.Request {
+	r := httptest.NewRequest(method, path, strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	return r
 }
 
 func person(email string, owner bool) store.User {
@@ -84,6 +120,7 @@ func testRouter(f *fakeAccounts) http.Handler {
 		Logger:        discardLogger(),
 		Version:       "test",
 		MobileBaseURL: "https://chronicle.example.com",
+		SecureCookies: true,
 	})
 }
 
@@ -107,7 +144,7 @@ func TestUnauthenticatedRequestsAreRefused(t *testing.T) {
 	} {
 		t.Run(route.method+" "+route.path, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			h.ServeHTTP(rec, httptest.NewRequest(route.method, route.path, strings.NewReader("{}")))
+			h.ServeHTTP(rec, jsonReq(route.method, route.path, "{}"))
 			if rec.Code != http.StatusUnauthorized {
 				t.Errorf("status = %d, want 401", rec.Code)
 			}
@@ -151,7 +188,7 @@ func TestSpentAndUnknownInvitesAreIndistinguishable(t *testing.T) {
 	signIn := func(token string) *httptest.ResponseRecorder {
 		body, _ := json.Marshal(map[string]string{"token": token, "device_label": "probe"})
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/auth/session", bytes.NewReader(body)))
+		h.ServeHTTP(rec, jsonReq(http.MethodPost, "/auth/session", string(body)))
 		return rec
 	}
 
@@ -184,7 +221,7 @@ func TestSignInIssuesBothCarriers(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]string{"token": "chr_good", "device_label": "Pixel 8"})
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/auth/session", bytes.NewReader(body)))
+	h.ServeHTTP(rec, jsonReq(http.MethodPost, "/auth/session", string(body)))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -324,7 +361,7 @@ func TestSelfInviteIsNotAnAdminRoute(t *testing.T) {
 	h := testRouter(f)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/auth/invite", nil)
+	req := jsonReq(http.MethodPost, "/auth/invite", "")
 	req.Header.Set("Authorization", "Bearer chr_member")
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
@@ -350,7 +387,7 @@ func TestSelfInviteIsNotAnAdminRoute(t *testing.T) {
 func TestSSODisabledWhenUnconfigured(t *testing.T) {
 	h := testRouter(newFakeAccounts())
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/auth/sso/cloudflare", nil))
+	h.ServeHTTP(rec, jsonReq(http.MethodPost, "/auth/sso/cloudflare", ""))
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rec.Code)
 	}
@@ -373,7 +410,7 @@ func TestForgedAccessHeaderIsRefused(t *testing.T) {
 	})
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/auth/sso/cloudflare", nil)
+	req := jsonReq(http.MethodPost, "/auth/sso/cloudflare", "")
 	req.Header.Set("Cf-Access-Jwt-Assertion", "eyJhbGciOiJub25lIn0.eyJlbWFpbCI6Im1hZ29zQGV4YW1wbGUuY29tIn0.")
 	h.ServeHTTP(rec, req)
 
@@ -397,9 +434,9 @@ func TestSignInIsRateLimited(t *testing.T) {
 	var lastCode int
 	for i := 0; i < signInRateBurst+5; i++ {
 		body, _ := json.Marshal(map[string]string{"token": "chr_wrong"})
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/auth/session", bytes.NewReader(body))
+		req := jsonReq(http.MethodPost, "/auth/session", string(body))
 		req.RemoteAddr = "203.0.113.7:51000"
+		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		lastCode = rec.Code
 	}
@@ -445,5 +482,296 @@ func TestRateLimiterWindowResets(t *testing.T) {
 	now = now.Add(time.Minute + time.Second)
 	if !l.allow("a") {
 		t.Error("the window did not reset")
+	}
+}
+
+// The cookie's Secure flag comes from configuration, not from r.TLS. Behind
+// Traefik r.TLS is nil on every request — including on the WAN entrypoint —
+// so deriving it from the request shipped a durable credential without the
+// flag in exactly the deployment that needs it.
+func TestSessionCookieIsSecureBehindATLSTerminatingProxy(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		secure bool
+	}{
+		{"configured secure", true},
+		{"plain-HTTP LAN install", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeAccounts()
+			f.invites["chr_good"] = person("owner@example.com", true)
+			h := NewRouter(Deps{
+				DB: fakePinger{}, Accounts: f, Logger: discardLogger(),
+				Version: "test", SecureCookies: tc.secure,
+			})
+
+			rec := httptest.NewRecorder()
+			req := jsonReq(http.MethodPost, "/auth/session", `{"token":"chr_good"}`)
+			req.TLS = nil // what every request actually looks like behind Traefik
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+
+			for _, c := range rec.Result().Cookies() {
+				if c.Name == sessionCookie && c.Secure != tc.secure {
+					t.Errorf("cookie Secure = %v on a request with no TLS, want %v", c.Secure, tc.secure)
+				}
+			}
+		})
+	}
+}
+
+// Login CSRF: a cross-site form can only produce a handful of content types,
+// none of them application/json. Requiring it is what stops an attacker's page
+// swapping a victim's session for one of the attacker's accounts.
+func TestSignInRefusesNonJSONContentTypes(t *testing.T) {
+	f := newFakeAccounts()
+	f.invites["chr_attacker"] = person("attacker@example.com", false)
+	h := testRouter(f)
+
+	for _, ct := range []string{
+		"text/plain",                        // <form enctype="text/plain">
+		"application/x-www-form-urlencoded", // the default form encoding
+		"multipart/form-data",
+		"", // no header at all
+	} {
+		t.Run("Content-Type: "+ct, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/auth/session",
+				strings.NewReader(`{"token":"chr_attacker"}`))
+			if ct != "" {
+				req.Header.Set("Content-Type", ct)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusUnsupportedMediaType {
+				t.Errorf("status = %d, want 415", rec.Code)
+			}
+			if len(rec.Result().Cookies()) != 0 {
+				t.Error("a cross-site form post was handed a session cookie")
+			}
+		})
+	}
+
+	// The invite must still be unspent: a refused request cannot have redeemed.
+	if _, ok := f.invites["chr_attacker"]; !ok {
+		t.Error("the invite was redeemed by a request that was refused")
+	}
+
+	// A charset parameter is still JSON.
+	req := httptest.NewRequest(http.MethodPost, "/auth/session",
+		strings.NewReader(`{"token":"chr_attacker"}`))
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("application/json; charset=utf-8 = %d, want 200", rec.Code)
+	}
+}
+
+// Bodies and fields are bounded, so an unauthenticated caller cannot force
+// unbounded allocation or write a 10 KB "device label" into a TEXT column.
+func TestRequestBodiesAndFieldsAreBounded(t *testing.T) {
+	f := newFakeAccounts()
+	f.invites["chr_good"] = person("owner@example.com", true)
+	h := testRouter(f)
+
+	t.Run("oversized body", func(t *testing.T) {
+		huge := `{"token":"` + strings.Repeat("A", maxBodyBytes*2) + `"}`
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, jsonReq(http.MethodPost, "/auth/session", huge))
+		if rec.Code != http.StatusRequestEntityTooLarge {
+			t.Errorf("status = %d, want 413", rec.Code)
+		}
+	})
+
+	t.Run("oversized device label", func(t *testing.T) {
+		body, _ := json.Marshal(map[string]string{
+			"token":        "chr_good",
+			"device_label": strings.Repeat("x", maxDeviceLabelLen+1),
+		})
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, jsonReq(http.MethodPost, "/auth/session", string(body)))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400", rec.Code)
+		}
+		if _, ok := f.invites["chr_good"]; !ok {
+			t.Error("the invite was spent by a request that was rejected")
+		}
+	})
+}
+
+// The SPA calls the SSO endpoint on load. Minting per call would bury the
+// device list — the only thing that makes a non-expiring session safe — under
+// one identical row per page view.
+func TestSSOReusesTheSessionTheBrowserAlreadyHolds(t *testing.T) {
+	f := newFakeAccounts()
+	magos := person("magos@example.com", true)
+	f.byEmail["magos@example.com"] = magos
+	f.sessions["chr_existing"] = magos
+
+	a := &api{accounts: f, logger: discardLogger(), secureCookies: true,
+		signInLimiter: newIPRateLimiter(signInRateWindow, signInRateBurst)}
+
+	// Stand in for a verified Access identity, so the test is about session
+	// reuse rather than about JWT verification (covered separately).
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/auth/sso/cloudflare", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: "chr_existing"})
+	a.completeCFAccessSignIn(rec, req, magos)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if len(f.mintedSessions) != 0 {
+		t.Errorf("minted %v; the browser's existing session should have been reused", f.mintedSessions)
+	}
+
+	var got sessionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.SessionToken != "chr_existing" {
+		t.Errorf("session_token = %q, want the one already held", got.SessionToken)
+	}
+
+	// A cookie belonging to somebody else does NOT get reused.
+	f.sessions["chr_other"] = person("other@example.com", false)
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/auth/sso/cloudflare", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: "chr_other"})
+	a.completeCFAccessSignIn(rec, req, magos)
+	if len(f.mintedSessions) != 1 {
+		t.Errorf("minted %v; a session belonging to another account must not be reused", f.mintedSessions)
+	}
+}
+
+// Both unauthenticated credential-minting endpoints are limited, not just one.
+func TestBothSignInEndpointsAreRateLimited(t *testing.T) {
+	for _, path := range []string{"/auth/session", "/auth/sso/cloudflare"} {
+		t.Run(path, func(t *testing.T) {
+			h := testRouter(newFakeAccounts())
+			var last int
+			for i := 0; i < signInRateBurst+2; i++ {
+				req := jsonReq(http.MethodPost, path, `{"token":"chr_no"}`)
+				req.RemoteAddr = "198.51.100.9:4000"
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, req)
+				last = rec.Code
+			}
+			if last != http.StatusTooManyRequests {
+				t.Errorf("last status = %d, want 429", last)
+			}
+		})
+	}
+}
+
+// Keying on RemoteAddr alone collapses everything behind Traefik into one
+// bucket, so one attacker locks out every real user. X-Forwarded-For is
+// believed only when the peer is a configured proxy.
+func TestClientIPTrustsForwardedOnlyFromATrustedProxy(t *testing.T) {
+	proxy := netip.MustParsePrefix("172.19.0.0/16")
+	a := &api{trustedProxies: []netip.Prefix{proxy}}
+
+	t.Run("through the proxy", func(t *testing.T) {
+		r := httptest.NewRequest(http.MethodPost, "/auth/session", nil)
+		r.RemoteAddr = "172.19.0.5:40000"
+		r.Header.Set("X-Forwarded-For", "203.0.113.44")
+		if got := a.clientIP(r); got != "203.0.113.44" {
+			t.Errorf("clientIP = %q, want the forwarded client", got)
+		}
+	})
+
+	t.Run("a neighbour container spoofing the header", func(t *testing.T) {
+		r := httptest.NewRequest(http.MethodPost, "/auth/session", nil)
+		r.RemoteAddr = "10.42.0.9:40000" // not a trusted proxy
+		r.Header.Set("X-Forwarded-For", "203.0.113.44")
+		if got := a.clientIP(r); got != "10.42.0.9" {
+			t.Errorf("clientIP = %q, want the real peer — the header is not trustworthy here", got)
+		}
+	})
+
+	t.Run("a chain takes the last hop", func(t *testing.T) {
+		r := httptest.NewRequest(http.MethodPost, "/auth/session", nil)
+		r.RemoteAddr = "172.19.0.5:40000"
+		r.Header.Set("X-Forwarded-For", "1.2.3.4, 203.0.113.44")
+		if got := a.clientIP(r); got != "203.0.113.44" {
+			t.Errorf("clientIP = %q, want the rightmost hop", got)
+		}
+	})
+
+	t.Run("no trusted proxies configured", func(t *testing.T) {
+		bare := &api{}
+		r := httptest.NewRequest(http.MethodPost, "/auth/session", nil)
+		r.RemoteAddr = "172.19.0.5:40000"
+		r.Header.Set("X-Forwarded-For", "203.0.113.44")
+		if got := bare.clientIP(r); got != "172.19.0.5" {
+			t.Errorf("clientIP = %q, want the peer when nothing is trusted", got)
+		}
+	})
+
+	// Two clients behind the same proxy get their own budgets — the property
+	// the whole trusted-proxy dance exists to buy.
+	h := NewRouter(Deps{
+		DB: fakePinger{}, Accounts: newFakeAccounts(), Logger: discardLogger(),
+		Version: "test", TrustedProxies: []netip.Prefix{proxy},
+	})
+	exhaust := func(client string) int {
+		var last int
+		for i := 0; i < signInRateBurst+2; i++ {
+			req := jsonReq(http.MethodPost, "/auth/session", `{"token":"chr_no"}`)
+			req.RemoteAddr = "172.19.0.5:40000"
+			req.Header.Set("X-Forwarded-For", client)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			last = rec.Code
+		}
+		return last
+	}
+	if got := exhaust("203.0.113.1"); got != http.StatusTooManyRequests {
+		t.Errorf("first client not limited: %d", got)
+	}
+	req := jsonReq(http.MethodPost, "/auth/session", `{"token":"chr_no"}`)
+	req.RemoteAddr = "172.19.0.5:40000"
+	req.Header.Set("X-Forwarded-For", "203.0.113.2")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code == http.StatusTooManyRequests {
+		t.Error("a second client behind the same proxy was locked out by the first")
+	}
+}
+
+// The map is bounded even when every window is live, which is exactly the case
+// an address spray produces.
+func TestRateLimiterMapIsBoundedUnderASpray(t *testing.T) {
+	now := time.Now()
+	l := newIPRateLimiter(time.Hour, 5) // long window: nothing expires on its own
+	l.now = func() time.Time { return now }
+
+	for i := 0; i < maxRateKeys*2; i++ {
+		l.allow(netip.AddrFrom4([4]byte{10, byte(i >> 16), byte(i >> 8), byte(i)}).String())
+	}
+	if len(l.hits) > maxRateKeys {
+		t.Errorf("limiter holds %d keys, above the %d cap", len(l.hits), maxRateKeys)
+	}
+}
+
+// An invalid `kind` is the caller's mistake. A 500 would tell them to retry
+// something that can never succeed.
+func TestInvalidAccountKindIsABadRequest(t *testing.T) {
+	f := newFakeAccounts()
+	f.sessions["chr_owner"] = person("owner@example.com", true)
+	f.createErr = store.ErrInvalidInput
+	h := testRouter(f)
+
+	req := jsonReq(http.MethodPost, "/admin/users",
+		`{"email":"x@example.com","kind":"wizard"}`)
+	req.Header.Set("Authorization", "Bearer chr_owner")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
 	}
 }

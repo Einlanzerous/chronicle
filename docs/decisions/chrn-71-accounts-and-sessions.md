@@ -1,6 +1,8 @@
 # CHRN-71 — Accounts and per-device sessions (decision)
 
-Status: **accepted 2026-08-23 — implemented**.
+Status: **accepted 2026-08-23 — implemented, then amended after review**.
+Amendments from the CHRN-71 code review are marked **[rev]** below; they change
+four of the original positions and none of the shape.
 Ticket: CHRN-71 (Phase P1, parent CHRN-1). Tier `opus`, so Mode B: this
 document is the review artefact and the PR that follows it is mechanical.
 Decision owner: magos.
@@ -135,9 +137,22 @@ day that router is edited and the strip middleware is dropped, a forged
 `Cf-Access-Jwt-Assertion` header would authenticate as anybody. Verifying costs
 one lazily-fetched, cached JWKS and closes that off permanently.
 
-Port Lyceum's `internal/api/cfaccess.go` — hand-rolled against stdlib
-`crypto/rsa`, no new dependency, algorithm pinned so a token cannot downgrade to
-`none` and an RSA public key cannot be replayed as an HMAC secret.
+**[rev] Ported from `construct-server/services/cf-access-guard`, not from
+Lyceum.** Lyceum's copy is the older one and has regressed against it: it lacks
+the `len(e) > 8` exponent bound (a JWKS key with a longer exponent panics the
+process — LYCM-122), the 2048-bit modulus floor, the `use != "sig"` filter and
+the bounded body read. It also gates its refresh cooldown on `v.keys != nil`,
+which makes the cooldown inert in the only two situations it exists for: a cold
+start and a certs endpoint that is failing. construct-server stamps the attempt
+unconditionally, before the fetch; that is what is copied.
+
+Still hand-rolled against stdlib `crypto/rsa` — no new dependency, algorithm
+pinned so a token cannot downgrade to `none` and an RSA public key cannot be
+replayed as an HMAC secret.
+
+**[rev]** The audience is a **list**. Access AUD tags are per-application, so
+CHRN-65's MCP endpoint behind its own Access application will present a
+different tag. Switchyard reached the same shape at SWY-260.
 
 ### 6 · No pairing code in this ticket.
 
@@ -151,7 +166,7 @@ a row pointing at a `user_tokens` invite, addable as a later migration with no
 change to anything decided here. Revisit only if onboarding actually fails for
 want of it, rather than shipping the mitigation for a problem we have not had.
 
-### 7 · `POST /auth/session` is rate-limited in-process.
+### 7 · Both sign-in endpoints are rate-limited in-process, per real client.
 
 Lyceum deliberately does *not* limit its token path — a 256-bit secret needs no
 help, and that reasoning is sound. Chronicle adds one anyway, and the reason is
@@ -160,9 +175,26 @@ network by every other service on the box, without passing Traefik at all. The
 edge limiter CHRN-16 attaches (`chronicle-login-ratelimit`) does nothing for that
 path.
 
-Fixed window, per client IP from `RemoteAddr` and never `X-Forwarded-For` (which
-the caller controls and could rotate at will), generous burst. It applies to the
-credential endpoints only, never to authenticated routes.
+**[rev]** The first cut keyed on `RemoteAddr` and never `X-Forwarded-For`,
+reasoning that the header is caller-controlled. That is right about the header
+and wrong about the outcome: every request through Traefik carries Traefik's
+address, so one bucket covered all legitimate traffic and a stranger hammering
+the direct host could lock the owner out of their own service at twenty requests
+a minute. A limiter a stranger can turn into a denial of service is worse than
+none.
+
+The header is now trusted exactly when its source is — only when the immediate
+peer is in `CHRONICLE_TRUSTED_PROXIES`. That is sound because Traefik's
+entrypoints set `forwardedHeaders.trustedIPs: []`, which makes Traefik overwrite
+whatever the caller sent with the address it actually observed. A neighbour
+container connecting directly is not a trusted peer, so its header is ignored
+and it is keyed on its real address — the lateral case this limiter exists for.
+Unset, the coarse behaviour returns and boot warns about it rather than leaving
+it to be discovered.
+
+**[rev]** It covers `POST /auth/sso/cloudflare` too. Limiting only one of the two
+unauthenticated credential-minting endpoints just moves the target: the SSO path
+drives a JWKS fetch and a database write per call.
 
 ## Surface
 
@@ -170,7 +202,7 @@ credential endpoints only, never to authenticated routes.
 |---|---|---|
 | `GET /healthz`, `GET /readyz` | open | already shipped in CHRN-15. `/healthz` must stay dependency-free — CHRN-59's QR flow probes it before committing a server address |
 | `POST /auth/session` | open | `{token, device_label}` → `{user, session_token}` + cookie. Rate-limited |
-| `POST /auth/sso/cloudflare` | open | verifies the Access JWT, mints the same session type. Browser only |
+| `POST /auth/sso/cloudflare` | open | verifies the Access JWT, then **reuses the session the browser already holds** for that account, minting only when there is none. Rate-limited. Browser only |
 | `GET /auth/me`, `PATCH /auth/me` | session | |
 | `DELETE /auth/session` | session | this device only |
 | `GET /auth/sessions`, `DELETE /auth/sessions/{id}` | session | own devices only; another user's id reports 404, not 403 |
@@ -184,7 +216,9 @@ credential endpoints only, never to authenticated routes.
 |---|---|---|
 | `CHRONICLE_OWNER_EMAIL` | yes | boot fails if unset. Left at a placeholder it can never match an Access email, so SSO would silently never work — a named boot failure beats a mode that looks configured and is not |
 | `CHRONICLE_OWNER_NAME` | no | defaults to the email |
-| `CHRONICLE_CF_ACCESS_TEAM_DOMAIN` / `_AUD` | pair | both set → SSO on. Neither → `/auth/sso/cloudflare` returns `sso_disabled`. Exactly one → boot error |
+| `CHRONICLE_CF_ACCESS_TEAM_DOMAIN` / `_AUD` | pair | both set → SSO on. Neither → `/auth/sso/cloudflare` returns `sso_disabled`. Exactly one → boot error. **[rev]** `_AUD` is a comma-separated list |
+| `CHRONICLE_COOKIE_SECURE` | no | **[rev]** default true. Not derived from the request — see the cookie note above |
+| `CHRONICLE_TRUSTED_PROXIES` | no | **[rev]** IPs/CIDRs whose `X-Forwarded-For` the sign-in limiter believes. Unset, the limit is global and boot says so |
 | `CHRONICLE_MOBILE_BASE_URL` | no | origin baked into the invite QR. Validated at boot as an absolute http(s) URL: LYCM-102 is the precedent — a malformed base both produces a QR that scans to nothing *and* suppresses the client-side fallback that would have worked, so it must be a boot error, never a shrug |
 
 No `CHRONICLE_AUTH`.
@@ -227,3 +261,29 @@ Straight from the ticket, one test each:
 5. a spent invite is byte-identical in response to an unknown one;
 6. and — the tier assertion, handed to CHRN-52 — the `chronicle_tier1` role
    cannot read `tier2.user_tokens`.
+
+**[rev]** Assertion 6 originally scanned every probe into an `int`, including
+`SELECT token_hash`, which is a TEXT column — so that probe errored whatever the
+privileges were and could not fail. It now scans into `any` and additionally
+requires the error to be a *permission* denial, so "the migration never ran"
+cannot pass as "the role is locked out".
+
+## [rev] Also settled by the review
+
+- **A non-expiring session is only safe because of the device list**, so
+  anything that floods that list disables the safety while leaving every
+  credential valid. That is why SSO reuses rather than mints.
+- **Every JSON endpoint requires `Content-Type: application/json`.** A
+  cross-site form can post `text/plain` that `json.Decode` accepts, and
+  `/auth/session` answers with `Set-Cookie` — login CSRF, which `SameSite=Lax`
+  does not address because Lax governs which cookies are *sent*, not which are
+  accepted from a response.
+- **Bodies are capped and every field is length-checked**, because a TEXT column
+  has no length of its own and the sign-in route is unauthenticated.
+- **Retire-and-mint for a device invite is one transaction.** As two statements
+  the concurrent double-tap it defends against can interleave and leave two live
+  keys — defeated by exactly the case it was written for.
+- **Invite labels are their own namespace**, never a token *kind* value.
+- **`ReconcileOwner` replaces the migration placeholder but never a chosen
+  name.** Falling back to the stored value leaves "Owner" forever; falling back
+  to the email unconditionally undoes `PATCH /auth/me` on every restart.

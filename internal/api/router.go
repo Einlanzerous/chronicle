@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"time"
 
 	"github.com/google/uuid"
@@ -35,12 +36,12 @@ type Accounts interface {
 
 	MintToken(ctx context.Context, userID uuid.UUID, kind, label string, expiresAt *time.Time) (string, error)
 	MintInvite(ctx context.Context, userID uuid.UUID, label string) (string, error)
-	RevokeUnredeemedInvites(ctx context.Context, userID uuid.UUID, label string) (int64, error)
+	ReplaceDeviceInvite(ctx context.Context, userID uuid.UUID) (string, error)
 	UserByToken(ctx context.Context, plaintext string) (store.User, error)
 	RedeemInvite(ctx context.Context, plaintext, deviceLabel string) (store.User, string, error)
 	RevokeToken(ctx context.Context, plaintext string) error
 	ListSessions(ctx context.Context, userID uuid.UUID, currentPlaintext string) ([]store.Session, error)
-	RevokeSession(ctx context.Context, userID, sessionID uuid.UUID) error
+	RevokeSession(ctx context.Context, userID, sessionID uuid.UUID, currentPlaintext string) (bool, error)
 }
 
 // Deps is what the router needs to serve.
@@ -59,15 +60,28 @@ type Deps struct {
 	// MobileBaseURL is the origin baked into an invite's sign-in link. Empty
 	// omits the link, leaving clients on their own fallback.
 	MobileBaseURL string
+
+	// SecureCookies sets the Secure flag on the session cookie. It is a config
+	// value rather than something derived from the request because TLS
+	// terminates at Traefik: r.TLS is nil for every request this service ever
+	// sees in the deployment it ships, WAN entrypoint included.
+	SecureCookies bool
+
+	// TrustedProxies are the peers whose X-Forwarded-For may be believed when
+	// keying the sign-in rate limiter. Empty means trust nobody, which makes
+	// every request through Traefik share one bucket.
+	TrustedProxies []netip.Prefix
 }
 
 // api holds what the handlers share.
 type api struct {
-	accounts      Accounts
-	logger        *slog.Logger
-	cfAccess      *CFAccessVerifier
-	mobileBaseURL string
-	signInLimiter *ipRateLimiter
+	accounts       Accounts
+	logger         *slog.Logger
+	cfAccess       *CFAccessVerifier
+	mobileBaseURL  string
+	secureCookies  bool
+	trustedProxies []netip.Prefix
+	signInLimiter  *ipRateLimiter
 }
 
 // NewRouter builds the HTTP handler.
@@ -88,11 +102,13 @@ type api struct {
 // address before committing to it, which happens before any credential exists.
 func NewRouter(d Deps) http.Handler {
 	a := &api{
-		accounts:      d.Accounts,
-		logger:        d.Logger,
-		cfAccess:      d.CFAccess,
-		mobileBaseURL: d.MobileBaseURL,
-		signInLimiter: newIPRateLimiter(signInRateWindow, signInRateBurst),
+		accounts:       d.Accounts,
+		logger:         d.Logger,
+		cfAccess:       d.CFAccess,
+		mobileBaseURL:  d.MobileBaseURL,
+		secureCookies:  d.SecureCookies,
+		trustedProxies: d.TrustedProxies,
+		signInLimiter:  newIPRateLimiter(signInRateWindow, signInRateBurst),
 	}
 
 	mux := http.NewServeMux()
@@ -127,8 +143,12 @@ func NewRouter(d Deps) http.Handler {
 
 	// Sign-in. Both paths mint the same kind of session, and both must stay
 	// reachable without one.
-	mux.HandleFunc("POST /auth/session", a.handleAuthSession)
-	mux.HandleFunc("POST /auth/sso/cloudflare", a.handleAuthCFAccess)
+	//
+	// BOTH are rate-limited. They are the two unauthenticated endpoints that
+	// mint a credential, and limiting only one of them just moves the target:
+	// /auth/sso/cloudflare drives a JWKS fetch and a database write per call.
+	mux.HandleFunc("POST /auth/session", a.limitSignIn(a.handleAuthSession))
+	mux.HandleFunc("POST /auth/sso/cloudflare", a.limitSignIn(a.handleAuthCFAccess))
 
 	mux.HandleFunc("DELETE /auth/session", a.requireUser(a.handleAuthSignOut))
 	mux.HandleFunc("GET /auth/me", a.requireUser(a.handleAuthMe))

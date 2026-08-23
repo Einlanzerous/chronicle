@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"mime"
 	"net/http"
 	"strings"
 	"time"
@@ -87,30 +88,93 @@ func sessionToken(r *http.Request) string {
 
 // setSessionCookie issues the session cookie. HttpOnly keeps it away from page
 // scripts, so an XSS in the web UI cannot exfiltrate it. Lax is enough because
-// every mutating route is JSON-only and none is reachable by a cross-site form
-// post. Secure is set only when the request already arrived over TLS, so a LAN
-// install on plain HTTP still works.
-func setSessionCookie(w http.ResponseWriter, r *http.Request, token string) {
+// every mutating route requires application/json, which a cross-site form post
+// cannot produce.
+//
+// Secure comes from configuration and NOT from r.TLS. Deriving it from the
+// request is the obvious thing and it is wrong here: TLS terminates at Traefik,
+// so r.TLS is nil for every request Chronicle ever serves in the deployment it
+// actually ships — including on the WAN-facing entrypoint. A durable,
+// non-expiring credential would have gone out without the flag in exactly the
+// case that needs it most. CHRONICLE_COOKIE_SECURE defaults to true and exists
+// only so a plain-HTTP LAN install can turn it off deliberately.
+func (a *api) setSessionCookie(w http.ResponseWriter, token string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   a.secureCookies,
 		SameSite: http.SameSiteLaxMode,
 	})
 }
 
-func clearSessionCookie(w http.ResponseWriter, r *http.Request) {
+func (a *api) clearSessionCookie(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   a.secureCookies,
 		SameSite: http.SameSiteLaxMode,
 	})
+}
+
+// maxBodyBytes caps every JSON request body. Nothing this API accepts is large
+// — the biggest is an invite token and a device label — and without a cap an
+// unauthenticated caller on the sign-in route can make the process allocate
+// whatever it is willing to send.
+const maxBodyBytes = 16 << 10
+
+// Field caps. These bound what reaches a TEXT column, which has no length of
+// its own: without them a 10 KB "device label" is a valid row, and the device
+// list is a surface a person has to read.
+const (
+	maxDeviceLabelLen = 128
+	maxDisplayNameLen = 128
+	maxEmailLen       = 320 // RFC 3696 erratum: 64-octet local part + @ + 255-octet domain
+	maxTokenLen       = 512
+)
+
+// decodeJSON reads a bounded, correctly-typed JSON body.
+//
+// The Content-Type check is not pedantry, it is what closes login CSRF. A
+// cross-site form with enctype="text/plain" can post a body that json.Decode
+// accepts, and POST /auth/session answers with Set-Cookie — so without this an
+// attacker's page can silently swap a victim's session for one belonging to the
+// attacker's account, and everything the victim then writes lands in it.
+// SameSite=Lax does not help: it governs which cookies the browser SENDS, not
+// which ones it accepts from the response.
+func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	ct := r.Header.Get("Content-Type")
+	if mediaType, _, err := mime.ParseMediaType(ct); err != nil || mediaType != "application/json" {
+		http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
+		return false
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Error(w, "request body is too large", http.StatusRequestEntityTooLarge)
+			return false
+		}
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return false
+	}
+	return true
+}
+
+// checkLen bounds one field, answering 400 rather than letting it reach a TEXT
+// column.
+func checkLen(w http.ResponseWriter, field, value string, max int) bool {
+	if len(value) > max {
+		http.Error(w, field+" is too long", http.StatusBadRequest)
+		return false
+	}
+	return true
 }
 
 // requireUser wraps next so it runs only for a request carrying a valid session
@@ -174,17 +238,15 @@ type sessionResponse struct {
 // with an identical body — indistinguishable on purpose, so probing cannot tell
 // a used invite from one that never existed.
 func (a *api) handleAuthSession(w http.ResponseWriter, r *http.Request) {
-	if !a.signInLimiter.allow(clientIP(r)) {
-		http.Error(w, "too many attempts, slow down", http.StatusTooManyRequests)
-		return
-	}
-
 	var req struct {
 		Token       string `json:"token"`
 		DeviceLabel string `json:"device_label"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid body", http.StatusBadRequest)
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if !checkLen(w, "token", req.Token, maxTokenLen) ||
+		!checkLen(w, "device_label", req.DeviceLabel, maxDeviceLabelLen) {
 		return
 	}
 
@@ -198,7 +260,7 @@ func (a *api) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	setSessionCookie(w, r, session)
+	a.setSessionCookie(w, session)
 	writeJSON(w, http.StatusOK, sessionResponse{toUserJSON(u), session})
 }
 
@@ -260,15 +322,46 @@ func (a *api) handleAuthCFAccess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A fresh session per SSO sign-in, durable like an invite-redeemed one.
-	// Signing in on the web does not disturb the person's other devices.
+	a.completeCFAccessSignIn(w, r, u)
+}
+
+// completeCFAccessSignIn turns a verified Access identity into a session and
+// writes the response. Split out from the handler so the reuse rule can be
+// tested without standing up a JWKS and a signing key — the rule is the part
+// that is easy to get wrong.
+func (a *api) completeCFAccessSignIn(w http.ResponseWriter, r *http.Request, u store.User) {
+	// Reuse the session the browser is already holding, if it belongs to this
+	// same account.
+	//
+	// This endpoint is documented as one the SPA calls on load, so minting
+	// unconditionally would add a permanent, non-expiring row per page view.
+	// That is not merely untidy: the device list is the ONLY thing that makes a
+	// non-expiring session safe — it is where a person sees a device they no
+	// longer have and cuts it off — and burying it under hundreds of identical
+	// "Cloudflare Access" rows disables that in practice while leaving every
+	// individual credential valid.
+	if existing := sessionToken(r); existing != "" {
+		switch held, err := a.accounts.UserByToken(r.Context(), existing); {
+		case err == nil && held.ID == u.ID:
+			a.setSessionCookie(w, existing) // refresh the cookie's attributes
+			writeJSON(w, http.StatusOK, sessionResponse{toUserJSON(held), existing})
+			return
+		case err != nil && !errors.Is(err, store.ErrNotFound):
+			a.serverError(w, r, "cf access: resolve existing session", err)
+			return
+		}
+		// Unknown, expired, or somebody else's: fall through and mint.
+	}
+
+	// A fresh session, durable like an invite-redeemed one. Signing in on the
+	// web does not disturb the person's other devices.
 	session, err := a.accounts.MintToken(r.Context(), u.ID, store.TokenSession, "Cloudflare Access", nil)
 	if err != nil {
 		a.serverError(w, r, "cf access: mint session", err)
 		return
 	}
 
-	setSessionCookie(w, r, session)
+	a.setSessionCookie(w, session)
 	writeJSON(w, http.StatusOK, sessionResponse{toUserJSON(u), session})
 }
 
@@ -281,7 +374,7 @@ func (a *api) handleAuthSignOut(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	clearSessionCookie(w, r)
+	a.clearSessionCookie(w)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -295,13 +388,15 @@ func (a *api) handleAuthUpdateMe(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		DisplayName string `json:"display_name"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid body", http.StatusBadRequest)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	name := strings.TrimSpace(req.DisplayName)
 	if name == "" {
 		http.Error(w, "display_name is required", http.StatusBadRequest)
+		return
+	}
+	if !checkLen(w, "display_name", name, maxDisplayNameLen) {
 		return
 	}
 
@@ -356,14 +451,14 @@ func (a *api) handleSelfInvite(w http.ResponseWriter, r *http.Request) {
 	// one — the device list holds redeemed sessions, not outstanding invites —
 	// so bounding it here is all that stands between an impatient double-tap
 	// and a handful of valid keys nobody can account for.
-	if _, err := a.accounts.RevokeUnredeemedInvites(r.Context(), u.ID, store.InviteLabelDevice); err != nil {
-		a.serverError(w, r, "revoke previous device invites", err)
-		return
-	}
-
-	token, err := a.accounts.MintInvite(r.Context(), u.ID, store.InviteLabelDevice)
+	//
+	// Retire and mint are ONE transaction. As two statements the double-tap
+	// this defends against can still interleave revoke/revoke/mint/mint and
+	// leave two live keys — the guard would have been defeated by precisely the
+	// case it was written for.
+	token, err := a.accounts.ReplaceDeviceInvite(r.Context(), u.ID)
 	if err != nil {
-		a.serverError(w, r, "mint device invite", err)
+		a.serverError(w, r, "replace device invite", err)
 		return
 	}
 	a.writeInvite(w, http.StatusCreated, u, token)
@@ -406,26 +501,35 @@ func (a *api) handleAdminUserCreate(w http.ResponseWriter, r *http.Request) {
 		DisplayName string `json:"display_name"`
 		Kind        string `json:"kind"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid body", http.StatusBadRequest)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if strings.TrimSpace(req.Email) == "" {
 		http.Error(w, "email is required", http.StatusBadRequest)
 		return
 	}
-
-	u, err := a.accounts.CreateUser(r.Context(), req.Email, strings.TrimSpace(req.DisplayName), req.Kind)
-	if errors.Is(err, store.ErrDuplicateEmail) {
-		http.Error(w, "email is already registered", http.StatusConflict)
+	if !checkLen(w, "email", req.Email, maxEmailLen) ||
+		!checkLen(w, "display_name", req.DisplayName, maxDisplayNameLen) {
 		return
 	}
-	if err != nil {
+
+	u, err := a.accounts.CreateUser(r.Context(), req.Email, strings.TrimSpace(req.DisplayName), req.Kind)
+	switch {
+	case errors.Is(err, store.ErrDuplicateEmail):
+		http.Error(w, "email is already registered", http.StatusConflict)
+		return
+	// A client-supplied `kind` the store refuses is a bad request, not a server
+	// fault. Answering 500 would tell the caller to retry something that can
+	// never succeed, and would page somebody for a typo.
+	case errors.Is(err, store.ErrInvalidInput):
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	case err != nil:
 		a.serverError(w, r, "create user", err)
 		return
 	}
 
-	token, err := a.accounts.MintInvite(r.Context(), u.ID, store.TokenInvite)
+	token, err := a.accounts.MintInvite(r.Context(), u.ID, store.InviteLabelIssued)
 	if err != nil {
 		a.serverError(w, r, "mint invite", err)
 		return
@@ -450,7 +554,7 @@ func (a *api) handleAdminUserInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := a.accounts.MintInvite(r.Context(), u.ID, store.TokenInvite)
+	token, err := a.accounts.MintInvite(r.Context(), u.ID, store.InviteLabelIssued)
 	if err != nil {
 		a.serverError(w, r, "mint invite", err)
 		return
@@ -518,8 +622,11 @@ func (a *api) handleSessionRevoke(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	current := sessionToken(r)
-	switch err := a.accounts.RevokeSession(r.Context(), userFrom(r.Context()).ID, id); {
+	// The store reports whether the row it deleted is the one this request rode
+	// in on, so there is no follow-up probe whose own failure would have to be
+	// swallowed.
+	wasCurrent, err := a.accounts.RevokeSession(r.Context(), userFrom(r.Context()).ID, id, sessionToken(r))
+	switch {
 	case errors.Is(err, store.ErrNotFound):
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
@@ -527,13 +634,10 @@ func (a *api) handleSessionRevoke(w http.ResponseWriter, r *http.Request) {
 		a.serverError(w, r, "revoke session", err)
 		return
 	}
-	// Revoking the credential this very request rode in on is a sign-out; drop
-	// the cookie too, or the browser keeps sending a token that resolves to
-	// nothing.
-	if current != "" {
-		if _, err := a.accounts.UserByToken(r.Context(), current); errors.Is(err, store.ErrNotFound) {
-			clearSessionCookie(w, r)
-		}
+	// Revoking your own current credential is a sign-out; drop the cookie too,
+	// or the browser keeps sending a token that resolves to nothing.
+	if wasCurrent {
+		a.clearSessionCookie(w)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

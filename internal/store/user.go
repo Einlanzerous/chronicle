@@ -28,6 +28,11 @@ var ErrDuplicateEmail = errors.New("store: email already registered")
 // ErrOwnerImmutable is returned when a caller tries to delete the owner.
 var ErrOwnerImmutable = errors.New("store: the owner account cannot be removed")
 
+// ErrInvalidInput is a caller's mistake rather than the store's — a bad account
+// kind, a missing email. It exists so a handler can answer 400 instead of
+// dressing a typo up as a server fault.
+var ErrInvalidInput = errors.New("store: invalid input")
+
 // pgUniqueViolation is Postgres SQLSTATE 23505.
 const pgUniqueViolation = "23505"
 
@@ -46,15 +51,39 @@ const (
 	KindAgent  = "agent"
 )
 
-// InviteLabelDevice marks an invite an account minted for its own next device
-// (POST /auth/invite) rather than one the owner issued to somebody else. The
-// label is what lets minting a new device key retire the previous one without
-// touching an invite a third party is waiting to redeem.
-const InviteLabelDevice = "device"
+// Invite labels. These live in their own namespace and must never be a token
+// KIND value: ReplaceDeviceInvite keys on the label when it clears an
+// account's outstanding device invites, so labelling an owner-issued invite
+// "invite" would put it one string away from the bucket that route wipes.
+const (
+	// InviteLabelDevice marks an invite an account minted for its own next
+	// device (POST /auth/invite) rather than one the owner issued to somebody
+	// else. The label is what lets minting a new device key retire the previous
+	// one without touching an invite a third party is waiting to redeem.
+	InviteLabelDevice = "device"
+	// InviteLabelIssued marks an invite the owner issued to another account.
+	InviteLabelIssued = "issued"
+	// InviteLabelBootstrap marks the first-boot invite for the owner.
+	InviteLabelBootstrap = "bootstrap"
+)
+
+// sessionTouchInterval bounds how often an authenticated request rewrites
+// last_used_at. Stamping it on every request turns each read through the auth
+// middleware into a row-locking write, which is a real cost on a path every
+// route goes through — and the device list only needs to be accurate to the
+// minute for "when was this device last seen" to mean anything.
+const sessionTouchInterval = 5 * time.Minute
 
 // tokenPrefix marks a Chronicle credential, so one is recognizable in a paste
 // or a log line and is not confused with Lyceum's lyc_ tokens.
 const tokenPrefix = "chr_"
+
+// OwnerPlaceholderName is the display name migration 0002 seeds the owner row
+// with. ReconcileOwner treats it as "unset" so boot can replace it, and treats
+// anything else as a name somebody chose. The two must stay in step — if the
+// migration's literal changes and this does not, the placeholder becomes
+// permanent and nothing reports it.
+const OwnerPlaceholderName = "Owner"
 
 // InviteTTL bounds how long an unredeemed invite stays usable. Redeeming one
 // yields a session that does not expire, so an invite left in a chat log or a
@@ -139,7 +168,7 @@ func nullString(s string) any {
 func (s *Store) CreateUser(ctx context.Context, email, displayName, kind string) (User, error) {
 	email = normalizeEmail(email)
 	if email == "" {
-		return User{}, errors.New("store: email is required")
+		return User{}, fmt.Errorf("%w: email is required", ErrInvalidInput)
 	}
 	if displayName == "" {
 		displayName = email
@@ -148,7 +177,7 @@ func (s *Store) CreateUser(ctx context.Context, email, displayName, kind string)
 		kind = KindPerson
 	}
 	if kind != KindPerson && kind != KindAgent {
-		return User{}, fmt.Errorf("store: unknown account kind %q", kind)
+		return User{}, fmt.Errorf("%w: unknown account kind %q", ErrInvalidInput, kind)
 	}
 
 	u, err := scanUser(s.pool.QueryRow(ctx,
@@ -225,8 +254,20 @@ func (s *Store) ReconcileOwner(ctx context.Context, email, displayName string) (
 	if email == "" {
 		email = owner.Email
 	}
+	// With no configured name: replace the migration's placeholder, but never a
+	// name a person chose.
+	//
+	// Falling back to the stored value leaves "Owner" in place forever whenever
+	// CHRONICLE_OWNER_NAME is unset, which is the documented default case.
+	// Falling back to the email unconditionally is the opposite mistake — it
+	// silently undoes PATCH /auth/me on every restart. Only the placeholder is
+	// safe to overwrite.
 	if displayName == "" {
-		displayName = owner.DisplayName
+		if owner.DisplayName == "" || owner.DisplayName == OwnerPlaceholderName {
+			displayName = email
+		} else {
+			displayName = owner.DisplayName
+		}
 	}
 	if email == owner.Email && displayName == owner.DisplayName {
 		return owner, nil
@@ -345,16 +386,23 @@ func (s *Store) UserByToken(ctx context.Context, plaintext string) (User, error)
 	if plaintext == "" {
 		return User{}, ErrNotFound
 	}
+	// The UPDATE is a data-modifying CTE that Postgres runs whether or not the
+	// final SELECT references it, and it is gated on sessionTouchInterval so a
+	// busy client is not rewriting the same row on every request.
 	u, err := scanUser(s.pool.QueryRow(ctx,
-		`WITH touched AS (
-		     UPDATE tier2.user_tokens SET last_used_at = now()
+		`WITH tok AS (
+		     SELECT id, user_id, last_used_at FROM tier2.user_tokens
 		      WHERE token_hash = $1
 		        AND kind = 'session'
 		        AND (expires_at IS NULL OR expires_at > now())
-		     RETURNING user_id
+		 ), touched AS (
+		     UPDATE tier2.user_tokens t SET last_used_at = now()
+		       FROM tok
+		      WHERE t.id = tok.id
+		        AND (tok.last_used_at IS NULL OR tok.last_used_at < now() - $2::interval)
 		 )
-		 SELECT `+userColumns+` FROM tier2.users WHERE id = (SELECT user_id FROM touched)`,
-		hashToken(plaintext)))
+		 SELECT `+userColumns+` FROM tier2.users WHERE id = (SELECT user_id FROM tok)`,
+		hashToken(plaintext), sessionTouchInterval.String()))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
@@ -434,26 +482,6 @@ func (s *Store) RevokeToken(ctx context.Context, plaintext string) error {
 	return nil
 }
 
-// RevokeUnredeemedInvites deletes an account's outstanding, still-redeemable
-// invites carrying the given label and reports how many went. Redeemed ones are
-// left alone: they are spent, and the sessions they became are revoked from the
-// device list rather than from here.
-//
-// This is what keeps self-minted device keys to one live credential per account.
-// Minting is otherwise insert-only, so tapping "add a device" three times would
-// leave three seven-day keys valid with nothing able to show or revoke them —
-// the device list holds redeemed sessions, not outstanding invites.
-func (s *Store) RevokeUnredeemedInvites(ctx context.Context, userID uuid.UUID, label string) (int64, error) {
-	tag, err := s.pool.Exec(ctx,
-		`DELETE FROM tier2.user_tokens
-		  WHERE user_id = $1 AND kind = 'invite' AND label = $2 AND used_at IS NULL`,
-		userID, label)
-	if err != nil {
-		return 0, fmt.Errorf("store: revoke unredeemed invites: %w", err)
-	}
-	return tag.RowsAffected(), nil
-}
-
 // CountTokens reports how many live credentials of a kind an account holds.
 // Boot uses it to decide whether the owner still needs a first sign-in invite.
 func (s *Store) CountTokens(ctx context.Context, userID uuid.UUID, kind string) (int, error) {
@@ -493,18 +521,70 @@ func (s *Store) ListSessions(ctx context.Context, userID uuid.UUID, currentPlain
 	return out, rows.Err()
 }
 
-// RevokeSession signs one of an account's own devices out. The delete is scoped
-// to the caller, so guessing another account's session id reports ErrNotFound
-// rather than cutting off somebody else's device.
-func (s *Store) RevokeSession(ctx context.Context, userID, sessionID uuid.UUID) error {
-	tag, err := s.pool.Exec(ctx,
+// RevokeSession signs one of an account's own devices out, reporting whether
+// the row it removed is the one the caller is currently holding. The delete is
+// scoped to the caller, so guessing another account's session id reports
+// ErrNotFound rather than cutting off somebody else's device.
+//
+// The wasCurrent answer comes back from the DELETE itself rather than from a
+// follow-up lookup: the handler needs it to decide whether to clear the cookie,
+// and asking a second time would mean a second round trip whose failure the
+// handler has no sensible way to act on.
+func (s *Store) RevokeSession(ctx context.Context, userID, sessionID uuid.UUID, currentPlaintext string) (bool, error) {
+	var wasCurrent bool
+	err := s.pool.QueryRow(ctx,
 		`DELETE FROM tier2.user_tokens
-		  WHERE id = $1 AND user_id = $2 AND kind = 'session'`, sessionID, userID)
+		  WHERE id = $1 AND user_id = $2 AND kind = 'session'
+		 RETURNING token_hash = $3`, sessionID, userID, hashToken(currentPlaintext)).Scan(&wasCurrent)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, ErrNotFound
+	}
 	if err != nil {
-		return fmt.Errorf("store: revoke session: %w", err)
+		return false, fmt.Errorf("store: revoke session: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
+	return wasCurrent, nil
+}
+
+// ReplaceDeviceInvite retires an account's outstanding, unredeemed device
+// invites and mints one fresh invite, in a single transaction.
+//
+// The transaction is the point. Doing it as two statements leaves the exact
+// window the retirement exists to close: two concurrent "add a device" taps can
+// interleave revoke/revoke/mint/mint and both survive, which is the double-tap
+// this is written to defend against.
+func (s *Store) ReplaceDeviceInvite(ctx context.Context, userID uuid.UUID) (string, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", fmt.Errorf("store: begin: %w", err)
 	}
-	return nil
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Take the account's row first so two concurrent callers serialize here
+	// rather than racing the delete and the insert against each other.
+	if _, err := tx.Exec(ctx,
+		`SELECT 1 FROM tier2.users WHERE id = $1 FOR UPDATE`, userID); err != nil {
+		return "", fmt.Errorf("store: lock account: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM tier2.user_tokens
+		  WHERE user_id = $1 AND kind = 'invite' AND label = $2 AND used_at IS NULL`,
+		userID, InviteLabelDevice); err != nil {
+		return "", fmt.Errorf("store: retire device invites: %w", err)
+	}
+
+	plaintext, err := newToken()
+	if err != nil {
+		return "", err
+	}
+	expires := time.Now().Add(InviteTTL)
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO tier2.user_tokens (user_id, kind, token_hash, label, expires_at)
+		 VALUES ($1, 'invite', $2, $3, $4)`,
+		userID, hashToken(plaintext), InviteLabelDevice, expires); err != nil {
+		return "", fmt.Errorf("store: mint device invite: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", fmt.Errorf("store: commit device invite: %w", err)
+	}
+	return plaintext, nil
 }

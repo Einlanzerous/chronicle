@@ -133,16 +133,31 @@ func runServe(args []string) error {
 		return err
 	}
 
+	// Announced rather than silent: with no trusted proxy the sign-in limiter
+	// keys on Traefik's own address, so every browser and app request shares one
+	// bucket and a stranger hammering the direct host can lock the owner out.
+	if len(cfg.TrustedProxies) == 0 {
+		logger.Warn("CHRONICLE_TRUSTED_PROXIES is unset: the sign-in rate limit will apply "+
+			"globally rather than per client, because every request through Traefik shares its address",
+			"remedy", "set CHRONICLE_TRUSTED_PROXIES to the reverse proxy's address or subnet")
+	}
+	if !cfg.SecureCookies {
+		logger.Warn("CHRONICLE_COOKIE_SECURE is off: the session cookie will be sent over plain HTTP. " +
+			"This is only appropriate for a LAN install.")
+	}
+
 	deps := api.Deps{
-		DB:            st,
-		Accounts:      st,
-		Logger:        logger,
-		Version:       buildVersion(),
-		Commit:        commit,
-		MobileBaseURL: cfg.MobileBaseURL,
+		DB:             st,
+		Accounts:       st,
+		Logger:         logger,
+		Version:        buildVersion(),
+		Commit:         commit,
+		MobileBaseURL:  cfg.MobileBaseURL,
+		SecureCookies:  cfg.SecureCookies,
+		TrustedProxies: cfg.TrustedProxies,
 	}
 	if cfg.SSOEnabled() {
-		deps.CFAccess = api.NewCFAccessVerifier(cfg.CFAccessTeamDomain, cfg.CFAccessAUD)
+		deps.CFAccess = api.NewCFAccessVerifier(cfg.CFAccessTeamDomain, cfg.CFAccessAUD...)
 	}
 	handler := api.NewRouter(deps)
 	srv := &http.Server{
@@ -249,7 +264,7 @@ func bootstrapOwner(ctx context.Context, st *store.Store, cfg config.Config, log
 		return nil
 	}
 
-	token, err := st.MintInvite(ctx, owner.ID, "bootstrap")
+	token, err := st.MintInvite(ctx, owner.ID, store.InviteLabelBootstrap)
 	if err != nil {
 		return fmt.Errorf("mint owner invite: %w", err)
 	}
@@ -289,11 +304,16 @@ func runMintInvite(args []string) error {
 	var target store.User
 	if *email == "" {
 		target, err = st.GetOwner(ctx)
+		if errors.Is(err, store.ErrNotFound) {
+			// Naming the empty --email here would report the wrong problem:
+			// nobody asked for an account called "".
+			return fmt.Errorf("mint-invite: there is no owner account — has `chronicle migrate` run?")
+		}
 	} else {
 		target, err = st.GetUserByEmail(ctx, *email)
-	}
-	if errors.Is(err, store.ErrNotFound) {
-		return fmt.Errorf("mint-invite: no account for %q", *email)
+		if errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("mint-invite: no account for %q", *email)
+		}
 	}
 	if err != nil {
 		return err

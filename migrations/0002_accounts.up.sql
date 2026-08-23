@@ -55,7 +55,10 @@ CREATE INDEX IF NOT EXISTS user_tokens_user_id ON tier2.user_tokens (user_id);
 -- Seed the owner here rather than at boot so the row exists before anything
 -- can reference it, and so the whole thing lands in one transaction. The
 -- identity is a placeholder; cmd/chronicle reconciles it from
--- CHRONICLE_OWNER_EMAIL / CHRONICLE_OWNER_NAME on startup.
+-- CHRONICLE_OWNER_EMAIL / CHRONICLE_OWNER_NAME on startup. The display name
+-- literal below is mirrored by store.OwnerPlaceholderName, which is how boot
+-- knows it may replace it — change one and you must change the other, or the
+-- placeholder becomes permanent.
 INSERT INTO tier2.users (email, display_name, is_owner)
 SELECT 'owner@localhost', 'Owner', TRUE
 WHERE NOT EXISTS (SELECT 1 FROM tier2.users);

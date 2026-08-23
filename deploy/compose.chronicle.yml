@@ -44,6 +44,18 @@ services:
       # host: a link built from the Access-gated hostname walks a phone into an
       # SSO wall a bearer token cannot open.
       - CHRONICLE_MOBILE_BASE_URL=${CHRONICLE_MOBILE_BASE_URL:-}
+      # Secure on the session cookie. NOT derived from the request: TLS
+      # terminates at Traefik, so the app never sees a TLS connection and
+      # deriving it would drop the flag off a durable credential on the
+      # WAN-facing entrypoint. Only set this false for a plain-HTTP LAN install.
+      - CHRONICLE_COOKIE_SECURE=${CHRONICLE_COOKIE_SECURE:-true}
+      # Whose X-Forwarded-For the sign-in rate limiter may believe. Traefik's
+      # entrypoints set `forwardedHeaders.trustedIPs: []`, so it overwrites
+      # whatever a caller sent with the address it actually saw — which makes
+      # this trustworthy from Traefik and from nowhere else. Unset, every
+      # request through the proxy shares one bucket and one attacker can lock
+      # out every real user; the server warns at boot when that is the case.
+      - CHRONICLE_TRUSTED_PROXIES=${CHRONICLE_TRUSTED_PROXIES:-172.16.0.0/12}
     networks:
       - construct_net
     depends_on:
