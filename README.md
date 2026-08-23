@@ -88,9 +88,22 @@ or the app    small.en       DISCUSSION                     discussion
 | `internal/` | config, model, store, api |
 | `migrations/` | embedded SQL, applied on boot |
 | `deploy/` | compose fragment and Traefik labels |
+| `docs/decisions/` | written decisions for the tickets that get one before code |
 | `docs/salvage/` | the Scribe, recovered from `imperium-loop` before it was decommissioned |
 | `docs/benchmarks/` | measured ASR model choice — read this before picking a model |
 | `CLAUDE.md` | conventions, invariants, and the working agreement |
+
+## Getting in
+
+No passwords. A one-time invite redeems into a durable per-device session, and
+the same account is reachable two ways: through Cloudflare Access in a browser,
+and with a redeemed invite on the direct host that the app and MCP use. The two
+are complementary — Access decides whether a request is served at all, Chronicle
+decides who it is served as.
+
+There is no mode that serves an unauthenticated caller anything but a health
+probe. The first boot logs an invite; `chronicle mint-invite` issues another.
+See `docs/decisions/chrn-71-accounts-and-sessions.md`.
 
 ## Status
 

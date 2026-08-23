@@ -45,6 +45,10 @@ jobs:
           --health-retries 10
     env:
       CHRONICLE_TEST_DATABASE_URL: postgres://chronicle:ci-not-a-secret@localhost:5432/chronicle_test?sslmode=disable
+      # The tier-isolation test connects as the regeneration role to prove it
+      # cannot read tier-2 credentials. Without this DSN it skips, which would
+      # be a silent hole in the one check the doctrine rests on.
+      CHRONICLE_TEST_TIER1_DATABASE_URL: postgres://chronicle_tier1:ci-not-a-secret@localhost:5432/chronicle_test?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -138,15 +142,17 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
-      # The working agreement wants branches named type/slug-chrn-NN so
-      # per-ticket spend attributes correctly. This NOTICES a branch that does
-      # not; it does not block the merge, because a naming convention is not
-      # worth failing a green build over.
+      # The working agreement wants branches named chrn-NN-description so
+      # per-ticket spend attributes correctly. Release-please reads the commit
+      # message, not the branch, so nothing here needs a conventional-commit
+      # prefix. This NOTICES a branch that does not match; it does not block the
+      # merge, because a naming convention is not worth failing a green build
+      # over.
       - name: Check
         run: |
           branch="${{ github.head_ref }}"
-          if printf '%s' "$branch" | grep -qiE '^[a-z]+/[a-z0-9._-]+-chrn-[0-9]+$'; then
+          if printf '%s' "$branch" | grep -qiE '^chrn-[0-9]+-[a-z0-9._-]+$'; then
             echo "branch '$branch' carries a ticket number."
           else
-            echo "::warning::branch '$branch' does not match type/slug-chrn-NN — per-ticket spend will not attribute correctly."
+            echo "::warning::branch '$branch' does not match chrn-NN-description — per-ticket spend will not attribute correctly."
           fi

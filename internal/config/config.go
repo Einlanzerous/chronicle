@@ -6,10 +6,13 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Einlanzerous/chronicle/internal/invite"
 )
 
 // Default listen port. 4009 is the lowest free slot in the estate's 40xx block
@@ -23,6 +26,58 @@ type Config struct {
 	LogLevel      slog.Level    // debug | info | warn | error
 	LogFormat     string        // json | text
 	ShutdownGrace time.Duration // how long in-flight work has to finish on SIGTERM
+
+	// CHRN-71 — accounts. There is no CHRONICLE_AUTH: auth is unconditional,
+	// so there is no flag to leave off by accident.
+	OwnerEmail string // reconciled onto the owner row at boot
+	OwnerName  string // display name; defaults to the email
+
+	// Cloudflare Access SSO. Both or neither — exactly one is a boot error,
+	// because a half-configured verifier fails every browser sign-in with a
+	// message that says the token was invalid rather than that the server was.
+	//
+	// CFAccessAUD is a list: Access AUD tags are per-application, so when
+	// CHRN-65 puts MCP behind its own Access application its tokens carry that
+	// application's tag and not the web app's.
+	CFAccessTeamDomain string
+	CFAccessAUD        []string
+
+	// MobileBaseURL is the origin baked into an invite's sign-in link, and the
+	// only origin a phone is told about. Empty omits the link.
+	MobileBaseURL string
+
+	// SecureCookies sets Secure on the session cookie. Defaults to true and is
+	// NOT derived from the request: TLS terminates at Traefik, so r.TLS is nil
+	// for every request this service sees in the deployment it ships. It exists
+	// only so a plain-HTTP LAN install can turn it off on purpose.
+	SecureCookies bool
+
+	// TrustedProxies are the peers whose X-Forwarded-For is believed when
+	// keying the sign-in rate limiter. Empty means trust nobody, which makes
+	// everything arriving through Traefik share a single bucket — serve()
+	// warns about that rather than leaving it to be discovered.
+	TrustedProxies []netip.Prefix
+}
+
+// SSOEnabled reports whether Cloudflare Access sign-in is configured.
+func (c Config) SSOEnabled() bool {
+	return c.CFAccessTeamDomain != "" && len(c.CFAccessAUD) > 0
+}
+
+// ValidateForServe checks what only a running server needs. It is separate
+// from Load because `migrate` and `mint-invite` genuinely do not need an owner
+// identity — migrate applies SQL, and the owner row is seeded with a
+// placeholder by migration 0002 — so requiring it there would be a papercut on
+// every schema operation.
+//
+// Serving does need it. Left unset the owner keeps that placeholder, which can
+// never match a Cloudflare-verified email, so browser sign-in would look
+// configured and silently never work. A named boot error beats that.
+func (c Config) ValidateForServe() error {
+	if c.OwnerEmail == "" {
+		return fmt.Errorf("config: CHRONICLE_OWNER_EMAIL is required to serve (the account the first invite is minted for)")
+	}
+	return nil
 }
 
 // Load reads configuration from the environment, naming the offending variable
@@ -64,6 +119,55 @@ func Load() (Config, error) {
 			return c, fmt.Errorf("config: CHRONICLE_SHUTDOWN_GRACE %q is not a positive duration", v)
 		}
 	}
+
+	c.OwnerEmail = strings.ToLower(strings.TrimSpace(os.Getenv("CHRONICLE_OWNER_EMAIL")))
+	c.OwnerName = strings.TrimSpace(os.Getenv("CHRONICLE_OWNER_NAME"))
+
+	// Stored as given, minus surrounding space. api.NewCFAccessVerifier reduces
+	// it to a bare host — a value pasted from the Zero Trust dashboard with its
+	// scheme attached would otherwise yield an issuer of "https://https://…"
+	// that mismatches every token. Normalizing in one place keeps the two from
+	// drifting; this package only needs to know whether it was set.
+	c.CFAccessTeamDomain = strings.TrimSpace(os.Getenv("CHRONICLE_CF_ACCESS_TEAM_DOMAIN"))
+	c.CFAccessAUD = splitList(os.Getenv("CHRONICLE_CF_ACCESS_AUD"))
+	if (c.CFAccessTeamDomain == "") != (len(c.CFAccessAUD) == 0) {
+		return c, fmt.Errorf("config: CHRONICLE_CF_ACCESS_TEAM_DOMAIN and CHRONICLE_CF_ACCESS_AUD must be set together (got one of the two)")
+	}
+
+	c.SecureCookies = true
+	if v := strings.TrimSpace(os.Getenv("CHRONICLE_COOKIE_SECURE")); v != "" {
+		c.SecureCookies, err = strconv.ParseBool(v)
+		if err != nil {
+			return c, fmt.Errorf("config: CHRONICLE_COOKIE_SECURE %q is not a boolean", v)
+		}
+	}
+
+	for _, raw := range splitList(os.Getenv("CHRONICLE_TRUSTED_PROXIES")) {
+		// A bare address is accepted as a single-host prefix, because that is
+		// what an operator naturally writes for "Traefik lives here".
+		if !strings.Contains(raw, "/") {
+			addr, perr := netip.ParseAddr(raw)
+			if perr != nil {
+				return c, fmt.Errorf("config: CHRONICLE_TRUSTED_PROXIES %q is not an IP or CIDR", raw)
+			}
+			c.TrustedProxies = append(c.TrustedProxies, netip.PrefixFrom(addr.Unmap(), addr.BitLen()))
+			continue
+		}
+		prefix, perr := netip.ParsePrefix(raw)
+		if perr != nil {
+			return c, fmt.Errorf("config: CHRONICLE_TRUSTED_PROXIES %q is not an IP or CIDR", raw)
+		}
+		c.TrustedProxies = append(c.TrustedProxies, prefix.Masked())
+	}
+
+	// A malformed base is refused rather than shrugged at: clients prefer the
+	// server's URL over one they would have built, so an unusable value both
+	// produces a QR that scans to nothing and suppresses the fallback that
+	// would have worked. Lyceum learned this as LYCM-102.
+	c.MobileBaseURL, err = invite.NormalizeBase(os.Getenv("CHRONICLE_MOBILE_BASE_URL"))
+	if err != nil {
+		return c, fmt.Errorf("config: CHRONICLE_MOBILE_BASE_URL %w", err)
+	}
 	return c, nil
 }
 
@@ -89,6 +193,18 @@ func parseLevel(s string) (slog.Level, error) {
 	default:
 		return 0, fmt.Errorf("config: CHRONICLE_LOG_LEVEL %q is not debug/info/warn/error", s)
 	}
+}
+
+// splitList parses a comma-separated environment value, dropping blanks so a
+// trailing comma is not a silent empty entry.
+func splitList(v string) []string {
+	var out []string
+	for _, part := range strings.Split(v, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func firstNonEmpty(vals ...string) string {

@@ -29,6 +29,33 @@ services:
       - CHRONICLE_LOG_LEVEL=${CHRONICLE_LOG_LEVEL:-info}
       - CHRONICLE_LOG_FORMAT=${CHRONICLE_LOG_FORMAT:-json}
       - CHRONICLE_SHUTDOWN_GRACE=${CHRONICLE_SHUTDOWN_GRACE:-20s}
+      # CHRN-71. Auth is unconditional — there is no flag to leave off — so the
+      # owner identity is required to serve. Unset, the owner keeps migration
+      # 0002's placeholder, which can never match a Cloudflare-verified email,
+      # and browser sign-in would look configured and silently never work.
+      - CHRONICLE_OWNER_EMAIL=${CHRONICLE_OWNER_EMAIL}
+      - CHRONICLE_OWNER_NAME=${CHRONICLE_OWNER_NAME:-}
+      # Cloudflare Access SSO: both or neither. Chronicle verifies the JWT
+      # itself rather than trusting the header the edge injects, so these are
+      # the team domain and the Access application's audience tag.
+      - CHRONICLE_CF_ACCESS_TEAM_DOMAIN=${CHRONICLE_CF_ACCESS_TEAM_DOMAIN:-}
+      - CHRONICLE_CF_ACCESS_AUD=${CHRONICLE_CF_ACCESS_AUD:-}
+      # The origin baked into an invite's sign-in QR. It must be the direct
+      # host: a link built from the Access-gated hostname walks a phone into an
+      # SSO wall a bearer token cannot open.
+      - CHRONICLE_MOBILE_BASE_URL=${CHRONICLE_MOBILE_BASE_URL:-}
+      # Secure on the session cookie. NOT derived from the request: TLS
+      # terminates at Traefik, so the app never sees a TLS connection and
+      # deriving it would drop the flag off a durable credential on the
+      # WAN-facing entrypoint. Only set this false for a plain-HTTP LAN install.
+      - CHRONICLE_COOKIE_SECURE=${CHRONICLE_COOKIE_SECURE:-true}
+      # Whose X-Forwarded-For the sign-in rate limiter may believe. Traefik's
+      # entrypoints set `forwardedHeaders.trustedIPs: []`, so it overwrites
+      # whatever a caller sent with the address it actually saw — which makes
+      # this trustworthy from Traefik and from nowhere else. Unset, every
+      # request through the proxy shares one bucket and one attacker can lock
+      # out every real user; the server warns at boot when that is the case.
+      - CHRONICLE_TRUSTED_PROXIES=${CHRONICLE_TRUSTED_PROXIES:-172.16.0.0/12}
     networks:
       - construct_net
     depends_on:
