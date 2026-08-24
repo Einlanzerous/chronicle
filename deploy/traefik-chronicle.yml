@@ -100,6 +100,36 @@ http:
             sans:
               - "*.zerogravity.industries"
 
+    # /admin is NOT served on the WAN host. CHRN-16's Done-when is "`/admin`
+    # requires Access, and the app path does not", and matching on Host alone
+    # would have served both from chronicle-public — putting
+    # POST /admin/users/{id}/invite, which mints a live credential, on the open
+    # 443 behind only requireOwner and outside the /auth/ rate limit.
+    #
+    # Highest priority so it beats both routers above, and pointed at the same
+    # blackhole + deny-all pair public-catchall uses, so the response is a 403
+    # rather than a route to a backend that would have answered.
+    #
+    # Lyceum does not do this — its whole surface is on both hosts. The
+    # difference is not a judgement about Lyceum: Chronicle's ticket states the
+    # property explicitly, so serving /admin here would be an unstated
+    # departure from it. The owner administers accounts from a browser through
+    # Access; nothing the app or MCP does needs /admin.
+    chronicle-public-admin:
+      entryPoints:
+        - public
+      rule: "Host(`chronicle-direct.zerogravity.industries`) && PathPrefix(`/admin`)"
+      priority: 2000
+      service: blackhole
+      middlewares:
+        - deny-all
+      tls:
+        certResolver: letsencrypt
+        domains:
+          - main: "zerogravity.industries"
+            sans:
+              - "*.zerogravity.industries"
+
     # NOTE for whoever pastes this in: `public-catchall`'s comment in
     # routers.yml reads "Any Host/SNI on :public that is not Argosy or the
     # Lyceum direct host is refused (403)." It needs Chronicle adding to that
