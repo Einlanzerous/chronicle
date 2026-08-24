@@ -1,0 +1,190 @@
+name: PR Review
+
+# Fresh-context review of every pull request (CHRN-72), via the shared
+# definition in construct-server (SERV-92). Chronicle was the last active repo
+# in the estate merging on a human read alone.
+#
+# This matters more here than the file count suggests. `CLAUDE.md` puts most
+# tickets in Mode A — the reviewer sees the `Done when` claim and green CI, NOT
+# the diff. That is only a sound trade if something read the diff. Until this
+# lands nothing does, so Mode A is not "review by evidence", it is "no review",
+# and the distinction is invisible from the board.
+#
+# Nothing is copied here. `review-prompt.md` is fetched from construct-server at
+# run time (`prompt_repo`/`prompt_ref`, defaulting to `@main`), so a local copy
+# could only ever drift out of use. It is NOT fetched at the workflow's own
+# commit — `job_workflow_sha` would have given that and is empty on this Actions
+# version, which 404'd the fetch on argosy#211 and signet#37 — so pinning
+# `uses: ...@<tag>` means pinning `prompt_ref` to match.
+#
+# Judgement lives in this repo's `REVIEW.md`; generated artifacts in
+# `.github/review-ignore`. See construct-server's `docs/pr-reviewer.md`.
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+  issue_comment:
+    types: [created]
+
+# A called workflow cannot be granted more than its caller holds, so the ceiling
+# is set here even though the shared workflow declares the same three.
+permissions:
+  contents: read
+  pull-requests: write
+  issues: read
+
+# No `concurrency:` — the shared workflow owns it, and that key is the
+# accumulated result of three separate silent-pass incidents.
+
+jobs:
+  pr-review:
+    uses: Einlanzerous/construct-server/.github/workflows/pr-review-reusable.yml@main
+    with:
+      # Paths where a mistake widens access, loses data, leaks a secret, or
+      # compromises the runner.
+      #
+      # ---------------------------------------------------------------------
+      # THE REPLAY DID NOT DISCRIMINATE. Recording that plainly rather than
+      # dressing it up, because a regex that matches everything carries the same
+      # information as one that matches nothing (SGNT-36).
+      #
+      # Measured 2026-08-23 over both available windows, applying the shared
+      # workflow's own triage order (review-ignore, then the docs-only test,
+      # then this regex):
+      #
+      #   merged PRs (#1, #2)          2 high, 0 low
+      #   commits on main (8, proxy)   8 high, 0 low
+      #
+      # Ten for ten. Leave-one-out says only `\.github/workflows/` and
+      # `CLAUDE\.md` change any single verdict, and that is a measurement
+      # artefact too — the elements are individually redundant because the
+      # window is saturated, not because they are wrong.
+      #
+      # WHY it cannot discriminate yet, which is the part worth knowing: the
+      # repo is eight commits old and all eight are foundation. Seven touch the
+      # store, the migrations, the deploy path or the auth surface, because
+      # that is *all there is*. The cheap side of this line is scheduled and
+      # unbuilt — E8 (web client), E9 (Android capture), and the rendering and
+      # routing halves of E4/E5/E6/E7. There is nothing yet for a low tier to
+      # select.
+      #
+      # A second caveat on the commit window specifically: it classifies past
+      # commits by TODAY's file contents. 3930641 (the service skeleton) scores
+      # high on `internal/config/` and `internal/api/router`, but at that commit
+      # neither carried anything sensitive — `SecureCookies`, `TrustedProxies`
+      # and the sign-in wrappers all arrived in CHRN-71, three commits later. A
+      # path-based replay over a young repo flatters itself; treat the PR window
+      # as the real one and it is two data points.
+      #
+      # So this regex is picked on the MERITS and the measurement is recorded as
+      # a null result. RE-RUN IT at ~20 merged PRs, which by the plan means
+      # after E2 and E4 land. The falsifiable prediction: PRs confined to the
+      # web client, the Android client, note rendering, and the Switchyard/Amber
+      # reference cards should classify low. If they do not, the line is wrong
+      # and it is this comment that was wrong first.
+      # ---------------------------------------------------------------------
+      #
+      # What each element is doing here:
+      #
+      #   internal/store/       Whole directory, deliberately. The tier-1/tier-2
+      #                         split is a store fact — which schema a query
+      #                         names and which role can reach it — and
+      #                         CLAUDE.md's first invariant is enforced by a
+      #                         Postgres grant that one migration can loosen in
+      #                         silence. CHRN-52's isolation test lives here.
+      #                         Tier-1 derived tables (Scribe proposals,
+      #                         entities, indexes) land here too, and a query
+      #                         that crosses the boundary is THE defect class.
+      #   migrations/           Hand-written SQL, applied at boot, fatal on
+      #                         failure — a bad migration does not fail a test,
+      #                         it stops the server booting. The GRANT/REVOKE
+      #                         pair that enforces the tier split is here.
+      #   internal/api/session  The credential surface: cookie flags, the
+      #                         text/plain CSRF refusal, body limits, SSO
+      #                         completion.
+      #   internal/api/cfaccess Access JWT verification. SERV-131 exists because
+      #                         three hand-rolled copies of this diverged into a
+      #                         panic (LYCM-122); until that shared module
+      #                         lands, this file is the estate's third copy.
+      #   internal/api/ratelimit The throttle on both credential endpoints, and
+      #                         `clientIP` — which trusts `X-Forwarded-For` only
+      #                         from `TrustedProxies`. Get that wrong and every
+      #                         caller picks its own bucket.
+      #   internal/api/router   The route table. Sign-in is wrapped here
+      #                         (`a.limitSignIn(...)`) and the `Accounts`
+      #                         interface is declared here; a dropped wrapper
+      #                         unauthenticates an endpoint with no test
+      #                         failing. Lyceum's `api.go` argument, and
+      #                         stronger here because the wrappers are applied
+      #                         at the call site rather than in the handler.
+      #   internal/invite/      Builds the sign-in URL that CARRIES A LIVE
+      #                         TOKEN. `NormalizeBase` rejects query and
+      #                         fragment precisely so a credential cannot be
+      #                         parked somewhere it outlives its redemption.
+      #   internal/config/      `SecureCookies` defaults true, `TrustedProxies`
+      #                         is parsed here, `ValidateForServe` decides what
+      #                         refuses to boot. A flipped default here ships a
+      #                         session cookie without `Secure` and nothing else
+      #                         notices.
+      #   cmd/chronicle/        `runMintInvite` prints a live credential to
+      #                         stdout; `bootstrapOwner` writes the owner row;
+      #                         the boot guards warn when the proxy list or the
+      #                         cookie flag is not what production needs.
+      #   deploy/               Traefik labels decide whether this service sits
+      #                         on the WAN-forwarded `public` entrypoint, and
+      #                         compose carries the env `internal/config` reads.
+      #                         CHRN-16's whole surface.
+      #   scripts/              One file: `gen-schema.sh`. It renders the tier
+      #                         grants into `schema.sql` on purpose (see its own
+      #                         comment on --no-owner vs privileges), so the
+      #                         staleness guard shows a loosened grant as a
+      #                         schema diff. Adding `--no-acl` there would
+      #                         remove that visibility and break no test.
+      #   verify.sh             The pre-handover gate. Under this repo's working
+      #                         agreement Mode A review rests on it entirely, so
+      #                         a PR that quietly weakens it weakens every
+      #                         subsequent review — the same class as touching
+      #                         the workflows, not a style concern.
+      #   .github/workflows/    Decides what runs on a self-hosted runner, and
+      #                         this file lives here.
+      #   REVIEW.md, CLAUDE.md, .github/review-ignore
+      #                         The reviewer's own standards and its own scope.
+      #                         A PR loosening them is a governance change, not
+      #                         documentation.
+      #
+      # Deliberately on the cheap side today: `internal/api/server.go` and its
+      # test (server lifecycle, `/healthz`, `/readyz`, graceful shutdown — a
+      # mistake there drops a connection loudly, it does not widen access),
+      # `.golangci.yml`, and `go.mod`/`go.sum`. The last is a real judgement
+      # call, not an omission: a dependency bump is ordinary work, and go.sum is
+      # also NOT in `review-ignore` for the opposite reason — a line moving
+      # there without a matching go.mod change is supply-chain shaped and is
+      # worth reading at the cheap tier.
+      #
+      # File stems are unanchored (`internal/api/session`, not `session\.go$`)
+      # so `_test.go` comes along, on switchyard's authz-guard lesson: deleting
+      # a guard's invocation was caught, gutting its logic was not.
+      # `internal/api/session_test.go` is the guard for the surface above it.
+      #
+      # KNOWN GAP, stated so it is not discovered later. Three of the five Mode
+      # C tickets in CLAUDE.md have no path in this repo yet — CHRN-22 (the
+      # retention pruner), CHRN-39 (revisions) and CHRN-67 (MCP write scopes).
+      # They are the tickets that can destroy authored data or hand an agent
+      # write access to it, and their packages do not exist to be listed. The
+      # ticket implementing each one must add its package here in the same PR;
+      # `REVIEW.md` carries that as an always-check so the reviewer catches it
+      # rather than relying on someone remembering.
+      sensitive_paths: '^(internal/store/|internal/api/(session|cfaccess|ratelimit|router)|internal/(invite|config)/|cmd/chronicle/|migrations/|deploy/|scripts/|verify\.sh|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore)'
+
+      # No `docs_skip_extra`: this repo commits no knowledge-graph cache, and
+      # the one generated artifact it does carry is excluded outright in
+      # `.github/review-ignore` rather than misfiled as documentation.
+      #
+      # Worth knowing about the docs-only rule as it applies here: it tests
+      # `^docs/` OR `\.md$`, so `docs/salvage/vox-dictate/source/*.js` counts as
+      # documentation despite being JavaScript. That is the right answer — it is
+      # recovered reference material that CLAUDE.md points at, not code this
+      # binary runs — but it means a PR editing only those files is skipped.
+    secrets:
+      claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      switchyard_token: ${{ secrets.SWITCHYARD_REVIEWER_TOKEN }}
