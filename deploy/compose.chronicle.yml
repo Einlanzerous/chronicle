@@ -13,7 +13,10 @@
 #        signet target add-key --project construct-server \
 #          --path /opt/construct-server/.env --name CHRONICLE_DB_PASSWORD
 #        signet sync
-#   3. The image exists: ghcr.io/einlanzerous/chronicle (CHRN-17 publishes it)
+#   3. The image exists: ghcr.io/einlanzerous/chronicle. Published by
+#      .github/workflows/publish.yml (CHRN-73) — NOT by CHRN-17, which this
+#      line named until 2026-08-24 and which never built an image. That claim
+#      is why CHRN-16 reached a deploy with no artifact to deploy.
 
 services:
   chronicle:
@@ -38,8 +41,21 @@ services:
       # Cloudflare Access SSO: both or neither. Chronicle verifies the JWT
       # itself rather than trusting the header the edge injects, so these are
       # the team domain and the Access application's audience tag.
+      #
+      # The AUD is a LITERAL here, not a .env indirection, matching how
+      # switchyard and lyceum carry theirs. It is not a secret — it identifies
+      # an Access application, it does not authorise anything — and
+      # check-edge-auth.sh reads it straight out of this file to assert it
+      # agrees with the guard's CF_ACCESS_AUD_MAP entry for this host. Behind a
+      # ${...} the check has nothing to read.
+      #
+      # It MUST equal the chronicle.zerogravity.industries entry in
+      # CF_ACCESS_AUD_MAP on the cf-access-guard service. Two copies of one
+      # identity is not ideal, but they are checked against each other rather
+      # than trusted: the edge and the origin disagreeing about which
+      # application guards this host is exactly what SERV-106 exists to catch.
       - CHRONICLE_CF_ACCESS_TEAM_DOMAIN=${CHRONICLE_CF_ACCESS_TEAM_DOMAIN:-}
-      - CHRONICLE_CF_ACCESS_AUD=${CHRONICLE_CF_ACCESS_AUD:-}
+      - CHRONICLE_CF_ACCESS_AUD=48bc1ca35a8a6bcf17c242cac59e209a53e58e5213b1656c82d3053df062f1ec
       # The origin baked into an invite's sign-in QR. It must be the direct
       # host: a link built from the Access-gated hostname walks a phone into an
       # SSO wall a bearer token cannot open.
