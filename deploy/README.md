@@ -1,9 +1,10 @@
 # Deploying Chronicle
 
 Chronicle runs as a container on `construct_net`, behind the estate's existing
-Cloudflare tunnel → Traefik arrangement. Nothing here is a new pattern; it is
-Switchyard's shape for a tunneled app, plus a database provisioned the way
-Purser's is.
+Cloudflare tunnel → Traefik arrangement, and **also** on the WAN-forwarded
+`public` entrypoint for clients that cannot do browser SSO. Nothing here is a
+new pattern: the tunneled half is Switchyard's shape, the direct half is
+Lyceum's (SERV-60), and the database is provisioned the way Purser's is.
 
 ## Files
 
@@ -12,7 +13,7 @@ Purser's is.
 | `Dockerfile` | static Go binary on Alpine. `docker build -f deploy/Dockerfile -t chronicle:local .` |
 | `provision-db.sh` | database, roles and the tier lockdown. Run once, as superuser, under `signet exec` |
 | `compose.chronicle.yml` | the service block to paste into `~/construct-server/docker-compose.yml` |
-| `traefik-chronicle.yml` | the routers to paste into `config/traefik/dynamic/routers.yml` |
+| `traefik-chronicle.yml` | the routers and middleware to paste into `config/traefik/dynamic/routers.yml` |
 
 ## Order
 
@@ -23,57 +24,96 @@ Purser's is.
    signet target add-key --project construct-server --path /opt/construct-server/.env      --name CHRONICLE_DB_PASSWORD
    signet sync
    ```
-3. **Image** — published by CI as `ghcr.io/einlanzerous/chronicle` (CHRN-17).
-4. **Compose** — paste `compose.chronicle.yml`, set `CHRONICLE_OWNER_EMAIL` in
+3. **Image** — published to `ghcr.io/einlanzerous/chronicle` by
+   `.github/workflows/publish.yml` (**CHRN-73**). Until that landed nothing in
+   this repo had ever built an image, and this line claimed CHRN-17 published
+   one; it does not, and that claim is why a previous pass reached a deploy with
+   no artifact to deploy. `:latest` follows `main`; a release-please `v*` tag
+   publishes the semver tags.
+
+   **Check the package is pullable from this host before step 5.** A GHCR
+   package created by a workflow's `GITHUB_TOKEN` is **private** by default, and
+   `docker compose up` will fail on `pull access denied` rather than on anything
+   informative. The estate does it both ways — `lyceum` and `argosy` answer an
+   anonymous manifest request, `switchyard` and `signet` do not — so either
+   making the package public or confirming the host's `ghcr.io` login covers it
+   is fine. What is not fine is finding out at `up` time. `docker pull
+   ghcr.io/einlanzerous/chronicle:latest` on the host settles it in one command.
+4. **Cloudflare** — do this **before** compose, not after. See below: the Access
+   application has to exist before the AUD in `compose.chronicle.yml` means
+   anything, and `check-edge-auth.sh` fails the config if a gated router has no
+   matching `CF_ACCESS_AUD_MAP` entry.
+5. **Compose** — paste `compose.chronicle.yml`, set `CHRONICLE_OWNER_EMAIL` in
    `.env`, `docker compose up -d chronicle`. The service refuses to start
    without it: auth is unconditional (CHRN-71) and the owner is who the first
    invite belongs to.
-5. **First sign-in** — the first boot logs a single-use invite at `warn`:
+
+   The Access team domain, AUD and mobile base URL are **literals in the compose
+   block**, not `.env` entries — they are identifiers and hostnames, not
+   secrets, `check-edge-auth.sh` reads the AUD straight out of the file, and the
+   team domain and AUD must be set together or `config.Load` refuses to serve.
+6. **First sign-in** — the first boot logs a single-use invite at `warn`:
    `docker compose logs chronicle | grep first-boot`. It expires in seven days
    and is never shown again; `docker compose exec chronicle chronicle
    mint-invite` issues another.
-6. **Traefik** — paste `traefik-chronicle.yml`. Dynamic config; no restart needed.
-7. **Cloudflare** — see below. This part is **not** in any repo. Once the Access
-   application exists, set `CHRONICLE_CF_ACCESS_TEAM_DOMAIN` and
-   `CHRONICLE_CF_ACCESS_AUD` so a browser arriving through it is signed in
-   without a second login. Chronicle verifies the JWT itself rather than
-   trusting the header, so a forged one on the direct host authenticates nobody.
+7. **Traefik** — paste `traefik-chronicle.yml` (three routers, one service, one
+   middleware). Dynamic config; no restart needed. Then add
+   `chronicle.zerogravity.industries` to the guard's `CF_ACCESS_AUD_MAP`, and
+   run `./scripts/check-edge-auth.sh` in `construct-server`.
 
 ## The Cloudflare half is dashboard-managed
 
 The tunnel's ingress rules are remotely managed and deliberately absent from
-`construct-server`, as its compose file says. So steps that cannot be scripted
-from this repo:
+`construct-server`, as its compose file says. **Two hostnames, and they are set
+up differently** — this is the part no repo records, so it lives here.
+
+### `chronicle.zerogravity.industries` — tunneled, Access-gated
 
 - add `chronicle.zerogravity.industries` → `http://traefik:9080` to the tunnel
-- create the Cloudflare Access application for that hostname
-- the DNS record (CNAME to the tunnel)
+- create the Cloudflare Access application for that hostname; its **AUD tag**
+  goes in two places that are cross-checked against each other — the service's
+  `CHRONICLE_CF_ACCESS_AUD` and the guard's `CF_ACCESS_AUD_MAP`
+- DNS: **CNAME to the tunnel, proxied** (orange cloud) — the way `lyceum` and
+  `switchyard` resolve, to Cloudflare anycast
 
-Without them the Traefik router exists but nothing routes to it.
+### `chronicle-direct.zerogravity.industries` — WAN, no Access
+
+- **no tunnel ingress, and no Access application.** An Access app on this host
+  would defeat the reason it exists and would make the edge and the origin
+  disagree about whether the host is open
+- DNS: **A record to the WAN address, DNS-only (grey cloud)** — the way `argosy`
+  and `lyceum-direct` resolve, both to the same single WAN IP rather than to
+  Cloudflare's
+
+Without these the Traefik routers exist but nothing routes to them.
 
 ## What is deployed, and what is deliberately not
 
-**Deployed shape:** one router on the `internal` entrypoint carrying
-`cf-access-jwt`, exactly like Switchyard. Everything Chronicle serves — `/admin`
-included — sits behind Cloudflare Access.
+**Both halves are deployed**, serving the same backend:
 
-**Not deployed:** the direct app / MCP path. CHRN-16 asks for the Android app
-and MCP surfaces to skip browser SSO. On this estate that means a router on the
-`public` (WAN-forwarded) entrypoint, in the shape of Lyceum's SERV-60 direct
-path, because every router on `internal` must carry `cf-access-jwt` (SERV-106)
-and `public` is the only other entrypoint.
+| host | entrypoint | middlewares | for |
+|---|---|---|---|
+| `chronicle.…` | `internal` | `cf-access-jwt` | browser, via Access → `POST /auth/sso/cloudflare` |
+| `chronicle-direct.…` | `public` | `crowdsec-bouncer`, `strip-cf-access` | the app and MCP, via invite → `POST /auth/session` |
+| ↳ `PathPrefix(/auth/)` | `public` | + `chronicle-login-ratelimit` | the credential endpoints specifically |
+| ↳ `PathPrefix(/admin)` | `public` | `deny-all` → blackhole | **403. `/admin` is Access-only** |
 
-That router is written out in `traefik-chronicle.yml` and commented out, because
-**Chronicle has no authentication of any kind yet.**
+The direct router was written and left commented out until Chronicle had its own
+credential surface. **CHRN-71 landed that**, so the standard `routers.yml` sets
+for the estate's Access exemptions — the endpoint must authenticate *"with
+something Cloudflare Access cannot express"* — is met: a one-time invite
+redeemed into a durable per-device session, verified in-process on every route
+outside `/healthz` and `/readyz`.
 
-The estate permits exactly one Access exemption today — Switchyard's GitHub
-webhook — and holds it to an explicit standard: the endpoint authenticates
-"with something Cloudflare Access cannot express", namely an HMAC verified one
-layer down, and the router is pinned to an exact `Path()` rather than a prefix.
-Chronicle cannot meet that standard until it has its own credential surface.
-Enabling the direct router before then would publish an unauthenticated service
-to the WAN.
+**`/admin` is not served on the direct host.** `POST /admin/users/{id}/invite`
+mints a live credential, and CHRN-16 asks for `/admin` to require Access. A
+`Host`-only rule would have served it on the open 443 behind `requireOwner`
+alone and outside the `/auth/` rate limit, so a higher-priority router 403s it
+there. Lyceum serves its whole surface on both hosts; Chronicle's ticket states
+the property explicitly, which is the difference.
 
-**So the order in the plan needs a decision**: either the app path waits for
-Chronicle's own auth, or it ships behind Access for now and loses the
-"no browser SSO for the app" property until auth lands.
+Cloudflare Access and Chronicle's own auth are **complementary, not
+alternatives** — in Lyceum's words, *"this one decides whether the request is
+served at all, Lyceum's decides who it is served as."* The same account is
+reachable through Access on the tunneled host and through a redeemed invite on
+the direct one.
