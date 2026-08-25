@@ -18,6 +18,14 @@ permissions:
   contents: read
   packages: write
 
+# Two merges to main in quick succession would otherwise race on :latest with no
+# ordering guarantee, and the loser silently wins. Not cancel-in-progress: a
+# half-pushed manifest is worse than a slow queue, and the tag path must never be
+# cancelled by a subsequent main push.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   image:
     name: build and push
@@ -38,7 +46,17 @@ jobs:
           images: ghcr.io/einlanzerous/chronicle
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,format=short
+            # is_default_branch, NOT the default `enable=true`. Release-please
+            # tags the release PR's MERGE COMMIT, so the main push and the v* tag
+            # build see the same github.sha — and with no event restriction both
+            # runs push sha-<short>, one built with VERSION= (reports `dev`) and
+            # one with VERSION=0.1.0. Last writer wins by job scheduling, so the
+            # sha tag would resolve to an image whose reported identity disagrees
+            # with its own label, non-deterministically. That is precisely the
+            # failure the VERSION comment below exists to prevent, arriving by a
+            # different door. compose reads ${CHRONICLE_TAG:-latest}, so pinning
+            # a sha tag is expected usage rather than hypothetical.
+            type=sha,format=short,enable={{is_default_branch}}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
       - uses: docker/build-push-action@v6
