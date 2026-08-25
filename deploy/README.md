@@ -30,6 +30,15 @@ Lyceum's (SERV-60), and the database is provisioned the way Purser's is.
    one; it does not, and that claim is why a previous pass reached a deploy with
    no artifact to deploy. `:latest` follows `main`; a release-please `v*` tag
    publishes the semver tags.
+
+   **Check the package is pullable from this host before step 5.** A GHCR
+   package created by a workflow's `GITHUB_TOKEN` is **private** by default, and
+   `docker compose up` will fail on `pull access denied` rather than on anything
+   informative. The estate does it both ways — `lyceum` and `argosy` answer an
+   anonymous manifest request, `switchyard` and `signet` do not — so either
+   making the package public or confirming the host's `ghcr.io` login covers it
+   is fine. What is not fine is finding out at `up` time. `docker pull
+   ghcr.io/einlanzerous/chronicle:latest` on the host settles it in one command.
 4. **Cloudflare** — do this **before** compose, not after. See below: the Access
    application has to exist before the AUD in `compose.chronicle.yml` means
    anything, and `check-edge-auth.sh` fails the config if a gated router has no
