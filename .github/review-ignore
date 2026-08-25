@@ -35,13 +35,17 @@
 # the two disagreeing.
 ^schema\.sql$
 
-# release-please owns this and rewrites it wholesale on every release. Listed
-# prospectively: CLAUDE.md commits this repo to release-please and GHCR, but no
-# manifest or config is wired yet, so no such file exists today. Here now so
-# that landing the release train does not also require remembering this.
+# release-please owns this and rewrites it wholesale on every release. Live as
+# of CHRN-73, which wired `release-please-config.json` and
+# `.release-please-manifest.json`; the entry was added prospectively in CHRN-72
+# and this comment is corrected rather than left claiming the train is unbuilt.
 #
 # It is also `.md`, so the docs-only rule already covers it on a release PR;
 # this covers the case where it rides along with code.
+#
+# Note the shared workflow derives a release PR's expected file set from
+# `release-please-config.json` on the BASE ref, so adding an `extra-files`
+# target there cannot silently un-match the release skip.
 ^CHANGELOG\.md$
 
 # NOT excluded, deliberately, and each for a reason:
