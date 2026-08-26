@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/Einlanzerous/chronicle/internal/config"
 	"github.com/Einlanzerous/chronicle/internal/invite"
 	"github.com/Einlanzerous/chronicle/internal/store"
+	"github.com/Einlanzerous/chronicle/internal/watch"
 )
 
 // version is stamped at build time with -ldflags "-X main.version=...".
@@ -156,6 +158,7 @@ func runServe(args []string) error {
 			"This is only appropriate for a LAN install.")
 	}
 
+	var watcher *watch.Watcher
 	deps := api.Deps{
 		DB:             st,
 		Accounts:       st,
@@ -190,6 +193,56 @@ func runServe(args []string) error {
 		deps.Audio = audioStore
 		deps.Corpus = st
 		logger.Info("audio store ready", "root", audioStore.Root())
+
+		// The Copyparty seam (CHRN-19). It needs the audio store, so it is
+		// wired inside this block: an inbox with nowhere to copy files TO
+		// would read every memo and drop it on the floor.
+		if cfg.InboxDir != "" {
+			// Checked at boot for the same reason the audio root is, and it
+			// matters more here: a typo'd inbox is not a loud failure, it is a
+			// watcher that reads an empty directory forever while memos pile
+			// up somewhere nobody is looking. Scan() tolerates the directory
+			// disappearing at RUNTIME — a sync client reorganising underneath
+			// is ordinary and is not a reason to stop the loop — but it must
+			// exist at the moment it is configured.
+			inbox, err := os.Stat(cfg.InboxDir)
+			if err != nil {
+				return fmt.Errorf("CHRONICLE_INBOX_DIR %s: %w (create it, or mount the volume)", cfg.InboxDir, err)
+			}
+			if !inbox.IsDir() {
+				return fmt.Errorf("CHRONICLE_INBOX_DIR %s is not a directory", cfg.InboxDir)
+			}
+			watcher, err = watch.New(watch.Options{
+				Root:     cfg.InboxDir,
+				Audio:    audioStore,
+				Ingest:   st,
+				Ledger:   st,
+				Accounts: st,
+				Logger:   logger,
+				Interval: cfg.WatchInterval,
+				Settle:   cfg.WatchSettle,
+			})
+			if err != nil {
+				return err
+			}
+		}
+	}
+	if cfg.InboxDir == "" {
+		// Said out loud. Unset, no watcher is constructed and the configured
+		// branch's "watching for memos" line never appears — so an operator
+		// asking why nothing arrives from their phone has nothing to find.
+		// REVIEW.md §8: the estate's cautionary tale is an integration that was
+		// a silent no-op and looked like a working feature.
+		logger.Info("no inbox watcher: CHRONICLE_INBOX_DIR is unset, so the Copyparty path is off",
+			"ingest", "upload only")
+	}
+	if cfg.InboxDir != "" && cfg.AudioDir == "" {
+		// Refused rather than warned. Watching with no audio store would read
+		// every file, copy it nowhere, and record memos whose audio is
+		// immediately CHRN-23's `missing` — the one state that means something
+		// irreplaceable is gone. Better to not start.
+		return fmt.Errorf("CHRONICLE_INBOX_DIR is set but CHRONICLE_AUDIO_DIR is not: " +
+			"the watcher has nowhere to copy recordings to")
 	}
 	if cfg.SSOEnabled() {
 		deps.CFAccess = api.NewCFAccessVerifier(cfg.CFAccessTeamDomain, cfg.CFAccessAUD...)
@@ -204,7 +257,25 @@ func runServe(args []string) error {
 	logger.Info("chronicle starting",
 		"version", buildVersion(), "addr", cfg.Addr, "log_format", cfg.LogFormat,
 		"sso", cfg.SSOEnabled())
-	return api.Serve(ctx, srv, cfg.ShutdownGrace, logger)
+
+	// The watcher shares the server's context, so SIGTERM stops both. It is
+	// waited on rather than abandoned: a scan is mid-copy often enough that
+	// exiting under it would leave a temp file in the audio store on every
+	// redeploy, and stop_grace_period already allows for it.
+	var watching sync.WaitGroup
+	if watcher != nil {
+		watching.Add(1)
+		go func() {
+			defer watching.Done()
+			if err := watcher.Run(ctx); err != nil {
+				logger.Error("the inbox watcher stopped", "error", err)
+			}
+		}()
+	}
+
+	err = api.Serve(ctx, srv, cfg.ShutdownGrace, logger)
+	watching.Wait()
+	return err
 }
 
 func runMigrate(args []string) error {

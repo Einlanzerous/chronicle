@@ -43,7 +43,7 @@ Lyceum's (SERV-60), and the database is provisioned the way Purser's is.
    application has to exist before the AUD in `compose.chronicle.yml` means
    anything, and `check-edge-auth.sh` fails the config if a gated router has no
    matching `CF_ACCESS_AUD_MAP` entry.
-5. **Audio directory** — `sudo mkdir -p /data/chronicle/audio`.
+5. **Audio and inbox directories** — `sudo mkdir -p /data/chronicle/audio /data/chronicle/inbox`.
 
    `CHRONICLE_AUDIO_DIR` points here and the service **refuses to boot if the
    path is not readable** rather than creating it (CHRN-23). That is deliberate:
@@ -54,10 +54,47 @@ Lyceum's (SERV-60), and the database is provisioned the way Purser's is.
    which is why CHRN-19's watched folder will land under the same root.
 
    `GET /admin/storage` (owner only, Access-gated host) reports what the corpus
-   costs and whether the disk and the database agree. Until CHRN-19 or CHRN-20
-   lands there is nothing writing audio, so it correctly reports an empty
-   corpus — which is a different answer from the 503 it gives when
-   `CHRONICLE_AUDIO_DIR` is unset.
+   costs and whether the disk and the database agree.
+
+   **`CHRONICLE_INBOX_DIR` is the Copyparty seam (CHRN-19), and it needs two
+   more things before a phone can use it:**
+
+   - **One subdirectory per account, named after the account's UUID.**
+     `sudo mkdir -p /data/chronicle/inbox/$(uuid)` — get the UUID from
+     `GET /admin/users`. A file carries no identity of its own and
+     `tier2.memos.author_id` is `NOT NULL`, so the directory is the only thing
+     that can supply one. **The watcher never creates a directory**: one that
+     does not name an existing account is logged once and ignored, so dropping
+     files into an invented path ingests nothing.
+   - **A Copyparty volume, which does not exist yet.** `config/copyparty.conf`
+     in construct-server publishes exactly one volume — `[/] → /w/hdd/media` —
+     so `/data/chronicle/inbox` is on the same disk but is **not reachable from
+     a phone**. Adding it is a construct-server change, and it carries a
+     question worth answering deliberately rather than by default: that config
+     is `accs: rwmd: *`, anonymous, gated only by Tailscale at the network
+     layer. Published the same way, **anyone on the tailnet could drop a file
+     into any account's inbox and have the memo attributed to them.** For
+     `/data/media` that is the estate's accepted posture; for authored tier-2
+     content it is a different question. Chronicle's own upload endpoint
+     (CHRN-20) is the authenticated path.
+
+   Until that volume exists the watcher runs correctly against an inbox nothing
+   fills, and `CHRONICLE_INBOX_DIR` can be left set: it costs one `readdir` per
+   interval.
+
+   **Latency, as a number rather than a footnote.** With the shipped defaults —
+   `CHRONICLE_WATCH_SETTLE=10s`, `CHRONICLE_WATCH_INTERVAL=5s` — a file's worst
+   case from written to memo row is **about fifteen seconds**. The settle window
+   is the larger half and it is buying something: it is the guard that keeps a
+   half-written upload from being read at all. Lower it to trade latency back;
+   the guarantee against a partial read is the re-stat after the copy, not this.
+
+   Both directories are checked at boot and **not created** — a typo'd path
+   springing into existence is how tier-2 audio lands on the container's
+   writable layer and vanishes at the next redeploy. Setting
+   `CHRONICLE_INBOX_DIR` without `CHRONICLE_AUDIO_DIR` is refused outright: a
+   watcher with nowhere to copy recordings to would record memos whose audio is
+   immediately `missing`.
 6. **Compose** — paste `compose.chronicle.yml`, set `CHRONICLE_OWNER_EMAIL` in
    `.env`, `docker compose up -d chronicle`. The service refuses to start
    without it: auth is unconditional (CHRN-71) and the owner is who the first

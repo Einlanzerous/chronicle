@@ -65,6 +65,19 @@ type Config struct {
 	// nothing writes audio yet, and a service that refuses to boot over a
 	// directory it has no use for would be a worse default than a warning.
 	AudioDir string
+
+	// InboxDir is the Copyparty-fed directory the watcher reads (CHRN-19),
+	// with one subdirectory per account. Absolute, and empty means no watcher
+	// runs at all — the Copyparty seam is one of two ingest paths and the
+	// service is useful without it.
+	InboxDir string
+
+	// WatchInterval is how often the inbox is rescanned; WatchSettle is how
+	// long a file must be untouched before it is read. Both have defaults in
+	// internal/watch and are here so a slow sync client can be accommodated
+	// without a rebuild.
+	WatchInterval time.Duration
+	WatchSettle   time.Duration
 }
 
 // SSOEnabled reports whether Cloudflare Access sign-in is configured.
@@ -135,6 +148,20 @@ func Load() (Config, error) {
 	c.AudioDir = strings.TrimSpace(os.Getenv("CHRONICLE_AUDIO_DIR"))
 	if c.AudioDir != "" && !filepath.IsAbs(c.AudioDir) {
 		return c, fmt.Errorf("config: CHRONICLE_AUDIO_DIR %q must be an absolute path", c.AudioDir)
+	}
+
+	c.InboxDir = strings.TrimSpace(os.Getenv("CHRONICLE_INBOX_DIR"))
+	if c.InboxDir != "" && !filepath.IsAbs(c.InboxDir) {
+		return c, fmt.Errorf("config: CHRONICLE_INBOX_DIR %q must be an absolute path", c.InboxDir)
+	}
+
+	c.WatchInterval, err = optionalDuration("CHRONICLE_WATCH_INTERVAL")
+	if err != nil {
+		return c, err
+	}
+	c.WatchSettle, err = optionalDuration("CHRONICLE_WATCH_SETTLE")
+	if err != nil {
+		return c, err
 	}
 
 	c.OwnerEmail = strings.ToLower(strings.TrimSpace(os.Getenv("CHRONICLE_OWNER_EMAIL")))
@@ -231,4 +258,20 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// optionalDuration reads a positive duration, or zero when unset. Zero means
+// "use the package default" rather than "no delay", which is why a negative or
+// unparseable value is an error instead of being clamped: a settle window
+// silently set to nothing is how a half-written upload becomes a second memo.
+func optionalDuration(name string) (time.Duration, error) {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("config: %s %q is not a positive duration", name, v)
+	}
+	return d, nil
 }
