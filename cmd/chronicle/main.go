@@ -227,6 +227,15 @@ func runServe(args []string) error {
 			}
 		}
 	}
+	if cfg.InboxDir == "" {
+		// Said out loud. Unset, no watcher is constructed and the configured
+		// branch's "watching for memos" line never appears — so an operator
+		// asking why nothing arrives from their phone has nothing to find.
+		// REVIEW.md §8: the estate's cautionary tale is an integration that was
+		// a silent no-op and looked like a working feature.
+		logger.Info("no inbox watcher: CHRONICLE_INBOX_DIR is unset, so the Copyparty path is off",
+			"ingest", "upload only")
+	}
 	if cfg.InboxDir != "" && cfg.AudioDir == "" {
 		// Refused rather than warned. Watching with no audio store would read
 		// every file, copy it nowhere, and record memos whose audio is

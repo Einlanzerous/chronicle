@@ -82,6 +82,13 @@ Lyceum's (SERV-60), and the database is provisioned the way Purser's is.
    fills, and `CHRONICLE_INBOX_DIR` can be left set: it costs one `readdir` per
    interval.
 
+   **Latency, as a number rather than a footnote.** With the shipped defaults —
+   `CHRONICLE_WATCH_SETTLE=10s`, `CHRONICLE_WATCH_INTERVAL=5s` — a file's worst
+   case from written to memo row is **about fifteen seconds**. The settle window
+   is the larger half and it is buying something: it is the guard that keeps a
+   half-written upload from being read at all. Lower it to trade latency back;
+   the guarantee against a partial read is the re-stat after the copy, not this.
+
    Both directories are checked at boot and **not created** — a typo'd path
    springing into existence is how tier-2 audio lands on the container's
    writable layer and vanishes at the next redeploy. Setting

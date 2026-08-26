@@ -26,8 +26,14 @@ type SeenFile struct {
 }
 
 // SeenIndex is the whole ledger, keyed by path. The watcher loads it once per
-// scan rather than issuing a query per file: the inbox is a few thousand files
-// at most and one round trip beats a few thousand.
+// scan rather than issuing a query per file: one round trip beats a few
+// thousand.
+//
+// Note what that does and does not bound. The INBOX is a few thousand files;
+// this table is keyed on path and would otherwise accumulate a row for every
+// path ever seen, including files long since deleted from the phone. The
+// watcher sweeps it (watch.reap) so the two stay the same order of magnitude —
+// without that, the size of this map tracks history rather than contents.
 type SeenIndex map[string]SeenFile
 
 // Matches reports whether the file at path with this size and mtime is one the
@@ -94,8 +100,11 @@ func (s *Store) MarkSeen(ctx context.Context, f SeenFile) error {
 }
 
 // ForgetSeen drops one path from the ledger, so the next scan reads it again.
-// The recovery lever: it costs a re-hash and nothing else, which is what makes
-// this table disposable in the sense the tier split means.
+//
+// Two callers: the watcher's periodic sweep of files that have left the inbox,
+// and a human with a psql prompt who wants one file re-read. It costs a re-hash
+// and nothing else — the re-delivery collapses on the content hash — which is
+// what makes this table disposable in the sense the tier split means.
 func (s *Store) ForgetSeen(ctx context.Context, path string) error {
 	if _, err := s.pool.Exec(ctx, `DELETE FROM tier1.watch_seen WHERE path = $1`, path); err != nil {
 		return fmt.Errorf("store: forget seen: %w", err)

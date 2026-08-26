@@ -103,14 +103,17 @@ func (l *fakeLedger) MarkSeen(_ context.Context, f store.SeenFile) error {
 	return nil
 }
 
+func (l *fakeLedger) ForgetSeen(_ context.Context, path string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.entries, path)
+	return nil
+}
+
 type fakeAccounts struct{ ids []uuid.UUID }
 
-func (a fakeAccounts) ListMembers(context.Context) ([]store.Member, error) {
-	out := make([]store.Member, 0, len(a.ids))
-	for _, id := range a.ids {
-		out = append(out, store.Member{User: store.User{ID: id}})
-	}
-	return out, nil
+func (a fakeAccounts) ListAccountIDs(context.Context) ([]uuid.UUID, error) {
+	return a.ids, nil
 }
 
 // --- harness ---------------------------------------------------------------
@@ -529,5 +532,100 @@ func TestNewValidatesItsOptions(t *testing.T) {
 	noAudio.Audio = nil
 	if _, err := New(noAudio); err == nil {
 		t.Error("New accepted a nil audio store")
+	}
+}
+
+// A mtime in the future must not mean "never, and silently". Copyparty
+// preserves the client's modification time, so a phone with a fast clock
+// supplies one — and `now - mtime < settle` is negative there, which held the
+// file back on every scan and logged nothing at all.
+func TestAFutureModificationTimeDoesNotStallAFileForever(t *testing.T) {
+	h := newHarness(t)
+	p := h.drop(t, "fast-clock.opus", "a recording from a phone that runs fast")
+
+	h.now = time.Now()
+	ahead := h.now.Add(10 * time.Minute)
+	if err := os.Chtimes(p, ahead, ahead); err != nil {
+		t.Fatal(err)
+	}
+
+	res := h.scan(t)
+	if res.Ingested != 1 {
+		t.Fatalf("scan = %+v, want the file read rather than held forever", res)
+	}
+	if h.ingest.count() != 1 {
+		t.Fatalf("memos = %d, want 1", h.ingest.count())
+	}
+	// Reading it early is safe because guard 3 — the re-stat through the open
+	// handle — is what actually catches a file still being written, and it does
+	// not depend on a clock.
+	if h.ingest.calls[0].ContentHash != hashOf("a recording from a phone that runs fast") {
+		t.Error("the memo was hashed over something other than the whole file")
+	}
+}
+
+// The ledger is keyed on path and nothing else ever removed a row, so it would
+// otherwise accumulate one for every path ever seen — including files long
+// since deleted from the phone.
+func TestTheLedgerIsSweptOfFilesThatHaveLeftTheInbox(t *testing.T) {
+	h := newHarness(t)
+	kept := h.drop(t, "kept.opus", "still here")
+	gone := h.drop(t, "gone.opus", "deleted from the phone later")
+
+	if res := h.scan(t); res.Ingested != 2 {
+		t.Fatalf("first scan = %+v", res)
+	}
+	if len(h.ledger.entries) != 2 {
+		t.Fatalf("ledger holds %d, want 2", len(h.ledger.entries))
+	}
+
+	if err := os.Remove(gone); err != nil {
+		t.Fatal(err)
+	}
+
+	// The sweep runs on a multiple of the interval, not every poll, so this
+	// counts across a full cycle rather than asserting on the last scan.
+	reaped := 0
+	for i := 0; i < reapEvery; i++ {
+		reaped += h.scan(t).Reaped
+	}
+	if reaped != 1 {
+		t.Fatalf("reaped %d across a full cycle, want the departed file's row dropped", reaped)
+	}
+	if _, still := h.ledger.entries[gone]; still {
+		t.Error("the ledger still holds a row for a file that is not on disk")
+	}
+	if _, ok := h.ledger.entries[kept]; !ok {
+		t.Error("the sweep dropped a row for a file that is still there")
+	}
+	// And the memos are untouched: the ledger is not where memos live.
+	if h.ingest.count() != 2 {
+		t.Errorf("memos = %d after a sweep, want 2", h.ingest.count())
+	}
+}
+
+// The sweep must decide from the filesystem, not from what this scan happened
+// to walk. A directory that stops resolving to an account must not cause its
+// files' rows to be forgotten on the strength of not having been visited.
+func TestTheSweepDoesNotDropRowsForFilesItSimplyDidNotWalk(t *testing.T) {
+	h := newHarness(t)
+	kept := h.drop(t, "kept.opus", "still here")
+	if res := h.scan(t); res.Ingested != 1 {
+		t.Fatalf("first scan = %+v", res)
+	}
+
+	// The account disappears, so its directory no longer resolves and nothing
+	// under it is walked — but the file is still on disk.
+	h.w.accounts = fakeAccounts{ids: nil}
+
+	reaped := 0
+	for i := 0; i < reapEvery; i++ {
+		reaped += h.scan(t).Reaped
+	}
+	if reaped != 0 {
+		t.Errorf("reaped %d, want nothing for a directory merely not walked", reaped)
+	}
+	if _, ok := h.ledger.entries[kept]; !ok {
+		t.Error("the sweep dropped a row for a file that is still on disk")
 	}
 }

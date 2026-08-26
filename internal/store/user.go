@@ -596,3 +596,31 @@ func (s *Store) ReplaceDeviceInvite(ctx context.Context, userID uuid.UUID) (stri
 	}
 	return plaintext, nil
 }
+
+// ListAccountIDs is every account's id and nothing else.
+//
+// Deliberately not ListMembers: that query LEFT JOINs tier2.user_tokens with
+// three FILTERed aggregates to build GET /admin/users, and CHRN-19's watcher
+// polls its caller every few seconds while using exactly one field. Loading
+// every account's email and display name into a background loop's memory on a
+// timer is cost and blast radius for nothing.
+func (s *Store) ListAccountIDs(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id FROM tier2.users`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list account ids: %w", err)
+	}
+	defer rows.Close()
+
+	var out []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("store: list account ids: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list account ids: %w", err)
+	}
+	return out, nil
+}

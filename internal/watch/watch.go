@@ -47,11 +47,16 @@ type Ingestor interface {
 type Ledger interface {
 	LoadSeen(ctx context.Context) (store.SeenIndex, error)
 	MarkSeen(ctx context.Context, f store.SeenFile) error
+	ForgetSeen(ctx context.Context, path string) error
 }
 
 // Directory resolves an inbox subdirectory name to an account.
+//
+// Ids only. The watcher polls this every interval and uses nothing else, so it
+// asks for nothing else — GET /admin/users' query loads every account's email
+// and display name, which has no business in a background loop's memory.
 type Directory interface {
-	ListMembers(ctx context.Context) ([]store.Member, error)
+	ListAccountIDs(ctx context.Context) ([]uuid.UUID, error)
 }
 
 const (
@@ -61,9 +66,20 @@ const (
 	DefaultInterval = 5 * time.Second
 
 	// DefaultSettle is how long a file must have been untouched before it is
-	// read. This is the first of two guards against reading a half-written
-	// upload, and the weaker one — see Scan for the second.
+	// read. This is the second of three guards against reading a half-written
+	// upload, and not the one that guarantees anything — see ingestFile.
+	//
+	// Worth stating as a number rather than leaving it to be worked out: with
+	// these two defaults a file's worst case from "written" to "a memo row" is
+	// settle + interval, about FIFTEEN SECONDS. The ticket asks for "within
+	// seconds", and this trades some of that for guard 2 doing its job. Lower
+	// CHRONICLE_WATCH_SETTLE to trade back.
 	DefaultSettle = 10 * time.Second
+
+	// reapEvery is how many scans pass between sweeps of the ledger. The sweep
+	// is a stat per stale row, which is cheap, but it has no reason to run on
+	// every poll — nothing depends on its promptness.
+	reapEvery = 60
 )
 
 // Options configures a Watcher. Only Root, Audio, Ingest, Ledger and Accounts
@@ -97,8 +113,14 @@ type Watcher struct {
 
 	// warned remembers which unresolvable directories have already been
 	// reported, so an inbox subdirectory that belongs to nobody does not
-	// produce one line every five seconds forever.
-	warned map[string]bool
+	// produce one line every five seconds forever. warnedFuture does the same
+	// for files whose mtime is ahead of our clock.
+	warned       map[string]bool
+	warnedFuture map[string]bool
+
+	// scans counts completed scans, so the ledger reaper can run on a multiple
+	// of the interval rather than on every poll.
+	scans int
 }
 
 // New validates the options and returns a Watcher.
@@ -115,16 +137,17 @@ func New(o Options) (*Watcher, error) {
 	}
 
 	w := &Watcher{
-		root:     filepath.Clean(o.Root),
-		audio:    o.Audio,
-		ingest:   o.Ingest,
-		ledger:   o.Ledger,
-		accounts: o.Accounts,
-		logger:   o.Logger,
-		interval: o.Interval,
-		settle:   o.Settle,
-		now:      o.Now,
-		warned:   map[string]bool{},
+		root:         filepath.Clean(o.Root),
+		audio:        o.Audio,
+		ingest:       o.Ingest,
+		ledger:       o.Ledger,
+		accounts:     o.Accounts,
+		logger:       o.Logger,
+		interval:     o.Interval,
+		settle:       o.Settle,
+		now:          o.Now,
+		warned:       map[string]bool{},
+		warnedFuture: map[string]bool{},
 	}
 	if w.logger == nil {
 		w.logger = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -149,6 +172,7 @@ type Result struct {
 	Skipped    int // already in the ledger
 	Unsettled  int // still being written, or too recently touched
 	Failed     int
+	Reaped     int // ledger rows dropped for files that have left the inbox
 }
 
 // Run scans until ctx is cancelled.
@@ -210,7 +234,50 @@ func (w *Watcher) Scan(ctx context.Context) (Result, error) {
 			return res, err
 		}
 	}
+
+	w.scans++
+	if w.scans%reapEvery == 0 {
+		res.Reaped = w.reap(ctx, seen)
+	}
 	return res, nil
+}
+
+// reap drops ledger rows for files that are no longer on disk.
+//
+// Without it the ledger is keyed on path and nothing ever removes anything, so
+// a phone that syncs and deletes over a couple of years leaves a table whose row
+// count tracks every path ever seen — and LoadSeen reads all of it into a map
+// every interval. Nothing breaks and nothing duplicates; it is simply unbounded
+// where the inbox is not, and "the inbox is a few thousand files" was never a
+// bound on this table.
+//
+// The decision to drop a row is made by os.Stat on that exact path, NOT by
+// whether this scan happened to walk it. A directory that stopped resolving to
+// an account, or one that was unreadable this time round, must not cause its
+// files' rows to be forgotten on the strength of not having been visited.
+//
+// Being wrong here is cheap in the direction it can be wrong: a forgotten row
+// costs one re-hash, and the re-delivery collapses on the content hash. That is
+// the same property that makes the ledger tier 1.
+func (w *Watcher) reap(ctx context.Context, seen store.SeenIndex) int {
+	reaped := 0
+	for path := range seen {
+		if err := ctx.Err(); err != nil {
+			return reaped
+		}
+		if _, err := os.Lstat(path); err == nil || !os.IsNotExist(err) {
+			continue
+		}
+		if err := w.ledger.ForgetSeen(ctx, path); err != nil {
+			w.logger.Warn("could not drop a stale ledger entry", "path", path, "error", err)
+			continue
+		}
+		reaped++
+	}
+	if reaped > 0 {
+		w.logger.Info("dropped ledger entries for files that have left the inbox", "count", reaped)
+	}
+	return reaped
 }
 
 // accountDirs maps each inbox subdirectory to the account it belongs to.
@@ -231,13 +298,13 @@ func (w *Watcher) accountDirs(ctx context.Context) (map[string]uuid.UUID, error)
 		return nil, fmt.Errorf("watch: reading inbox %s: %w", w.root, err)
 	}
 
-	members, err := w.accounts.ListMembers(ctx)
+	ids, err := w.accounts.ListAccountIDs(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("watch: listing accounts: %w", err)
 	}
-	byID := make(map[string]uuid.UUID, len(members))
-	for _, m := range members {
-		byID[m.ID.String()] = m.ID
+	byID := make(map[string]uuid.UUID, len(ids))
+	for _, id := range ids {
+		byID[id.String()] = id
 	}
 
 	out := map[string]uuid.UUID{}
@@ -302,7 +369,7 @@ func (w *Watcher) scanAccount(ctx context.Context, dir string, authorID uuid.UUI
 			res.Skipped++
 			return nil
 		}
-		if w.now().Sub(info.ModTime()) < w.settle {
+		if !w.settled(path, info) {
 			res.Unsettled++
 			return nil
 		}
@@ -329,6 +396,33 @@ func (w *Watcher) scanAccount(ctx context.Context, dir string, authorID uuid.UUI
 		}
 		return nil
 	})
+}
+
+// settled reports whether enough time has passed since the file was last
+// written to be worth reading it.
+//
+// A mtime in the FUTURE counts as settled, and that is the interesting case.
+// Copyparty preserves the client's modification time on upload, so a phone with
+// a fast clock supplies one — and the naive `now - mtime < settle` is negative
+// there, which is always less than settle, so the file was held back on every
+// scan and silently never ingested until wall-clock caught up. A memo that
+// never appears and never logs anything is the worst available outcome.
+//
+// Reading it early is safe: this window is guard 2, and guard 3 — the re-stat
+// through the open handle in ingestFile — is what actually catches a file that
+// is still being written. So the answer to a clock we cannot trust is to fall
+// through to the guard that does not depend on one.
+func (w *Watcher) settled(path string, info os.FileInfo) bool {
+	age := w.now().Sub(info.ModTime())
+	if age < 0 {
+		if !w.warnedFuture[path] {
+			w.warnedFuture[path] = true
+			w.logger.Warn("file's modification time is in the future; reading it now rather than waiting out the settle window",
+				"path", path, "mtime", info.ModTime(), "ahead_by", -age)
+		}
+		return true
+	}
+	return age >= w.settle
 }
 
 // isPartial reports names that are an upload in progress rather than a memo.
