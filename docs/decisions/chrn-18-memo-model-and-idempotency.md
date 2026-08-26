@@ -429,6 +429,22 @@ tier 2, and that is precisely what the role is guaranteed not to see. The
 invariant above does not depend on the answer. CHRN-52 should take the Scribe's
 role from E4 rather than from a premise stated here in passing.
 
+### [rev] Two consequences of review that E3 and E4 inherit
+
+**`AdvanceMemoState` is a compare-and-swap, not a setter.** The caller states the
+state it believes the memo is in and the update applies only if that still holds.
+This is not belt-and-braces over the trigger: the guard consults its edge list
+only when `NEW.state IS DISTINCT FROM OLD.state`, so a same-state write is
+invisible to it, and without the `from` predicate two workers could both claim
+one memo — measured, with the predicate removed, as six of six workers winning
+the same claim. §7's table already assigned claiming this shape; the first draft
+of the code did not implement it.
+
+**`state_reason` is replaced on every transition, not merged.** A memo released
+from a hold must not keep explaining why it was held. The consequence, which is
+easy to trip over: **a reason has to be re-supplied on any transition that should
+keep one**, `held → discarded` included. Passing `""` clears it.
+
 ## 8 · The schema
 
 Both tables are **tier 2** — authored, irreplaceable, not derivable. Migration
