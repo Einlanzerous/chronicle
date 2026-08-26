@@ -125,6 +125,29 @@ CREATE TABLE public.schema_migrations (
 
 
 --
+-- Name: watch_seen; Type: TABLE; Schema: tier1; Owner: -
+--
+
+CREATE TABLE tier1.watch_seen (
+    path text NOT NULL,
+    size_bytes bigint NOT NULL,
+    mtime timestamp with time zone NOT NULL,
+    content_hash text NOT NULL,
+    first_seen_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_seen_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT watch_seen_content_hash_check CHECK ((content_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT watch_seen_size_bytes_check CHECK ((size_bytes > 0))
+);
+
+
+--
+-- Name: TABLE watch_seen; Type: COMMENT; Schema: tier1; Owner: -
+--
+
+COMMENT ON TABLE tier1.watch_seen IS 'CHRN-19. What the Copyparty watcher has already read, so a rescan is not a re-delivery. Derived from the inbox and rebuilt by re-hashing it; holds no reference into tier 2.';
+
+
+--
 -- Name: memo_arrivals; Type: TABLE; Schema: tier2; Owner: -
 --
 
@@ -214,6 +237,14 @@ ALTER TABLE ONLY public.schema_migrations
 
 
 --
+-- Name: watch_seen watch_seen_pkey; Type: CONSTRAINT; Schema: tier1; Owner: -
+--
+
+ALTER TABLE ONLY tier1.watch_seen
+    ADD CONSTRAINT watch_seen_pkey PRIMARY KEY (path);
+
+
+--
 -- Name: memo_arrivals memo_arrivals_pkey; Type: CONSTRAINT; Schema: tier2; Owner: -
 --
 
@@ -259,6 +290,13 @@ ALTER TABLE ONLY tier2.users
 
 ALTER TABLE ONLY tier2.users
     ADD CONSTRAINT users_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: watch_seen_content_hash; Type: INDEX; Schema: tier1; Owner: -
+--
+
+CREATE INDEX watch_seen_content_hash ON tier1.watch_seen USING btree (content_hash);
 
 
 --
@@ -354,6 +392,13 @@ REVOKE USAGE ON SCHEMA public FROM PUBLIC;
 --
 
 GRANT ALL ON SCHEMA tier1 TO chronicle_tier1;
+
+
+--
+-- Name: TABLE watch_seen; Type: ACL; Schema: tier1; Owner: -
+--
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE tier1.watch_seen TO chronicle_tier1;
 
 
 --

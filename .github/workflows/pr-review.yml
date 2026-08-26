@@ -174,6 +174,12 @@ jobs:
       # ticket implementing each one must add its package here in the same PR;
       # `REVIEW.md` carries that as an always-check so the reviewer catches it
       # rather than relying on someone remembering.
+      #   internal/watch/       CHRN-19's Copyparty seam. It is the write path
+      #                         that CREATES tier-2 memos from files nobody
+      #                         authenticated, and the place a half-written
+      #                         upload turns into a second memo if the
+      #                         re-stat guard is ever weakened. Reads the
+      #                         inbox, writes tier 2.
       #   internal/audio/       CHRN-23's layout. Every audio path in the
       #                         system is derived here, and CHRN-22 unlinks
       #                         what this function names — so a bug here is
@@ -183,7 +189,7 @@ jobs:
       #                         same reason the note below gives: the package
       #                         that computes the path is as load-bearing as
       #                         the code that acts on it.
-      sensitive_paths: '^(internal/store/|internal/api/(session|cfaccess|ratelimit|router|storage)|internal/(invite|config|audio)/|cmd/chronicle/|migrations/|deploy/|scripts/|verify\.sh|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore)'
+      sensitive_paths: '^(internal/store/|internal/api/(session|cfaccess|ratelimit|router|storage)|internal/(invite|config|audio|watch)/|cmd/chronicle/|migrations/|deploy/|scripts/|verify\.sh|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore)'
 
       # No `docs_skip_extra`: this repo commits no knowledge-graph cache, and
       # the one generated artifact it does carry is excluded outright in

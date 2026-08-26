@@ -212,3 +212,66 @@ func TestLoadAudioDirMustBeAbsoluteOrAbsent(t *testing.T) {
 		}
 	})
 }
+
+// CHRN-19. The inbox is checked the same way as the audio root, and the two
+// watcher durations are refused rather than clamped when they are nonsense — a
+// settle window silently set to zero is how a half-written upload becomes a
+// second memo.
+func TestLoadWatcherSettings(t *testing.T) {
+	withOwner(t)
+	t.Setenv("CHRONICLE_DATABASE_URL", "postgres://x/y")
+
+	t.Run("absolute inbox and explicit durations", func(t *testing.T) {
+		t.Setenv("CHRONICLE_INBOX_DIR", "/data/chronicle/inbox")
+		t.Setenv("CHRONICLE_WATCH_INTERVAL", "2s")
+		t.Setenv("CHRONICLE_WATCH_SETTLE", "45s")
+		c, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if c.InboxDir != "/data/chronicle/inbox" {
+			t.Errorf("InboxDir = %q", c.InboxDir)
+		}
+		if c.WatchInterval != 2*time.Second || c.WatchSettle != 45*time.Second {
+			t.Errorf("interval/settle = %v/%v", c.WatchInterval, c.WatchSettle)
+		}
+	})
+
+	t.Run("unset durations mean the package default", func(t *testing.T) {
+		t.Setenv("CHRONICLE_INBOX_DIR", "")
+		t.Setenv("CHRONICLE_WATCH_INTERVAL", "")
+		t.Setenv("CHRONICLE_WATCH_SETTLE", "")
+		c, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if c.WatchInterval != 0 || c.WatchSettle != 0 {
+			t.Errorf("interval/settle = %v/%v, want zero so internal/watch supplies the default",
+				c.WatchInterval, c.WatchSettle)
+		}
+	})
+
+	for name, v := range map[string]string{
+		"zero":         "0s",
+		"negative":     "-5s",
+		"unparseable":  "soon",
+		"bare integer": "10",
+	} {
+		t.Run("settle refuses "+name, func(t *testing.T) {
+			t.Setenv("CHRONICLE_INBOX_DIR", "")
+			t.Setenv("CHRONICLE_WATCH_INTERVAL", "")
+			t.Setenv("CHRONICLE_WATCH_SETTLE", v)
+			if _, err := Load(); err == nil {
+				t.Errorf("Load accepted CHRONICLE_WATCH_SETTLE=%q", v)
+			}
+		})
+	}
+
+	t.Run("relative inbox is refused", func(t *testing.T) {
+		t.Setenv("CHRONICLE_WATCH_SETTLE", "")
+		t.Setenv("CHRONICLE_INBOX_DIR", "data/inbox")
+		if _, err := Load(); err == nil {
+			t.Error("Load accepted a relative inbox root")
+		}
+	})
+}
