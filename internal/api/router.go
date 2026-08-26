@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Einlanzerous/chronicle/internal/audio"
 	"github.com/Einlanzerous/chronicle/internal/store"
 )
 
@@ -71,6 +72,16 @@ type Deps struct {
 	// keying the sign-in rate limiter. Empty means trust nobody, which makes
 	// every request through Traefik share one bucket.
 	TrustedProxies []netip.Prefix
+
+	// Audio is the on-disk store of recordings (CHRN-23). Nil until
+	// CHRONICLE_AUDIO_DIR is set, and GET /admin/storage then answers 503
+	// naming the variable rather than reporting a corpus of zero -- "no audio
+	// configured" and "no audio yet" are different facts and must not render
+	// the same.
+	Audio *audio.Store
+
+	// Corpus is the database side of that report.
+	Corpus Corpus
 }
 
 // api holds what the handlers share.
@@ -82,6 +93,8 @@ type api struct {
 	secureCookies  bool
 	trustedProxies []netip.Prefix
 	signInLimiter  *ipRateLimiter
+	audio          *audio.Store
+	corpus         Corpus
 }
 
 // NewRouter builds the HTTP handler.
@@ -109,6 +122,8 @@ func NewRouter(d Deps) http.Handler {
 		secureCookies:  d.SecureCookies,
 		trustedProxies: d.TrustedProxies,
 		signInLimiter:  newIPRateLimiter(signInRateWindow, signInRateBurst),
+		audio:          d.Audio,
+		corpus:         d.Corpus,
 	}
 
 	mux := http.NewServeMux()
@@ -162,6 +177,10 @@ func NewRouter(d Deps) http.Handler {
 	mux.HandleFunc("GET /admin/users", a.requireOwner(a.handleAdminUserList))
 	mux.HandleFunc("POST /admin/users/{id}/invite", a.requireOwner(a.handleAdminUserInvite))
 	mux.HandleFunc("DELETE /admin/users/{id}", a.requireOwner(a.handleAdminUserDelete))
+
+	// What the corpus costs, and whether the disk agrees with the database
+	// (CHRN-23). A read: it reports orphans, it never deletes one.
+	mux.HandleFunc("GET /admin/storage", a.requireOwner(a.handleAdminStorage))
 
 	return requestLogger(d.Logger, mux)
 }

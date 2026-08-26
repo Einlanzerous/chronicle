@@ -171,3 +171,44 @@ func TestLoadNormalizesMobileBaseURL(t *testing.T) {
 		t.Errorf("MobileBaseURL = %q", c.MobileBaseURL)
 	}
 }
+
+// CHRN-23. The audio root is where tier-2 recordings live, so a value that
+// resolves differently depending on how the process was started is a corpus
+// that gets half-pruned.
+func TestLoadAudioDirMustBeAbsoluteOrAbsent(t *testing.T) {
+	withOwner(t)
+	t.Setenv("CHRONICLE_DATABASE_URL", "postgres://x/y")
+
+	t.Run("absolute", func(t *testing.T) {
+		t.Setenv("CHRONICLE_AUDIO_DIR", "/data/chronicle/audio")
+		c, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if c.AudioDir != "/data/chronicle/audio" {
+			t.Errorf("AudioDir = %q", c.AudioDir)
+		}
+	})
+
+	t.Run("relative is refused", func(t *testing.T) {
+		t.Setenv("CHRONICLE_AUDIO_DIR", "data/audio")
+		if _, err := Load(); err == nil {
+			t.Error("Load accepted a relative audio root")
+		}
+	})
+
+	// Unset is allowed and means "no audio store". Nothing writes recordings
+	// until CHRN-19 or CHRN-20 lands, so refusing to boot over a directory the
+	// binary has no use for yet would be the worse default; the storage report
+	// answers 503 naming the variable instead.
+	t.Run("unset is allowed", func(t *testing.T) {
+		t.Setenv("CHRONICLE_AUDIO_DIR", "")
+		c, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if c.AudioDir != "" {
+			t.Errorf("AudioDir = %q, want empty", c.AudioDir)
+		}
+	})
+}

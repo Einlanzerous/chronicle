@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -57,6 +58,13 @@ type Config struct {
 	// everything arriving through Traefik share a single bucket — serve()
 	// warns about that rather than leaving it to be discovered.
 	TrustedProxies []netip.Prefix
+
+	// AudioDir is the root of the on-disk store of recordings (CHRN-23).
+	// Absolute, and empty when unset -- the storage report then answers 503
+	// naming this variable. CHRN-19 and CHRN-20 are what make it required:
+	// nothing writes audio yet, and a service that refuses to boot over a
+	// directory it has no use for would be a worse default than a warning.
+	AudioDir string
 }
 
 // SSOEnabled reports whether Cloudflare Access sign-in is configured.
@@ -118,6 +126,15 @@ func Load() (Config, error) {
 		if err != nil || c.ShutdownGrace <= 0 {
 			return c, fmt.Errorf("config: CHRONICLE_SHUTDOWN_GRACE %q is not a positive duration", v)
 		}
+	}
+
+	// Absolute or nothing. A relative path resolves against the daemon's
+	// working directory, which nobody deploying this thinks about, and a
+	// corpus that lands somewhere different depending on how the process was
+	// started is a corpus that gets half-pruned.
+	c.AudioDir = strings.TrimSpace(os.Getenv("CHRONICLE_AUDIO_DIR"))
+	if c.AudioDir != "" && !filepath.IsAbs(c.AudioDir) {
+		return c, fmt.Errorf("config: CHRONICLE_AUDIO_DIR %q must be an absolute path", c.AudioDir)
 	}
 
 	c.OwnerEmail = strings.ToLower(strings.TrimSpace(os.Getenv("CHRONICLE_OWNER_EMAIL")))

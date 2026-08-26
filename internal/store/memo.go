@@ -401,3 +401,92 @@ func (s *Store) AdvanceMemoState(ctx context.Context, id uuid.UUID, from, to, re
 	}
 	return m, nil
 }
+
+// AudioRef is one memo's claim on a file: the two immutable columns
+// internal/audio derives a path from, plus the size ingest recorded.
+type AudioRef struct {
+	AuthorID    uuid.UUID
+	ContentHash string
+	ByteSize    int64
+}
+
+// AudioInventory is every memo whose audio should be on disk right now — that
+// is, every memo that has not been pruned.
+//
+// Pruned is audio_pruned_at IS NOT NULL, never a nulled path, because there is
+// no path column (§8 of the CHRN-18 decision). So this is the whole of the
+// database's expectation of the filesystem, and CHRN-23 reconciles against it.
+func (s *Store) AudioInventory(ctx context.Context) ([]AudioRef, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT author_id, content_hash, byte_size
+		  FROM tier2.memos
+		 WHERE audio_pruned_at IS NULL`)
+	if err != nil {
+		return nil, fmt.Errorf("store: audio inventory: %w", err)
+	}
+	defer rows.Close()
+
+	var out []AudioRef
+	for rows.Next() {
+		var r AudioRef
+		if err := rows.Scan(&r.AuthorID, &r.ContentHash, &r.ByteSize); err != nil {
+			return nil, fmt.Errorf("store: audio inventory: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: audio inventory: %w", err)
+	}
+	return out, nil
+}
+
+// CorpusStats is the database's account of what the corpus costs.
+type CorpusStats struct {
+	Memos        int64
+	AudioPresent int64
+	AudioPruned  int64
+
+	// RecordedBytes is the size ingest recorded for memos not yet pruned. It
+	// is what the disk SHOULD hold; the scan reports what it does hold, and
+	// the two differing is the finding.
+	RecordedBytes int64
+	// EverBytes counts pruned memos too — how much audio this corpus has
+	// carried, as opposed to how much it is carrying.
+	EverBytes int64
+
+	// The rolling window CHRN-22's 30-day default produces, which is the
+	// number the 340 MB projection is a projection OF.
+	WindowMemos int64
+	WindowBytes int64
+
+	OldestCapture *time.Time
+	NewestCapture *time.Time
+}
+
+// CorpusStats reports what the corpus costs, so nobody has to run du.
+//
+// The window is computed with the same 30-day interval CHRN-22 prunes on, and
+// deliberately from captured_at — the only clock that ticket may run from,
+// because it is the one a re-delivery cannot move (§4).
+func (s *Store) CorpusStats(ctx context.Context, window time.Duration) (CorpusStats, error) {
+	var c CorpusStats
+	err := s.pool.QueryRow(ctx, `
+		SELECT count(*),
+		       count(*) FILTER (WHERE audio_pruned_at IS NULL),
+		       count(*) FILTER (WHERE audio_pruned_at IS NOT NULL),
+		       coalesce(sum(byte_size) FILTER (WHERE audio_pruned_at IS NULL), 0),
+		       coalesce(sum(byte_size), 0),
+		       count(*) FILTER (WHERE captured_at > now() - $1::interval),
+		       coalesce(sum(byte_size) FILTER (WHERE captured_at > now() - $1::interval), 0),
+		       min(captured_at),
+		       max(captured_at)
+		  FROM tier2.memos`, window).
+		Scan(&c.Memos, &c.AudioPresent, &c.AudioPruned,
+			&c.RecordedBytes, &c.EverBytes,
+			&c.WindowMemos, &c.WindowBytes,
+			&c.OldestCapture, &c.NewestCapture)
+	if err != nil {
+		return c, fmt.Errorf("store: corpus stats: %w", err)
+	}
+	return c, nil
+}

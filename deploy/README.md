@@ -31,7 +31,7 @@ Lyceum's (SERV-60), and the database is provisioned the way Purser's is.
    no artifact to deploy. `:latest` follows `main`; a release-please `v*` tag
    publishes the semver tags.
 
-   **Check the package is pullable from this host before step 5.** A GHCR
+   **Check the package is pullable from this host before step 6.** A GHCR
    package created by a workflow's `GITHUB_TOKEN` is **private** by default, and
    `docker compose up` will fail on `pull access denied` rather than on anything
    informative. The estate does it both ways — `lyceum` and `argosy` answer an
@@ -43,7 +43,22 @@ Lyceum's (SERV-60), and the database is provisioned the way Purser's is.
    application has to exist before the AUD in `compose.chronicle.yml` means
    anything, and `check-edge-auth.sh` fails the config if a gated router has no
    matching `CF_ACCESS_AUD_MAP` entry.
-5. **Compose** — paste `compose.chronicle.yml`, set `CHRONICLE_OWNER_EMAIL` in
+5. **Audio directory** — `sudo mkdir -p /data/chronicle/audio`.
+
+   `CHRONICLE_AUDIO_DIR` points here and the service **refuses to boot if the
+   path is not readable** rather than creating it (CHRN-23). That is deliberate:
+   a directory that springs into existence on a typo is how tier-2 audio ends up
+   on the container's writable layer instead of the NVMe, which looks like it
+   works until the next redeploy takes the corpus with it. `/data` is the NVMe —
+   458 G with 256 G free — and the same volume Copyparty serves at `/w/hdd`,
+   which is why CHRN-19's watched folder will land under the same root.
+
+   `GET /admin/storage` (owner only, Access-gated host) reports what the corpus
+   costs and whether the disk and the database agree. Until CHRN-19 or CHRN-20
+   lands there is nothing writing audio, so it correctly reports an empty
+   corpus — which is a different answer from the 503 it gives when
+   `CHRONICLE_AUDIO_DIR` is unset.
+6. **Compose** — paste `compose.chronicle.yml`, set `CHRONICLE_OWNER_EMAIL` in
    `.env`, `docker compose up -d chronicle`. The service refuses to start
    without it: auth is unconditional (CHRN-71) and the owner is who the first
    invite belongs to.
@@ -52,11 +67,11 @@ Lyceum's (SERV-60), and the database is provisioned the way Purser's is.
    block**, not `.env` entries — they are identifiers and hostnames, not
    secrets, `check-edge-auth.sh` reads the AUD straight out of the file, and the
    team domain and AUD must be set together or `config.Load` refuses to serve.
-6. **First sign-in** — the first boot logs a single-use invite at `warn`:
+7. **First sign-in** — the first boot logs a single-use invite at `warn`:
    `docker compose logs chronicle | grep first-boot`. It expires in seven days
    and is never shown again; `docker compose exec chronicle chronicle
    mint-invite` issues another.
-7. **Traefik** — paste `traefik-chronicle.yml` (three routers, one service, one
+8. **Traefik** — paste `traefik-chronicle.yml` (three routers, one service, one
    middleware). Dynamic config; no restart needed. Then add
    `chronicle.zerogravity.industries` to the guard's `CF_ACCESS_AUD_MAP`, and
    run `./scripts/check-edge-auth.sh` in `construct-server`.
