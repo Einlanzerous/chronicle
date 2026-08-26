@@ -81,6 +81,28 @@ services:
       # request through the proxy shares one bucket and one attacker can lock
       # out every real user; the server warns at boot when that is the case.
       - CHRONICLE_TRUSTED_PROXIES=${CHRONICLE_TRUSTED_PROXIES:-172.16.0.0/12}
+      # CHRN-23. Where memo audio lives. Inside the container this is the same
+      # path as on the host so a path in a log line means one thing wherever it
+      # is read. /data is the NVMe (458 G, 256 G free) and is what Copyparty
+      # already serves at /w/hdd, which is why CHRN-19's watched folder lands
+      # under the same root.
+      #
+      # The service does NOT create this. A typo'd path springing into
+      # existence is how audio ends up on the container's writable layer
+      # instead of the volume, which looks like it works until the next
+      # redeploy takes the corpus with it — so an unreadable path fails the
+      # boot, loudly, rather than being invented.
+      - CHRONICLE_AUDIO_DIR=/data/chronicle/audio
+    volumes:
+      # rw: the only durable store for tier-2 audio, which nothing regenerates.
+      # Create it before the first boot or the container refuses to start:
+      #   sudo mkdir -p /data/chronicle/audio
+      #
+      # Ownership is not the gate today — deploy/Dockerfile sets no USER, so the
+      # process is root in the container. If that ever changes, this directory
+      # needs an owner to match, and the failure would be a write error on
+      # ingest rather than at boot.
+      - /data/chronicle:/data/chronicle
     networks:
       - construct_net
     depends_on:

@@ -174,7 +174,16 @@ jobs:
       # ticket implementing each one must add its package here in the same PR;
       # `REVIEW.md` carries that as an always-check so the reviewer catches it
       # rather than relying on someone remembering.
-      sensitive_paths: '^(internal/store/|internal/api/(session|cfaccess|ratelimit|router)|internal/(invite|config)/|cmd/chronicle/|migrations/|deploy/|scripts/|verify\.sh|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore)'
+      #   internal/audio/       CHRN-23's layout. Every audio path in the
+      #                         system is derived here, and CHRN-22 unlinks
+      #                         what this function names — so a bug here is
+      #                         either "the pruner cannot find the file" or
+      #                         "the pruner deletes a different one". It is
+      #                         listed ahead of the pruner existing for the
+      #                         same reason the note below gives: the package
+      #                         that computes the path is as load-bearing as
+      #                         the code that acts on it.
+      sensitive_paths: '^(internal/store/|internal/api/(session|cfaccess|ratelimit|router|storage)|internal/(invite|config|audio)/|cmd/chronicle/|migrations/|deploy/|scripts/|verify\.sh|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore)'
 
       # No `docs_skip_extra`: this repo commits no knowledge-graph cache, and
       # the one generated artifact it does carry is excluded outright in

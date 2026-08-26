@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Einlanzerous/chronicle/internal/api"
+	"github.com/Einlanzerous/chronicle/internal/audio"
 	"github.com/Einlanzerous/chronicle/internal/config"
 	"github.com/Einlanzerous/chronicle/internal/invite"
 	"github.com/Einlanzerous/chronicle/internal/store"
@@ -141,6 +142,15 @@ func runServe(args []string) error {
 			"globally rather than per client, because every request through Traefik shares its address",
 			"remedy", "set CHRONICLE_TRUSTED_PROXIES to the reverse proxy's address or subnet")
 	}
+	// The corpus has nowhere to live until this is set, so the storage report
+	// answers 503 and CHRN-19/20 will have nothing to write to. A warning
+	// rather than a refusal to boot: nothing writes audio yet, and crash-
+	// looping over an unused directory would be the worse default.
+	if cfg.AudioDir == "" {
+		logger.Warn("CHRONICLE_AUDIO_DIR is unset: there is no store for memo audio, "+
+			"and GET /admin/storage will report that rather than a corpus",
+			"remedy", "set CHRONICLE_AUDIO_DIR to an absolute path on the NVMe")
+	}
 	if !cfg.SecureCookies {
 		logger.Warn("CHRONICLE_COOKIE_SECURE is off: the session cookie will be sent over plain HTTP. " +
 			"This is only appropriate for a LAN install.")
@@ -155,6 +165,31 @@ func runServe(args []string) error {
 		MobileBaseURL:  cfg.MobileBaseURL,
 		SecureCookies:  cfg.SecureCookies,
 		TrustedProxies: cfg.TrustedProxies,
+	}
+	if cfg.AudioDir != "" {
+		audioStore, err := audio.New(cfg.AudioDir)
+		if err != nil {
+			return err
+		}
+		// Existence is checked here rather than created: a typo'd path
+		// springing into being is how audio ends up on the container's
+		// ephemeral layer instead of the NVMe, which looks like it works
+		// right up until a redeploy takes the corpus with it.
+		//
+		// IsDir, not merely "it stats". A path naming a regular file would
+		// otherwise boot cleanly and log "audio store ready", and the first
+		// sign of it would be a storage report claiming one stray named "."
+		// — which says nothing about the actual cause.
+		info, err := os.Stat(audioStore.Root())
+		if err != nil {
+			return fmt.Errorf("CHRONICLE_AUDIO_DIR %s: %w (create it, or mount the volume)", audioStore.Root(), err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("CHRONICLE_AUDIO_DIR %s is not a directory", audioStore.Root())
+		}
+		deps.Audio = audioStore
+		deps.Corpus = st
+		logger.Info("audio store ready", "root", audioStore.Root())
 	}
 	if cfg.SSOEnabled() {
 		deps.CFAccess = api.NewCFAccessVerifier(cfg.CFAccessTeamDomain, cfg.CFAccessAUD...)
