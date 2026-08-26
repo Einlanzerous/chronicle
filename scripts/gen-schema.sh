@@ -13,11 +13,12 @@
 # port Docker picks, removed on exit. Nothing you already have is reachable
 # from it, because the server did not exist until this script started.
 #
-# CI points it at the service container it already runs, which is the only
-# case that should be supplying a DSN:
-#
-#   SCHEMAGEN_SUPERUSER_DSN=postgres://postgres:pw@localhost:5432/postgres?sslmode=disable \
-#     scripts/gen-schema.sh
+# CI points it at the service container it already runs, and that is the only
+# case that should be supplying SCHEMAGEN_SUPERUSER_DSN at all. The invocation
+# is in `.github/workflows/ci.yml`, deliberately NOT repeated here: on this box
+# every plausible-looking host in an example DSN -- `localhost`, `127.0.0.1` --
+# is the shared Postgres, so a copy-pasteable one is the bug this script was
+# fixed for, printed one screen above the paragraph explaining it.
 #
 # A supplied server is INSPECTED BEFORE ANYTHING IS DROPPED, and the script
 # refuses to touch one holding a database it did not create. It used to open
