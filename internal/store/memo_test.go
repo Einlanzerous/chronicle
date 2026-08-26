@@ -95,13 +95,13 @@ func TestFourDeliveriesOneMemo(t *testing.T) {
 		}
 		if i == 0 {
 			first = res.Memo.ID
-			if res.Duplicate() {
-				t.Error("the first delivery reported itself a duplicate")
+			if res.Collapsed {
+				t.Error("the first delivery reported itself a collapse")
 			}
 		} else if res.Memo.ID != first {
 			t.Fatalf("delivery %d landed on memo %s, want %s", i, res.Memo.ID, first)
-		} else if !res.Duplicate() {
-			t.Errorf("delivery %d did not report as a duplicate", i)
+		} else if !res.Collapsed {
+			t.Errorf("delivery %d did not report as a collapse", i)
 		}
 		if want := i + 1; res.Deliveries != want {
 			t.Errorf("after delivery %d, Deliveries = %d, want %d", i, res.Deliveries, want)
@@ -169,6 +169,7 @@ func TestConcurrentRetriesOfOneKeyCollapse(t *testing.T) {
 	const n = 8
 	ids := make([]uuid.UUID, n)
 	errs := make([]error, n)
+	collapsed := make([]bool, n)
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
 		wg.Add(1)
@@ -178,11 +179,12 @@ func TestConcurrentRetriesOfOneKeyCollapse(t *testing.T) {
 				AuthorID: author, ContentHash: hash, ByteSize: 4096,
 				Source: SourceUpload, IdempotencyKey: "k-one-key-many-tries",
 			})
-			ids[i], errs[i] = res.Memo.ID, err
+			ids[i], errs[i], collapsed[i] = res.Memo.ID, err, res.Collapsed
 		}(i)
 	}
 	wg.Wait()
 
+	collapses := 0
 	for i, err := range errs {
 		if err != nil {
 			t.Fatalf("retry %d errored instead of returning its memo: %v", i, err)
@@ -190,6 +192,14 @@ func TestConcurrentRetriesOfOneKeyCollapse(t *testing.T) {
 		if ids[i] != ids[0] {
 			t.Errorf("retry %d got memo %s, want %s", i, ids[i], ids[0])
 		}
+		if collapsed[i] {
+			collapses++
+		}
+	}
+	// Exactly one of the racers created the memo; the other seven collapsed
+	// onto it and must each say so.
+	if collapses != n-1 {
+		t.Errorf("collapses reported = %d, want %d", collapses, n-1)
 	}
 	if got := countMemos(t, s, ctx); got != 1 {
 		t.Errorf("memos = %d, want 1", got)
@@ -229,6 +239,12 @@ func TestRetriesDoNotRewriteTheRow(t *testing.T) {
 		if again.Memo.ID != first.Memo.ID {
 			t.Fatalf("retry %d got a different memo", i)
 		}
+		// The write not happening is half of it. Decision §10 needs the retry
+		// to SAY it collapsed, or the "zero collapses where four were expected"
+		// alarm never fires.
+		if !again.Collapsed {
+			t.Errorf("retry %d did not report as a collapse", i)
+		}
 	}
 
 	if after := rowVersion(t, s, ctx, first.Memo.ID); after != before {
@@ -262,6 +278,9 @@ func TestRepeatedSightingWritesNothing(t *testing.T) {
 		if res.Deliveries != 1 {
 			t.Errorf("rescan %d: Deliveries = %d, want 1; a repeated sighting is not a delivery",
 				i, res.Deliveries)
+		}
+		if !res.Collapsed {
+			t.Errorf("rescan %d did not report as a collapse, so §10's log line would stay silent", i)
 		}
 	}
 	if after := rowVersion(t, s, ctx, first.Memo.ID); after != before {
@@ -325,7 +344,7 @@ func TestGuardRejectsFromRawSQL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ingest discardable: %v", err)
 	}
-	if _, err := s.AdvanceMemoState(ctx, discarded.Memo.ID, StateDiscarded, "test"); err != nil {
+	if _, err := s.AdvanceMemoState(ctx, discarded.Memo.ID, StateCaptured, StateDiscarded, "test"); err != nil {
 		t.Fatalf("discard: %v", err)
 	}
 
@@ -342,7 +361,7 @@ func TestGuardRejectsFromRawSQL(t *testing.T) {
 	}
 
 	// And the typed error, for the path that goes through Go.
-	if _, err := s.AdvanceMemoState(ctx, id, StateTranscribed, ""); !errors.Is(err, ErrIllegalTransition) {
+	if _, err := s.AdvanceMemoState(ctx, id, StateCaptured, StateTranscribed, ""); !errors.Is(err, ErrIllegalTransition) {
 		t.Errorf("AdvanceMemoState illegal edge = %v, want ErrIllegalTransition", err)
 	}
 }
@@ -366,11 +385,18 @@ func TestHoldSurvivesItsAudio(t *testing.T) {
 	}
 	id := res.Memo.ID
 
-	for _, to := range []string{StateQueued, StateTranscribing, StateTranscribed, StateHeld} {
-		if _, err := s.AdvanceMemoState(ctx, id, to, ""); err != nil {
-			t.Fatalf("advance to %s: %v", to, err)
+	walk := func(reason string, states ...string) {
+		t.Helper()
+		from := states[0]
+		for _, to := range states[1:] {
+			if _, err := s.AdvanceMemoState(ctx, id, from, to, reason); err != nil {
+				t.Fatalf("advance %s -> %s: %v", from, to, err)
+			}
+			from = to
 		}
 	}
+	walk("", StateCaptured, StateQueued, StateTranscribing, StateTranscribed)
+	walk("routing ambiguous", StateTranscribed, StateHeld)
 
 	// CHRN-22 prunes the audio while it sits held. The transcript stays.
 	if _, err := s.Pool().Exec(ctx,
@@ -379,14 +405,26 @@ func TestHoldSurvivesItsAudio(t *testing.T) {
 	}
 
 	// The release path, with no audio left to read.
+	from := StateHeld
 	for _, to := range []string{StateQueued, StateTranscribing, StateTranscribed, StateTriaged} {
-		m, err := s.AdvanceMemoState(ctx, id, to, "")
+		m, err := s.AdvanceMemoState(ctx, id, from, to, "")
 		if err != nil {
-			t.Fatalf("release to %s after the audio was pruned: %v", to, err)
+			t.Fatalf("release %s -> %s after the audio was pruned: %v", from, to, err)
 		}
 		if !m.AudioPruned() {
 			t.Fatalf("audio_pruned_at was cleared by the move to %s", to)
 		}
+		from = to
+	}
+
+	// Releasing a hold clears the reason it was held for. Left merged, a memo
+	// that is no longer held still explains why it was.
+	final, err := s.GetMemo(ctx, id)
+	if err != nil {
+		t.Fatalf("GetMemo: %v", err)
+	}
+	if final.StateReason != nil {
+		t.Errorf("state_reason = %q after release, want cleared", *final.StateReason)
 	}
 }
 
@@ -476,7 +514,7 @@ func TestRetentionRatchet(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ingest: %v", err)
 		}
-		if _, err := s.AdvanceMemoState(ctx, res.Memo.ID, StateDiscarded, "user asked"); err != nil {
+		if _, err := s.AdvanceMemoState(ctx, res.Memo.ID, StateCaptured, StateDiscarded, "user asked"); err != nil {
 			t.Fatalf("discard: %v", err)
 		}
 
@@ -621,4 +659,92 @@ func TestTier1RoleCannotReachMemos(t *testing.T) {
 		t.Errorf("tier-1 write failed with %v; want a permission denial", err)
 	}
 	_ = s
+}
+
+// The claim primitive. Decision §7 assigns claiming to a compare-and-swap so
+// two workers cannot both take one memo — and the trigger cannot supply that on
+// its own, because its edge check is skipped when the state does not change.
+func TestClaimIsCompareAndSwap(t *testing.T) {
+	s, ctx := newTestStore(t)
+	author := newAuthor(t, s, ctx, "claim@x")
+
+	res, err := s.IngestMemo(ctx, Arrival{
+		AuthorID: author, ContentHash: hashOf("one memo, many workers"), ByteSize: 12,
+		Source: SourceUpload, IdempotencyKey: "k-claimclaimclaim",
+	})
+	if err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	id := res.Memo.ID
+	if _, err := s.AdvanceMemoState(ctx, id, StateCaptured, StateQueued, ""); err != nil {
+		t.Fatalf("queue: %v", err)
+	}
+
+	const workers = 6
+	won := make([]bool, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := s.AdvanceMemoState(ctx, id, StateQueued, StateTranscribing, "")
+			won[i] = err == nil
+		}(i)
+	}
+	wg.Wait()
+
+	claims := 0
+	for _, w := range won {
+		if w {
+			claims++
+		}
+	}
+	if claims != 1 {
+		t.Errorf("%d workers claimed the same memo, want exactly 1", claims)
+	}
+
+	// And a stale `from` is refused with the reason, not silently ignored.
+	_, err = s.AdvanceMemoState(ctx, id, StateQueued, StateTranscribing, "")
+	if !errors.Is(err, ErrIllegalTransition) {
+		t.Errorf("stale claim = %v, want ErrIllegalTransition", err)
+	}
+	if err != nil && !strings.Contains(err.Error(), StateTranscribing) {
+		t.Errorf("error %q does not say what state the memo is actually in", err)
+	}
+}
+
+// A malformed arrival is a caller's mistake, so it must be ErrInvalidInput —
+// which the handler answers 4xx to — rather than a column CHECK surfacing as a
+// generic error and becoming a 500.
+func TestMalformedArrivalIsACallerError(t *testing.T) {
+	s, ctx := newTestStore(t)
+	author := newAuthor(t, s, ctx, "malformed@x")
+	good := Arrival{
+		AuthorID: author, ContentHash: hashOf("fine"), ByteSize: 10,
+		Source: SourceUpload, IdempotencyKey: "k-aaaaaaaaaaaaaaaa",
+	}
+
+	cases := map[string]func(*Arrival){
+		"empty hash":     func(a *Arrival) { a.ContentHash = "" },
+		"short hash":     func(a *Arrival) { a.ContentHash = "abc123" },
+		"uppercase hex":  func(a *Arrival) { a.ContentHash = strings.ToUpper(hashOf("fine")) },
+		"non-hex":        func(a *Arrival) { a.ContentHash = strings.Repeat("z", 64) },
+		"zero bytes":     func(a *Arrival) { a.ByteSize = 0 },
+		"negative bytes": func(a *Arrival) { a.ByteSize = -1 },
+		"no author":      func(a *Arrival) { a.AuthorID = uuid.Nil },
+		"unknown source": func(a *Arrival) { a.Source = "carrier-pigeon" },
+		"bad retention":  func(a *Arrival) { a.Retention = "eventually" },
+	}
+	for name, break_ := range cases {
+		t.Run(name, func(t *testing.T) {
+			bad := good
+			break_(&bad)
+			if _, err := s.IngestMemo(ctx, bad); !errors.Is(err, ErrInvalidInput) {
+				t.Errorf("err = %v, want ErrInvalidInput", err)
+			}
+		})
+	}
+	if n := countMemos(t, s, ctx); n != 0 {
+		t.Errorf("memos = %d, want 0: a rejected arrival created a row", n)
+	}
 }

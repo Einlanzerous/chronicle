@@ -676,6 +676,28 @@ discovered in the corpus months later:
 No transcript text, no filename beyond the memo id, nothing authored, per
 `REVIEW.md` §8.
 
+### [rev] Who emits it, and the trap found in review
+
+**CHRN-18 provides the signal; CHRN-19 and CHRN-20 emit the line.** `store` holds
+no logger and gaining one would drag the composition root into a model ticket, so
+the ingest paths log it at the point they already have a request or scan context.
+Naming the owner here because the first draft deferred this without saying so,
+and an observability commitment nobody owns is one that quietly does not happen.
+
+The signal is `IngestResult.Collapsed`, **not** `Deliveries > 1`. The reviewer
+caught the first draft inferring one from the other, and the inference is wrong
+in the worst available direction: the two commonest collapses — a same-key retry
+and a repeated sighting — deliberately write *no arrival row*, so the count stays
+at 1 through eight retries and `Deliveries > 1` reports **false** for exactly the
+cases this section exists to make visible. The alarm above is "zero collapses
+where four were expected", so a duplicate-detector that under-reports duplicates
+would have made that alarm fire on healthy traffic and stay silent on the failure
+— worse than no telemetry, because it would have been believed.
+
+`Collapsed` is set where the collapse actually happens: on the same-key early
+return, when the arrival insert affects zero rows, and when the memo already
+carried an arrival.
+
 ## 11 · [rev] `internal/model/` — and fixing the sentence, not working around it
 
 `CLAUDE.md` describes `internal/model/` as domain types 1:1 with the schema. That

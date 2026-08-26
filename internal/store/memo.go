@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/google/uuid"
@@ -58,6 +59,9 @@ const (
 	pgMemoImmutable       = "CH002"
 	pgMemoBadInitialState = "CH003"
 )
+
+// contentHashPattern mirrors the column CHECK: SHA-256 as lowercase hex.
+var contentHashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // ErrKeyReused is returned when an idempotency key is presented again with
 // different bytes behind it. It is a client bug — a key recycled across
@@ -135,13 +139,20 @@ type Arrival struct {
 // IngestResult is what one delivery produced.
 type IngestResult struct {
 	Memo Memo
-	// Deliveries is how many arrivals this memo now has. More than one means
-	// this delivery collapsed into an existing memo rather than creating one.
+	// Deliveries is how many arrivals this memo now has — the arrival_count
+	// decision §10 wants on the log line.
 	Deliveries int
+	// Collapsed reports that this delivery did not create a memo: these bytes
+	// were already known.
+	//
+	// It cannot be derived from Deliveries. The two commonest collapses — a
+	// same-key retry and a repeated sighting of one file — deliberately write
+	// no arrival row, so the count stays at 1 through eight retries. Inferring
+	// "duplicate" from Deliveries > 1 therefore reports false for exactly the
+	// cases §10 exists to make visible, and the "zero collapses where four were
+	// expected" alarm would itself be the thing that is broken.
+	Collapsed bool
 }
-
-// Duplicate reports whether this delivery was a repeat of one already recorded.
-func (r IngestResult) Duplicate() bool { return r.Deliveries > 1 }
 
 const memoColumns = `id, author_id, content_hash, byte_size, captured_at,
 	state, state_reason, retention, audio_pruned_at,
@@ -190,6 +201,16 @@ func (s *Store) IngestMemo(ctx context.Context, in Arrival) (IngestResult, error
 		in.Retention != RetentionForever {
 		return IngestResult{}, fmt.Errorf("%w: unknown retention %q", ErrInvalidInput, in.Retention)
 	}
+	// Checked here as well as by the column CHECK, because a malformed hash or
+	// a zero length is a caller's mistake in the same way a bad source is. Left
+	// to the constraint it would arrive as a generic wrapped error and the
+	// upload handler would answer 500 to what is a client bug.
+	if !contentHashPattern.MatchString(in.ContentHash) {
+		return IngestResult{}, fmt.Errorf("%w: content hash must be 64 lowercase hex characters", ErrInvalidInput)
+	}
+	if in.ByteSize <= 0 {
+		return IngestResult{}, fmt.Errorf("%w: byte size must be positive, got %d", ErrInvalidInput, in.ByteSize)
+	}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -228,6 +249,7 @@ func (s *Store) IngestMemo(ctx context.Context, in Arrival) (IngestResult, error
 			if err != nil {
 				return IngestResult{}, err
 			}
+			res.Collapsed = true
 			if err := tx.Commit(ctx); err != nil {
 				return IngestResult{}, fmt.Errorf("store: ingest memo: %w", err)
 			}
@@ -279,11 +301,12 @@ func (s *Store) IngestMemo(ctx context.Context, in Arrival) (IngestResult, error
 	// a repeated sighting of one file is absorbed while a repeated KEY still
 	// raises — with the advisory lock held, one reaching here is a bug rather
 	// than a race, and swallowing it would hide that.
-	if _, err := tx.Exec(ctx, `
+	tag, err := tx.Exec(ctx, `
 		INSERT INTO tier2.memo_arrivals (memo_id, author_id, source, idempotency_key, source_ref)
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (memo_id, source, source_ref) WHERE idempotency_key IS NULL DO NOTHING`,
-		memoID, in.AuthorID, in.Source, nullable(in.IdempotencyKey), nullable(in.SourceRef)); err != nil {
+		memoID, in.AuthorID, in.Source, nullable(in.IdempotencyKey), nullable(in.SourceRef))
+	if err != nil {
 		return IngestResult{}, fmt.Errorf("store: ingest memo: record arrival: %w", err)
 	}
 
@@ -291,6 +314,9 @@ func (s *Store) IngestMemo(ctx context.Context, in Arrival) (IngestResult, error
 	if err != nil {
 		return IngestResult{}, err
 	}
+	// Absorbed by the sighting index (nothing written), or a fresh arrival that
+	// found the memo already carrying one. Either way these bytes were known.
+	res.Collapsed = tag.RowsAffected() == 0 || res.Deliveries > 1
 	if err := tx.Commit(ctx); err != nil {
 		return IngestResult{}, fmt.Errorf("store: ingest memo: %w", err)
 	}
@@ -327,19 +353,39 @@ func (s *Store) GetMemo(ctx context.Context, id uuid.UUID) (Memo, error) {
 	return m, nil
 }
 
-// AdvanceMemoState moves a memo along the state machine. This is the only write
-// path for memos.state in Go — the edges themselves are enforced by the trigger,
-// so this exists to give the refusal a typed error rather than to be the check.
-// reason is stored for the states that want one ('held', a failed decode) and
-// may be empty.
-func (s *Store) AdvanceMemoState(ctx context.Context, id uuid.UUID, to, reason string) (Memo, error) {
+// AdvanceMemoState moves a memo from one state to the next. It is a
+// compare-and-swap: the caller states the state it believes the memo is in, and
+// the update applies only if that still holds.
+//
+// The `from` predicate is not redundant with the trigger. The guard only
+// consults its edge list when NEW.state IS DISTINCT FROM OLD.state, so a
+// same-state write is invisible to it — without `from`, two E3 workers could
+// both call AdvanceMemoState(id, StateQueued, StateTranscribing, "") on one
+// memo, the second would re-evaluate after the first released the row lock, see
+// 'transcribing' -> 'transcribing', pass the guard untested, and both would
+// transcribe. Decision §7 assigns claiming to exactly this shape.
+//
+// reason replaces state_reason outright rather than merging: a memo released
+// from a hold must not keep carrying why it was held, or the UI explains a hold
+// that is over.
+func (s *Store) AdvanceMemoState(ctx context.Context, id uuid.UUID, from, to, reason string) (Memo, error) {
 	m, err := scanMemo(s.pool.QueryRow(ctx, `
 		UPDATE tier2.memos
-		   SET state = $2, state_reason = COALESCE($3, state_reason)
-		 WHERE id = $1
-		RETURNING `+memoColumns, id, to, nullable(reason)))
+		   SET state = $3, state_reason = $4
+		 WHERE id = $1 AND state = $2
+		RETURNING `+memoColumns, id, from, to, nullable(reason)))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Memo{}, ErrNotFound
+		// Either there is no such memo, or it moved out from under the caller.
+		// They are different answers and the caller needs to tell them apart.
+		var current string
+		switch e := s.pool.QueryRow(ctx,
+			`SELECT state FROM tier2.memos WHERE id = $1`, id).Scan(&current); {
+		case errors.Is(e, pgx.ErrNoRows):
+			return Memo{}, ErrNotFound
+		case e != nil:
+			return Memo{}, fmt.Errorf("store: advance memo state: %w", e)
+		}
+		return Memo{}, fmt.Errorf("%w: memo is in state %q, not %q", ErrIllegalTransition, current, from)
 	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
