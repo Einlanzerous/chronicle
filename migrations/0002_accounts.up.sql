@@ -63,9 +63,15 @@ INSERT INTO tier2.users (email, display_name, is_owner)
 SELECT 'owner@localhost', 'Owner', TRUE
 WHERE NOT EXISTS (SELECT 1 FROM tier2.users);
 
--- Redundant against 0001 (chronicle_tier1 holds no USAGE on this schema), and
--- stated anyway: these are the two tables whose exposure would matter most,
--- and an explicit REVOKE makes a loosened grant show up as a schema.sql diff
--- rather than as an absence nobody notices.
+-- Redundant against 0001 — chronicle_tier1 holds no USAGE on schema tier2 —
+-- and stated anyway as documentation of intent, at the point where the tier
+-- boundary is defined and on the two tables whose exposure would matter most.
+--
+-- It does NOT make a later loosened grant appear in schema.sql, which is what
+-- this comment used to claim (CHRN-78). pg_dump emits only non-default ACLs,
+-- so revoking a privilege the role never held leaves nothing to emit — which
+-- is why schema.sql carries no REVOKE for tier2.users at all. A loosened GRANT
+-- is a non-default ACL and shows up in the diff on its own, with or without
+-- these two lines. 0003 states it this way; this is 0002 catching up.
 REVOKE ALL ON tier2.users FROM chronicle_tier1;
 REVOKE ALL ON tier2.user_tokens FROM chronicle_tier1;
