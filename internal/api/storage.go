@@ -37,9 +37,13 @@ type diskReport struct {
 	// They are never counted as corpus and never offered to the pruner.
 	StraySample []string `json:"stray_sample,omitempty"`
 
+	// No omitempty on the two figures: a full volume has FreeBytes == 0, and
+	// omitempty would delete the field at exactly the moment it matters most,
+	// leaving "volume_known": true beside no measurement. VolumeKnown is what
+	// separates "not measured" from "measured as zero" — let it do that job.
 	VolumeKnown bool  `json:"volume_known"`
-	VolumeTotal int64 `json:"volume_total_bytes,omitempty"`
-	VolumeFree  int64 `json:"volume_free_bytes,omitempty"`
+	VolumeTotal int64 `json:"volume_total_bytes"`
+	VolumeFree  int64 `json:"volume_free_bytes"`
 }
 
 type corpusReport struct {
@@ -71,8 +75,11 @@ type reconReport struct {
 	MissingBytes  int64    `json:"missing_bytes"`
 	MissingSample []string `json:"missing_sample,omitempty"`
 
-	Mismatched       int      `json:"mismatched"`
-	MismatchedSample []string `json:"mismatched_sample,omitempty"`
+	Mismatched int `json:"mismatched"`
+	// The sample carries both sizes. Without them a 5-against-4096 truncation
+	// and a 4097-against-4096 rounding read identically, and those are not the
+	// same finding.
+	MismatchedSample []mismatchJSON `json:"mismatched_sample,omitempty"`
 }
 
 // handleAdminStorage answers "what does the corpus cost, and does the disk
@@ -152,7 +159,7 @@ func (a *api) handleAdminStorage(w http.ResponseWriter, r *http.Request) {
 			MissingBytes:     rec.MissingBytes,
 			MissingSample:    firstN(refStrings(rec.Missing), listSample),
 			Mismatched:       len(rec.Mismatched),
-			MismatchedSample: firstN(mismatchStrings(rec.Mismatched), listSample),
+			MismatchedSample: firstNMismatch(mismatchJSONs(rec.Mismatched), listSample),
 		},
 	}
 
@@ -189,10 +196,28 @@ func refStrings(refs []audio.Ref) []string {
 	return out
 }
 
-func mismatchStrings(ms []audio.Mismatch) []string {
-	out := make([]string, 0, len(ms))
+// mismatchJSON is a mismatch with the numbers that make it one.
+type mismatchJSON struct {
+	Ref      string `json:"ref"`
+	OnDisk   int64  `json:"on_disk_bytes"`
+	Recorded int64  `json:"recorded_bytes"`
+}
+
+func mismatchJSONs(ms []audio.Mismatch) []mismatchJSON {
+	out := make([]mismatchJSON, 0, len(ms))
 	for _, m := range ms {
-		out = append(out, m.Ref.AuthorID.String()+"/"+m.Ref.ContentHash)
+		out = append(out, mismatchJSON{
+			Ref:      m.Ref.AuthorID.String() + "/" + m.Ref.ContentHash,
+			OnDisk:   m.OnDisk,
+			Recorded: m.Recorded,
+		})
 	}
 	return out
+}
+
+func firstNMismatch(s []mismatchJSON, n int) []mismatchJSON {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }

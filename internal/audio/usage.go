@@ -103,6 +103,17 @@ type Reconciliation struct {
 
 	// Mismatched is a third state that is neither: the file exists but is not
 	// the size that was ingested. A truncated write, or an edit in place.
+	//
+	// CHRN-21 MUST SETTLE THIS BEFORE IT NORMALISES ANYTHING. byte_size is
+	// "the bytes exactly as they arrived" and 0003's trigger refuses to move
+	// it (CH002), while the layout gives a memo exactly one path. So if
+	// Chronicle ever rewrites the audio in place, every successfully
+	// normalised memo becomes a permanent `mismatched` — the state meaning
+	// "something corrupted your audio" would be the steady state, which is
+	// the false alarm this three-way split exists to avoid. Either the
+	// normalised size gets its own column, or normalised memos are excluded
+	// from the size comparison, or the decode does not happen here at all.
+	// They are not equivalent; the choice belongs to CHRN-21.
 	Mismatched []Mismatch
 }
 

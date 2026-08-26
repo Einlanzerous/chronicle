@@ -109,6 +109,9 @@ func TestStorageReportReconcilesDiskAgainstTheDatabase(t *testing.T) {
 	writeRecording(t, root, author, orphanHash, 64)
 	// Expected and absent — the direction that matters.
 	missingHash := "2222222222222222222222222222222222222222222222222222222222222222"
+	// Present, but not the size ingest recorded.
+	truncHash := "3333333333333333333333333333333333333333333333333333333333333333"
+	writeRecording(t, root, author, truncHash, 5)
 	// Something this layout did not write.
 	if err := os.WriteFile(filepath.Join(root, "notes.txt"), make([]byte, 9), 0o644); err != nil {
 		t.Fatal(err)
@@ -118,6 +121,7 @@ func TestStorageReportReconcilesDiskAgainstTheDatabase(t *testing.T) {
 		inv: []store.AudioRef{
 			{AuthorID: author, ContentHash: testHash, ByteSize: 100},
 			{AuthorID: author, ContentHash: missingHash, ByteSize: 4096},
+			{AuthorID: author, ContentHash: truncHash, ByteSize: 4096},
 		},
 		stats: store.CorpusStats{
 			Memos: 3, AudioPresent: 2, AudioPruned: 1,
@@ -136,8 +140,18 @@ func TestStorageReportReconcilesDiskAgainstTheDatabase(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 
-	if got.Disk.Files != 2 || got.Disk.Bytes != 164 {
-		t.Errorf("disk = %d files / %d bytes, want 2 / 164", got.Disk.Files, got.Disk.Bytes)
+	if got.Disk.Files != 3 || got.Disk.Bytes != 169 {
+		t.Errorf("disk = %d files / %d bytes, want 3 / 169", got.Disk.Files, got.Disk.Bytes)
+	}
+	// A mismatch is reported with BOTH numbers. Without them a 5-against-4096
+	// truncation and a 4097-against-4096 rounding read identically.
+	if got.Reconciliation.Mismatched != 1 || len(got.Reconciliation.MismatchedSample) != 1 {
+		t.Fatalf("mismatched = %d / sample %v, want 1",
+			got.Reconciliation.Mismatched, got.Reconciliation.MismatchedSample)
+	}
+	m := got.Reconciliation.MismatchedSample[0]
+	if m.OnDisk != 5 || m.Recorded != 4096 || m.Ref != author.String()+"/"+truncHash {
+		t.Errorf("mismatch sample = %+v, want 5 on disk against 4096 recorded", m)
 	}
 	if got.Disk.Strays != 1 || got.Disk.StrayBytes != 9 {
 		t.Errorf("strays = %d / %d bytes, want 1 / 9", got.Disk.Strays, got.Disk.StrayBytes)
@@ -145,6 +159,21 @@ func TestStorageReportReconcilesDiskAgainstTheDatabase(t *testing.T) {
 	if got.Reconciliation.Orphans != 1 || got.Reconciliation.OrphanBytes != 64 {
 		t.Errorf("orphans = %d / %d bytes, want 1 / 64",
 			got.Reconciliation.Orphans, got.Reconciliation.OrphanBytes)
+	}
+	if got.Disk.VolumeKnown {
+		// The two figures must be PRESENT even at zero. omitempty on an int64
+		// would delete volume_free_bytes exactly when the disk is full, and a
+		// consumer would read a full disk as an unmeasured one.
+		raw := map[string]any{}
+		if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+			t.Fatal(err)
+		}
+		disk := raw["disk"].(map[string]any)
+		for _, k := range []string{"volume_free_bytes", "volume_total_bytes"} {
+			if _, ok := disk[k]; !ok {
+				t.Errorf("%s is absent while volume_known is true", k)
+			}
+		}
 	}
 	if got.Reconciliation.Missing != 1 || got.Reconciliation.MissingBytes != 4096 {
 		t.Errorf("missing = %d / %d bytes, want 1 / 4096",

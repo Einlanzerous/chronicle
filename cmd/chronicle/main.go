@@ -175,8 +175,17 @@ func runServe(args []string) error {
 		// springing into being is how audio ends up on the container's
 		// ephemeral layer instead of the NVMe, which looks like it works
 		// right up until a redeploy takes the corpus with it.
-		if _, err := os.Stat(audioStore.Root()); err != nil {
+		//
+		// IsDir, not merely "it stats". A path naming a regular file would
+		// otherwise boot cleanly and log "audio store ready", and the first
+		// sign of it would be a storage report claiming one stray named "."
+		// — which says nothing about the actual cause.
+		info, err := os.Stat(audioStore.Root())
+		if err != nil {
 			return fmt.Errorf("CHRONICLE_AUDIO_DIR %s: %w (create it, or mount the volume)", audioStore.Root(), err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("CHRONICLE_AUDIO_DIR %s is not a directory", audioStore.Root())
 		}
 		deps.Audio = audioStore
 		deps.Corpus = st
