@@ -123,6 +123,14 @@ jobs:
       # the result to match what is committed. This catches both halves of the
       # drift: a migration added without regenerating, and a hand-edit of the
       # generated file.
+      #
+      # This is the one place that should still hand the script a DSN: the
+      # service container above is this job's own and holds nothing else, and
+      # supplying it keeps CHRN-77's guard on the CI path rather than only on
+      # the developer path. The guard refuses any server holding a database it
+      # did not create, so ADDING A DATABASE TO THE SERVICE CONTAINER ABOVE
+      # WILL FAIL THIS JOB. Give the job a second service rather than weakening
+      # the check. Run without the DSN and the script brings its own Postgres.
       - name: Regenerate schema.sql
         env:
           SCHEMAGEN_SUPERUSER_DSN: postgres://postgres:ci-not-a-secret@localhost:5432/postgres?sslmode=disable
