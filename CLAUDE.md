@@ -16,8 +16,11 @@ the two namespaces would collide.
 - `cmd/chronicle/` — entrypoint + subcommands (`serve`, `migrate`, `version`).
   Composition root: `setup()` wires store + services + router.
 - `internal/config/` — env-only config, `CHRONICLE_`-prefixed.
-- `internal/model/` — domain types, 1:1 with the schema.
-- `internal/store/` — pgx pool, embedded migrator, repo queries.
+- `internal/store/` — pgx pool, embedded migrator, repo queries, and the
+  domain types themselves. Types sit beside the queries that return them
+  rather than in a separate `internal/model/`: CHRN-71 put `User` in
+  `user.go` and CHRN-18 put `Memo` in `memo.go`, and a types-only package
+  with two files in it earns nothing.
 - `internal/api/` — HTTP surface.
 - `migrations/` — `NNNN_name.up.sql` / `.down.sql`, embedded, auto-applied on boot.
 - `deploy/` — compose fragment and Traefik labels.

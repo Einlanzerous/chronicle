@@ -301,7 +301,11 @@ func (s *Store) UpdateDisplayName(ctx context.Context, id uuid.UUID, name string
 }
 
 // DeleteUser removes an account and, by cascade, its credentials. The owner
-// cannot be removed.
+// cannot be removed, and neither can an account the corpus references: memos
+// are authored and irreplaceable, so tier2.memos holds author_id ON DELETE
+// RESTRICT and the 23503 that raises becomes ErrAuthorHasMemos rather than a
+// generic failure. Deciding an author's memos is a conversation, not a button
+// — see docs/decisions/chrn-18-memo-model-and-idempotency.md.
 func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
 	var isOwner bool
 	err := s.pool.QueryRow(ctx, `SELECT is_owner FROM tier2.users WHERE id = $1`, id).Scan(&isOwner)
@@ -315,6 +319,10 @@ func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
 		return ErrOwnerImmutable
 	}
 	if _, err := s.pool.Exec(ctx, `DELETE FROM tier2.users WHERE id = $1`, id); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == pgForeignKeyViolation {
+			return ErrAuthorHasMemos
+		}
 		return fmt.Errorf("store: delete user: %w", err)
 	}
 	return nil
