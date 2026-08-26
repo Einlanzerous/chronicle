@@ -563,7 +563,9 @@ func (a *api) handleAdminUserInvite(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAdminUserDelete removes an account with its credentials (FK cascade).
-// The owner cannot be removed. Owner only.
+// The owner cannot be removed, and neither can an author the corpus references
+// — that answers 409, because it is a refusal the caller can act on rather than
+// a fault. Owner only.
 func (a *api) handleAdminUserDelete(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathUUID(w, r, "id", "user")
 	if !ok {
@@ -574,6 +576,8 @@ func (a *api) handleAdminUserDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "user not found", http.StatusNotFound)
 	case errors.Is(err, store.ErrOwnerImmutable):
 		http.Error(w, "the owner account cannot be removed", http.StatusForbidden)
+	case errors.Is(err, store.ErrAuthorHasMemos):
+		http.Error(w, "this account has memos and cannot be removed", http.StatusConflict)
 	case err != nil:
 		a.serverError(w, r, "delete user", err)
 	default:

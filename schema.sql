@@ -46,6 +46,70 @@ CREATE SCHEMA tier2;
 COMMENT ON SCHEMA tier2 IS 'Tier 2 - authored and irreplaceable. What a person said or wrote: memos, transcripts, notes, discussions, plans. Not derivable from anything, cannot be rebuilt. Nothing on a tier-1 write path may reach these tables.';
 
 
+--
+-- Name: memos_guard(); Type: FUNCTION; Schema: tier2; Owner: -
+--
+
+CREATE FUNCTION tier2.memos_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    -- One entry point. A memo exists only once its audio is complete and
+    -- durable, so there is no state meaning "maybe there are bytes".
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.state <> 'captured' THEN
+            RAISE EXCEPTION 'memo must be created in state captured, got %', NEW.state
+                USING ERRCODE = 'CH003';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF NEW.author_id    IS DISTINCT FROM OLD.author_id
+    OR NEW.content_hash IS DISTINCT FROM OLD.content_hash
+    OR NEW.byte_size    IS DISTINCT FROM OLD.byte_size
+    OR NEW.captured_at  IS DISTINCT FROM OLD.captured_at THEN
+        RAISE EXCEPTION 'memo identity and captured_at are immutable'
+            USING ERRCODE = 'CH002';
+    END IF;
+
+    -- 'discarded' appears only as a target and never as a source: that is how
+    -- terminal is written down, where it can be read. 'held' keeps an exit to
+    -- 'queued' even after its audio prunes, which is why a worker claiming a
+    -- memo that already has a durable transcript must skip ASR (E3) rather
+    -- than reach for bytes that are gone.
+    IF NEW.state IS DISTINCT FROM OLD.state
+       AND (OLD.state || '>' || NEW.state) <> ALL (ARRAY[
+             'captured>queued',          'captured>held',      'captured>discarded',
+             'queued>transcribing',      'queued>held',        'queued>discarded',
+             'transcribing>transcribed', 'transcribing>queued',
+             'transcribing>held',        'transcribing>discarded',
+             'transcribed>triaged',      'transcribed>held',   'transcribed>discarded',
+             'triaged>held',             'triaged>discarded',
+             'held>queued',              'held>discarded'
+       ]) THEN
+        RAISE EXCEPTION 'illegal memo state transition % -> %', OLD.state, NEW.state
+            USING ERRCODE = 'CH001';
+    END IF;
+
+    NEW.updated_at := now();
+    RETURN NEW;
+END
+$$;
+
+
+--
+-- Name: retention_rank(text); Type: FUNCTION; Schema: tier2; Owner: -
+--
+
+CREATE FUNCTION tier2.retention_rank(r text) RETURNS integer
+    LANGUAGE sql IMMUTABLE STRICT
+    AS $$
+    SELECT CASE r WHEN 'discard_now' THEN 0
+                  WHEN 'days_30'     THEN 1
+                  WHEN 'forever'     THEN 2 END
+$$;
+
+
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
@@ -57,6 +121,53 @@ SET default_table_access_method = heap;
 CREATE TABLE public.schema_migrations (
     version text NOT NULL,
     applied_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: memo_arrivals; Type: TABLE; Schema: tier2; Owner: -
+--
+
+CREATE TABLE tier2.memo_arrivals (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    memo_id uuid NOT NULL,
+    author_id uuid NOT NULL,
+    source text NOT NULL,
+    idempotency_key text,
+    source_ref text,
+    arrived_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT memo_arrivals_has_handle CHECK (((idempotency_key IS NOT NULL) OR (source_ref IS NOT NULL))),
+    CONSTRAINT memo_arrivals_idempotency_key_check CHECK (((idempotency_key IS NULL) OR ((length(idempotency_key) >= 16) AND (length(idempotency_key) <= 200)))),
+    CONSTRAINT memo_arrivals_source_check CHECK ((source = ANY (ARRAY['copyparty'::text, 'upload'::text]))),
+    CONSTRAINT memo_arrivals_watched_path CHECK (((source <> 'copyparty'::text) OR (source_ref IS NOT NULL)))
+);
+
+
+--
+-- Name: memos; Type: TABLE; Schema: tier2; Owner: -
+--
+
+CREATE TABLE tier2.memos (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    author_id uuid NOT NULL,
+    content_hash text NOT NULL,
+    byte_size bigint NOT NULL,
+    captured_at timestamp with time zone DEFAULT now() NOT NULL,
+    state text DEFAULT 'captured'::text NOT NULL,
+    state_reason text,
+    retention text DEFAULT 'days_30'::text NOT NULL,
+    audio_pruned_at timestamp with time zone,
+    duration_ms integer,
+    codec text,
+    sample_rate_hz integer,
+    original_filename text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT memos_byte_size_check CHECK ((byte_size > 0)),
+    CONSTRAINT memos_content_hash_check CHECK ((content_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT memos_duration_ms_check CHECK (((duration_ms IS NULL) OR (duration_ms > 0))),
+    CONSTRAINT memos_retention_check CHECK ((retention = ANY (ARRAY['discard_now'::text, 'days_30'::text, 'forever'::text]))),
+    CONSTRAINT memos_state_check CHECK ((state = ANY (ARRAY['captured'::text, 'queued'::text, 'transcribing'::text, 'transcribed'::text, 'triaged'::text, 'held'::text, 'discarded'::text])))
 );
 
 
@@ -103,6 +214,22 @@ ALTER TABLE ONLY public.schema_migrations
 
 
 --
+-- Name: memo_arrivals memo_arrivals_pkey; Type: CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.memo_arrivals
+    ADD CONSTRAINT memo_arrivals_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: memos memos_pkey; Type: CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.memos
+    ADD CONSTRAINT memos_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: user_tokens user_tokens_pkey; Type: CONSTRAINT; Schema: tier2; Owner: -
 --
 
@@ -135,6 +262,34 @@ ALTER TABLE ONLY tier2.users
 
 
 --
+-- Name: memo_arrivals_key; Type: INDEX; Schema: tier2; Owner: -
+--
+
+CREATE UNIQUE INDEX memo_arrivals_key ON tier2.memo_arrivals USING btree (author_id, idempotency_key) WHERE (idempotency_key IS NOT NULL);
+
+
+--
+-- Name: memo_arrivals_memo; Type: INDEX; Schema: tier2; Owner: -
+--
+
+CREATE INDEX memo_arrivals_memo ON tier2.memo_arrivals USING btree (memo_id);
+
+
+--
+-- Name: memo_arrivals_sighting; Type: INDEX; Schema: tier2; Owner: -
+--
+
+CREATE UNIQUE INDEX memo_arrivals_sighting ON tier2.memo_arrivals USING btree (memo_id, source, source_ref) WHERE (idempotency_key IS NULL);
+
+
+--
+-- Name: memos_author_content; Type: INDEX; Schema: tier2; Owner: -
+--
+
+CREATE UNIQUE INDEX memos_author_content ON tier2.memos USING btree (author_id, content_hash);
+
+
+--
 -- Name: user_tokens_user_id; Type: INDEX; Schema: tier2; Owner: -
 --
 
@@ -146,6 +301,37 @@ CREATE INDEX user_tokens_user_id ON tier2.user_tokens USING btree (user_id);
 --
 
 CREATE UNIQUE INDEX users_single_owner ON tier2.users USING btree (is_owner) WHERE is_owner;
+
+
+--
+-- Name: memos memos_guard; Type: TRIGGER; Schema: tier2; Owner: -
+--
+
+CREATE TRIGGER memos_guard BEFORE INSERT OR UPDATE ON tier2.memos FOR EACH ROW EXECUTE FUNCTION tier2.memos_guard();
+
+
+--
+-- Name: memo_arrivals memo_arrivals_author_id_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.memo_arrivals
+    ADD CONSTRAINT memo_arrivals_author_id_fkey FOREIGN KEY (author_id) REFERENCES tier2.users(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: memo_arrivals memo_arrivals_memo_id_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.memo_arrivals
+    ADD CONSTRAINT memo_arrivals_memo_id_fkey FOREIGN KEY (memo_id) REFERENCES tier2.memos(id) ON DELETE CASCADE;
+
+
+--
+-- Name: memos memos_author_id_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.memos
+    ADD CONSTRAINT memos_author_id_fkey FOREIGN KEY (author_id) REFERENCES tier2.users(id) ON DELETE RESTRICT;
 
 
 --
