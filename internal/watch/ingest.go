@@ -189,6 +189,10 @@ func (w *Watcher) ingestFile(ctx context.Context, path string, authorID uuid.UUI
 			"bytes", written)
 	}
 
+	// After the memo exists and its audio is durable, never before: this reads
+	// the file it has just written and records what it found.
+	w.describe(ctx, res.Memo)
+
 	if err := w.ledger.MarkSeen(ctx, store.SeenFile{
 		Path:        path,
 		SizeBytes:   before.Size(),
@@ -220,4 +224,52 @@ func changed(a, b os.FileInfo) bool {
 		return true
 	}
 	return a.Size() != b.Size() || !a.ModTime().Equal(b.ModTime())
+}
+
+// describe records what the recording turned out to be (CHRN-21): duration,
+// codec, sample rate, read from the Ogg/OpusHead headers.
+//
+// # It never fails an ingest
+//
+// The memo already exists and its audio is already durable by the time this
+// runs. A file whose headers cannot be read is undescribed, not broken — so the
+// three columns stay NULL, a warning is logged, and the memo stands. Refusing a
+// recording because Chronicle could not parse its container would be Chronicle
+// deciding somebody's memo does not count, which is the worse failure by a wide
+// margin and is not what "fails loudly" asks for.
+//
+// # Once per memo, and a free retry
+//
+// Guarded on DurationMS being nil, so a rescan of a described memo does no work
+// and a memo whose probe FAILED gets another attempt the next time its bytes
+// arrive by either path. That is the whole retry story and it costs nothing.
+func (w *Watcher) describe(ctx context.Context, m store.Memo) {
+	if m.DurationMS != nil {
+		return
+	}
+	path, err := w.audio.Path(audio.Ref{AuthorID: m.AuthorID, ContentHash: m.ContentHash})
+	if err != nil {
+		w.logger.Warn("could not derive the path of a memo's recording", "memo_id", m.ID, "error", err)
+		return
+	}
+	info, err := audio.Probe(path)
+	if err != nil {
+		// No filename and no transcript — REVIEW.md §8. The memo id is enough
+		// to find the row, and the row is enough to find the file.
+		w.logger.Warn("could not read a recording's headers; duration, codec and sample rate stay unset",
+			"memo_id", m.ID, "source", store.SourceCopyparty, "error", err)
+		return
+	}
+	if _, err := w.ingest.SetMemoAudioInfo(ctx, m.ID, store.AudioInfo{
+		DurationMS:   info.DurationMS,
+		Codec:        info.Codec,
+		SampleRateHz: info.SampleRateHz,
+	}); err != nil {
+		w.logger.Warn("could not record a recording's metadata; it will be retried on the next delivery",
+			"memo_id", m.ID, "error", err)
+		return
+	}
+	w.logger.Info("memo described",
+		"memo_id", m.ID, "source", store.SourceCopyparty,
+		"duration_ms", info.DurationMS, "codec", info.Codec, "channels", info.Channels)
 }

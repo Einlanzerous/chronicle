@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -151,6 +152,23 @@ func (f *uploadIngest) IngestMemo(_ context.Context, in store.Arrival) (store.In
 	f.arrivals[m.ID]++
 	f.byKey[sessionKey(in.AuthorID, in.IdempotencyKey)] = m.ID
 	return store.IngestResult{Memo: m, Deliveries: f.arrivals[m.ID], Collapsed: f.arrivals[m.ID] > 1}, nil
+}
+
+// SetMemoAudioInfo records what a probe found. internal/audio owns whether the
+// numbers are right; what is asserted HERE is that they reach the wire, which
+// is the gap TestACompletedUploadReportsTheMetadataItJustRecorded closes.
+func (f *uploadIngest) SetMemoAudioInfo(_ context.Context, id uuid.UUID, in store.AudioInfo) (store.Memo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for k, m := range f.memos {
+		if m.ID == id {
+			d, c := in.DurationMS, in.Codec
+			m.DurationMS, m.Codec = &d, &c
+			f.memos[k] = m
+			return m, nil
+		}
+	}
+	return store.Memo{}, store.ErrNotFound
 }
 
 // ---------------------------------------------------------------- harness
@@ -564,4 +582,67 @@ type failingReader struct{}
 
 func (failingReader) Read([]byte) (int, error) {
 	return 0, errors.New("connection reset by peer")
+}
+
+// PR #16 review, nit 1. `commit` described the memo and then built its response
+// from the copy it held BEFORE the probe, so a first upload answered
+// `"duration_ms": null` for a memo whose column already said 3000 — and the
+// first upload is the only delivery on which the probe runs, so CHRN-21 was
+// invisible over HTTP. `memoJSON` is the sole wire exposure of these fields.
+func TestACompletedUploadReportsTheMetadataItJustRecorded(t *testing.T) {
+	r := newUploadRig(t)
+	content := opusBytes(3)
+
+	open := r.openUpload(t, testKey, content)
+	rec := r.appendChunk(open.UploadID, 0, content)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload: %d %s", rec.Code, rec.Body.String())
+	}
+	done := decodeUpload(t, rec)
+	if done.Memo == nil {
+		t.Fatal("no memo on a completed upload")
+	}
+	if done.Memo.DurationMS == nil {
+		t.Fatal("duration_ms is null on the response for a memo that was just described")
+	}
+	if *done.Memo.DurationMS != 3000 {
+		t.Fatalf("duration_ms %d, want 3000", *done.Memo.DurationMS)
+	}
+	if done.Memo.Codec == nil || *done.Memo.Codec != "opus" {
+		t.Fatalf("codec %v, want opus", done.Memo.Codec)
+	}
+}
+
+// opusBytes is a minimal valid Ogg Opus stream of the given length. Kept here
+// rather than shared with internal/upload: this package tests the wire, and a
+// test helper reaching across packages to build its input is how a fixture ends
+// up meaning two different things.
+func opusBytes(seconds int) []byte {
+	const preSkip = 312
+	page := func(granule int64, seq uint32, payload []byte) []byte {
+		var segs []byte
+		for n := len(payload); ; n -= 255 {
+			if n < 255 {
+				segs = append(segs, byte(n))
+				break
+			}
+			segs = append(segs, 255)
+		}
+		p := append([]byte{}, 'O', 'g', 'g', 'S', 0, 0)
+		p = binary.LittleEndian.AppendUint64(p, uint64(granule))
+		p = binary.LittleEndian.AppendUint32(p, 1)
+		p = binary.LittleEndian.AppendUint32(p, seq)
+		p = binary.LittleEndian.AppendUint32(p, 0)
+		p = append(p, byte(len(segs)))
+		p = append(p, segs...)
+		return append(p, payload...)
+	}
+	head := append([]byte("OpusHead"), 1, 1)
+	head = binary.LittleEndian.AppendUint16(head, preSkip)
+	head = binary.LittleEndian.AppendUint32(head, 48000)
+	head = append(head, 0, 0, 0)
+
+	b := page(0, 0, head)
+	b = append(b, page(0, 1, []byte("OpusTags\x00\x00\x00\x00\x00\x00\x00\x00"))...)
+	return append(b, page(int64(seconds)*48000+preSkip, 2, make([]byte, 64))...)
 }

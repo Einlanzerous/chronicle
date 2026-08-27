@@ -96,7 +96,10 @@ type Memo struct {
 	Retention     string
 	AudioPrunedAt *time.Time
 
-	// Filled by CHRN-21 after normalisation; nil until it has run.
+	// What the recording IS, read from its headers by CHRN-21 — not from a
+	// decode, which moved to E3. Nil until the probe has run, and nil FOREVER
+	// for a file whose headers could not be read: a memo Chronicle cannot
+	// describe is still a memo, and these being null is how that is said.
 	DurationMS   *int32
 	Codec        *string
 	SampleRateHz *int32
@@ -489,4 +492,54 @@ func (s *Store) CorpusStats(ctx context.Context, window time.Duration) (CorpusSt
 		return c, fmt.Errorf("store: corpus stats: %w", err)
 	}
 	return c, nil
+}
+
+// AudioInfo is what a probe of the recording found (CHRN-21). It mirrors
+// audio.Info across the package boundary the way AudioRef mirrors audio.Ref —
+// internal/store does not import internal/audio, so the caller translates.
+type AudioInfo struct {
+	DurationMS int32
+	Codec      string
+	// SampleRateHz is zero when OpusHead did not carry one, and is stored as
+	// NULL rather than as a confident zero.
+	SampleRateHz int32
+}
+
+// SetMemoAudioInfo records what the recording is: duration, codec, sample rate.
+//
+// These are the three columns 0003 created nullable and left unset, which is
+// why CHRN-21 needed no migration. Nothing here touches the identity columns,
+// so the guard's immutability check passes without being consulted, and state
+// is untouched, so its transition list is not consulted either — this is the
+// one kind of memo UPDATE that has no edge to be legal or illegal.
+//
+// Idempotent by construction: the callers only reach it for a memo whose
+// duration is still NULL, so a re-delivery of an already-described memo does no
+// work, and a memo whose probe FAILED gets another attempt the next time its
+// bytes arrive. That is the whole retry story, and it is deliberate — a memo
+// that could not be described is not broken, it is undescribed.
+func (s *Store) SetMemoAudioInfo(ctx context.Context, id uuid.UUID, in AudioInfo) (Memo, error) {
+	if in.DurationMS <= 0 {
+		// 0003's CHECK is duration_ms > 0. Refused here so a bad probe is a
+		// caller error with a sentence rather than a wrapped constraint
+		// violation two layers down.
+		return Memo{}, fmt.Errorf("%w: duration must be positive, got %d", ErrInvalidInput, in.DurationMS)
+	}
+	var rate *int32
+	if in.SampleRateHz > 0 {
+		rate = &in.SampleRateHz
+	}
+
+	m, err := scanMemo(s.pool.QueryRow(ctx, `
+		UPDATE tier2.memos
+		   SET duration_ms = $2, codec = $3, sample_rate_hz = $4
+		 WHERE id = $1
+		RETURNING `+memoColumns, id, in.DurationMS, nullable(in.Codec), rate))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Memo{}, ErrNotFound
+	}
+	if err != nil {
+		return Memo{}, fmt.Errorf("store: set memo audio info: %w", err)
+	}
+	return m, nil
 }
