@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -146,13 +147,17 @@ type fakeIngest struct {
 	byKey    map[string]uuid.UUID
 	arrivals map[uuid.UUID]int
 	calls    int
+	// described counts SetMemoAudioInfo per memo, so a test can show the probe
+	// runs once rather than on every delivery.
+	described map[uuid.UUID]int
 }
 
 func newFakeIngest() *fakeIngest {
 	return &fakeIngest{
-		memos:    map[string]*store.Memo{},
-		byKey:    map[string]uuid.UUID{},
-		arrivals: map[uuid.UUID]int{},
+		memos:     map[string]*store.Memo{},
+		byKey:     map[string]uuid.UUID{},
+		arrivals:  map[uuid.UUID]int{},
+		described: map[uuid.UUID]int{},
 	}
 }
 
@@ -226,6 +231,25 @@ func (f *fakeIngest) IngestMemo(_ context.Context, in store.Arrival) (store.Inge
 		Deliveries: f.arrivals[m.ID],
 		Collapsed:  f.arrivals[m.ID] > 1,
 	}, nil
+}
+
+// SetMemoAudioInfo records what a probe found (CHRN-21). Kept on the same fake
+// as IngestMemo because it is the same interface: both ingest paths describe a
+// memo through the store they wrote it to.
+func (f *fakeIngest) SetMemoAudioInfo(_ context.Context, id uuid.UUID, in store.AudioInfo) (store.Memo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.described[id]++
+	m := f.find(id)
+	if m == nil {
+		return store.Memo{}, store.ErrNotFound
+	}
+	d, c, r := in.DurationMS, in.Codec, in.SampleRateHz
+	m.DurationMS, m.Codec = &d, &c
+	if r > 0 {
+		m.SampleRateHz = &r
+	}
+	return *m, nil
 }
 
 // ---------------------------------------------------------------- harness
@@ -1116,5 +1140,122 @@ func TestACutTransferReportsWhereItGotTo(t *testing.T) {
 	}
 	if st.Session.Offset != 750 {
 		t.Fatalf("the session is at %d, so the error disagrees with the file", st.Session.Offset)
+	}
+}
+
+// ---------------------------------------------------------------- CHRN-21
+
+// opusStream builds a minimal but valid Ogg Opus file of the given length. Its
+// byte layout is asserted against a real encoder in internal/audio; here it only
+// has to be something Probe accepts, so the wiring can be tested end to end
+// without a checked-in binary fixture.
+func opusStream(seconds int) []byte {
+	const preSkip = 312
+	page := func(granule int64, seq uint32, payload []byte) []byte {
+		var segs []byte
+		for n := len(payload); ; n -= 255 {
+			if n < 255 {
+				segs = append(segs, byte(n))
+				break
+			}
+			segs = append(segs, 255)
+		}
+		p := append([]byte{}, 'O', 'g', 'g', 'S', 0, 0)
+		p = binary.LittleEndian.AppendUint64(p, uint64(granule))
+		p = binary.LittleEndian.AppendUint32(p, 1)
+		p = binary.LittleEndian.AppendUint32(p, seq)
+		p = binary.LittleEndian.AppendUint32(p, 0)
+		p = append(p, byte(len(segs)))
+		p = append(p, segs...)
+		return append(p, payload...)
+	}
+	head := append([]byte("OpusHead"), 1, 1)
+	head = binary.LittleEndian.AppendUint16(head, preSkip)
+	head = binary.LittleEndian.AppendUint32(head, 48000)
+	head = append(head, 0, 0, 0)
+
+	b := page(0, 0, head)
+	b = append(b, page(0, 1, []byte("OpusTags\x00\x00\x00\x00\x00\x00\x00\x00"))...)
+	return append(b, page(int64(seconds)*48000+preSkip, 2, make([]byte, 64))...)
+}
+
+// The upload path describes what it stored: duration, codec, sample rate, read
+// from the headers of the file it has just written.
+func TestAnUploadedRecordingIsDescribed(t *testing.T) {
+	r := newRig(t)
+	content := opusStream(3)
+	ctx := context.Background()
+
+	res := r.open(t, keyA, content, "")
+	done, err := r.svc.Append(ctx, r.session(t, res.Session.ID), 0, bytes.NewReader(content))
+	if err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+
+	m := r.ingest.find(done.Committed.Memo.ID)
+	if m.DurationMS == nil {
+		t.Fatal("the memo was never described")
+	}
+	if *m.DurationMS != 3000 {
+		t.Fatalf("duration %d ms, want 3000", *m.DurationMS)
+	}
+	if m.Codec == nil || *m.Codec != audio.CodecOpus {
+		t.Fatalf("codec %v, want %q", m.Codec, audio.CodecOpus)
+	}
+}
+
+// Described once per memo, not once per delivery. The guard is DurationMS being
+// nil, which also means a memo whose probe FAILED gets another attempt — that
+// is the whole retry story and it costs nothing.
+func TestARecordingIsDescribedOncePerMemoNotPerDelivery(t *testing.T) {
+	r := newRig(t)
+	content := opusStream(2)
+	ctx := context.Background()
+
+	res := r.open(t, keyA, content, "")
+	done, err := r.svc.Append(ctx, r.session(t, res.Session.ID), 0, bytes.NewReader(content))
+	if err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+	id := done.Committed.Memo.ID
+
+	// Four more deliveries: three same-key retries and one under a fresh key.
+	for range 3 {
+		r.open(t, keyA, content, "")
+	}
+	r.open(t, keyB, content, "")
+
+	if n := r.ingest.described[id]; n != 1 {
+		t.Fatalf("the recording was described %d times across five deliveries, want 1", n)
+	}
+}
+
+// "A corrupt or non-Opus file fails loudly and leaves the columns NULL, rather
+// than producing silence OR rejecting the memo." The second half is the one
+// worth a test: a recording Chronicle cannot parse is still somebody's memo.
+func TestAnUnreadableRecordingStillBecomesAMemo(t *testing.T) {
+	r := newRig(t)
+	content := memoBytes(4096) // not Opus, not Ogg, not anything
+	ctx := context.Background()
+
+	res := r.open(t, keyA, content, "")
+	done, err := r.svc.Append(ctx, r.session(t, res.Session.ID), 0, bytes.NewReader(content))
+	if err != nil {
+		t.Fatalf("an unreadable recording failed the upload: %v", err)
+	}
+	if done.Committed == nil {
+		t.Fatal("no memo for a file whose headers could not be read")
+	}
+	m := r.ingest.find(done.Committed.Memo.ID)
+	if m.DurationMS != nil || m.Codec != nil {
+		t.Fatalf("columns were filled for an unparseable file: %v / %v", m.DurationMS, m.Codec)
+	}
+	if n := r.ingest.described[done.Committed.Memo.ID]; n != 0 {
+		t.Fatalf("SetMemoAudioInfo was called %d times for a file that could not be probed", n)
+	}
+	// And the bytes are still there, byte-for-byte. Failing to describe a
+	// recording must not cost the recording.
+	if got := r.storedBytes(t, hashOf(content)); !bytes.Equal(got, content) {
+		t.Fatal("the stored recording does not match what was uploaded")
 	}
 }

@@ -76,11 +76,13 @@ type Sessions interface {
 	LiveUploadIDs(ctx context.Context) (map[uuid.UUID]struct{}, error)
 }
 
-// Ingestor is the slice of the store that turns an arrival into a memo. The
-// same interface the watcher takes, and deliberately so: both paths converge on
-// one function and one set of idempotency rules.
+// Ingestor is the slice of the store that turns an arrival into a memo, and
+// records what that recording turned out to be (CHRN-21). The same interface
+// the watcher takes, and deliberately so: both paths converge on one function
+// and one set of idempotency rules.
 type Ingestor interface {
 	IngestMemo(ctx context.Context, in store.Arrival) (store.IngestResult, error)
+	SetMemoAudioInfo(ctx context.Context, id uuid.UUID, in store.AudioInfo) (store.Memo, error)
 }
 
 const (
@@ -777,6 +779,12 @@ func (s *Service) commit(ctx context.Context, u store.Upload, how string) (*Comm
 			"bytes", u.ByteSize)
 	}
 
+	// After the memo exists and its audio is durable, never before. Guarded on
+	// DurationMS so a re-delivery of a described memo does no work — and so a
+	// memo whose probe FAILED gets another attempt here, which is the whole of
+	// the retry story for CHRN-21.
+	s.describe(ctx, res.Memo)
+
 	// A memo that had already been pruned and has just had its audio delivered
 	// again. The row still says pruned, so the storage report will count the
 	// file as an orphan until something clears audio_pruned_at — and clearing
@@ -878,4 +886,43 @@ func (s *Service) Find(ctx context.Context, id, authorID uuid.UUID) (store.Uploa
 		return store.Upload{}, store.ErrNotFound
 	}
 	return u, nil
+}
+
+// describe records what the recording turned out to be (CHRN-21): duration,
+// codec, sample rate, read from the Ogg/OpusHead headers rather than a decode.
+//
+// It never fails an upload. By the time this runs the bytes are durable and the
+// memo exists; a file whose headers cannot be read is UNDESCRIBED, not broken,
+// so the three columns stay NULL and a warning is logged. Refusing a recording
+// because Chronicle could not parse its container would be Chronicle deciding
+// somebody's memo does not count.
+func (s *Service) describe(ctx context.Context, m store.Memo) {
+	if m.DurationMS != nil {
+		return
+	}
+	path, err := s.audio.Path(audio.Ref{AuthorID: m.AuthorID, ContentHash: m.ContentHash})
+	if err != nil {
+		s.logger.Warn("could not derive the path of a memo's recording", "memo_id", m.ID, "error", err)
+		return
+	}
+	info, err := audio.Probe(path)
+	if err != nil {
+		// No filename — it is authored text (REVIEW.md §8). The memo id finds
+		// the row and the row finds the file.
+		s.logger.Warn("could not read a recording's headers; duration, codec and sample rate stay unset",
+			"memo_id", m.ID, "source", store.SourceUpload, "error", err)
+		return
+	}
+	if _, err := s.ingest.SetMemoAudioInfo(ctx, m.ID, store.AudioInfo{
+		DurationMS:   info.DurationMS,
+		Codec:        info.Codec,
+		SampleRateHz: info.SampleRateHz,
+	}); err != nil {
+		s.logger.Warn("could not record a recording's metadata; it will be retried on the next delivery",
+			"memo_id", m.ID, "error", err)
+		return
+	}
+	s.logger.Info("memo described",
+		"memo_id", m.ID, "source", store.SourceUpload,
+		"duration_ms", info.DurationMS, "codec", info.Codec, "channels", info.Channels)
 }

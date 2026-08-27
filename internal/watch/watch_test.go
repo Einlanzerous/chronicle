@@ -30,11 +30,14 @@ type fakeIngest struct {
 	sightings map[string]bool      // memo:source:ref
 	calls     []store.Arrival
 	err       error
+	// described counts SetMemoAudioInfo per memo (CHRN-21).
+	described map[uuid.UUID]int
 }
 
 func newFakeIngest() *fakeIngest {
 	return &fakeIngest{
 		memos:     map[string]uuid.UUID{},
+		described: map[uuid.UUID]int{},
 		arrivals:  map[string]int{},
 		sightings: map[string]bool{},
 	}
@@ -67,6 +70,16 @@ func (f *fakeIngest) IngestMemo(_ context.Context, in store.Arrival) (store.Inge
 		Deliveries: f.arrivals[id.String()],
 		Collapsed:  collapsed,
 	}, nil
+}
+
+// SetMemoAudioInfo records what a probe found (CHRN-21). The inbox fixtures are
+// not real Opus, so in these tests the probe fails and this is never reached —
+// which is itself the assertion in TestAnUnreadableRecordingStillBecomesAMemo.
+func (f *fakeIngest) SetMemoAudioInfo(_ context.Context, id uuid.UUID, _ store.AudioInfo) (store.Memo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.described[id]++
+	return store.Memo{ID: id}, nil
 }
 
 func (f *fakeIngest) count() int {

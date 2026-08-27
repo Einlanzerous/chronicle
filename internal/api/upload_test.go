@@ -153,6 +153,23 @@ func (f *uploadIngest) IngestMemo(_ context.Context, in store.Arrival) (store.In
 	return store.IngestResult{Memo: m, Deliveries: f.arrivals[m.ID], Collapsed: f.arrivals[m.ID] > 1}, nil
 }
 
+// SetMemoAudioInfo satisfies the interface. The wire tests assert nothing about
+// metadata — internal/audio and internal/upload own that — so this records just
+// enough that a response carrying a described memo is not a lie.
+func (f *uploadIngest) SetMemoAudioInfo(_ context.Context, id uuid.UUID, in store.AudioInfo) (store.Memo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for k, m := range f.memos {
+		if m.ID == id {
+			d, c := in.DurationMS, in.Codec
+			m.DurationMS, m.Codec = &d, &c
+			f.memos[k] = m
+			return m, nil
+		}
+	}
+	return store.Memo{}, store.ErrNotFound
+}
+
 // ---------------------------------------------------------------- harness
 
 type uploadRig struct {

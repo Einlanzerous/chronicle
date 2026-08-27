@@ -24,8 +24,15 @@ CREATE TABLE IF NOT EXISTS tier2.memos (
     author_id         UUID NOT NULL REFERENCES tier2.users(id) ON DELETE RESTRICT,
 
     -- Lowercase hex, over the bytes exactly as they arrived: before
-    -- normalisation, before anything. Never recomputed — CHRN-21 rewrites the
-    -- audio and must not touch this, or every prior arrival stops matching.
+    -- normalisation, before anything. NEVER recomputed, or every prior arrival
+    -- stops matching and the same recording becomes a second memo.
+    --
+    -- This used to name CHRN-21 as the hazard, on the assumption that it would
+    -- rewrite the audio. It does not: the decode moved to E3 on 2026-08-27, so
+    -- nothing in Chronicle rewrites a recording today. The rule stands for
+    -- whatever tries next — and note that a rewrite would break more than this
+    -- column, since byte_size is immutable too and the layout gives a memo one
+    -- path, so every rewritten memo would read as CHRN-23's `mismatched`.
     content_hash      TEXT NOT NULL CHECK (content_hash ~ '^[0-9a-f]{64}$'),
     byte_size         BIGINT NOT NULL CHECK (byte_size > 0),
 
@@ -45,7 +52,10 @@ CREATE TABLE IF NOT EXISTS tier2.memos (
     audio_pruned_at   TIMESTAMPTZ,          -- set by CHRN-22; the transcript never goes
 
     -- CHRN-21 fills these; NULL until it has run, which is why 21 needs no
-    -- migration of its own.
+    -- migration of its own. It reads them from the Ogg/OpusHead headers rather
+    -- than from a decode — the decode moved to E3 by decision on 2026-08-27 —
+    -- so they stay NULL for any file whose headers cannot be read, which is a
+    -- memo that is undescribed rather than one that is broken.
     duration_ms       INTEGER CHECK (duration_ms IS NULL OR duration_ms > 0),
     codec             TEXT,
     sample_rate_hz    INTEGER,

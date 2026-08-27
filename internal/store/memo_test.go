@@ -748,3 +748,89 @@ func TestMalformedArrivalIsACallerError(t *testing.T) {
 		t.Errorf("memos = %d, want 0: a rejected arrival created a row", n)
 	}
 }
+
+// CHRN-21 — recording what the audio is. No migration: these three columns have
+// been nullable and unset since 0003, which is why the ticket blocked nothing.
+
+func TestSetMemoAudioInfoFillsTheColumns(t *testing.T) {
+	s, ctx := newTestStore(t)
+	author := newAuthor(t, s, ctx, "describer@example.com")
+
+	res, err := s.IngestMemo(ctx, Arrival{
+		AuthorID: author, ContentHash: hashOf("recording"), ByteSize: 4096,
+		Source: SourceUpload, IdempotencyKey: "idem-key-describe-01",
+	})
+	if err != nil {
+		t.Fatalf("IngestMemo: %v", err)
+	}
+	if res.Memo.DurationMS != nil || res.Memo.Codec != nil || res.Memo.SampleRateHz != nil {
+		t.Fatal("a fresh memo already carries audio metadata")
+	}
+
+	got, err := s.SetMemoAudioInfo(ctx, res.Memo.ID, AudioInfo{
+		DurationMS: 37500, Codec: "opus", SampleRateHz: 48000,
+	})
+	if err != nil {
+		t.Fatalf("SetMemoAudioInfo: %v", err)
+	}
+	if got.DurationMS == nil || *got.DurationMS != 37500 {
+		t.Fatalf("duration %v, want 37500", got.DurationMS)
+	}
+	if got.Codec == nil || *got.Codec != "opus" {
+		t.Fatalf("codec %v, want opus", got.Codec)
+	}
+	if got.SampleRateHz == nil || *got.SampleRateHz != 48000 {
+		t.Fatalf("sample rate %v, want 48000", got.SampleRateHz)
+	}
+	// It must not have disturbed anything the guard protects.
+	if got.ContentHash != res.Memo.ContentHash || got.ByteSize != res.Memo.ByteSize ||
+		!got.CapturedAt.Equal(res.Memo.CapturedAt) || got.State != res.Memo.State {
+		t.Fatal("describing a memo moved its identity, capture time or state")
+	}
+}
+
+// An absent input sample rate is stored as NULL, not as a confident zero. The
+// column has no CHECK forbidding zero, so nothing else would catch it.
+func TestSetMemoAudioInfoStoresAnUnknownRateAsNull(t *testing.T) {
+	s, ctx := newTestStore(t)
+	author := newAuthor(t, s, ctx, "describer@example.com")
+
+	res, err := s.IngestMemo(ctx, Arrival{
+		AuthorID: author, ContentHash: hashOf("norate"), ByteSize: 512,
+		Source: SourceUpload, IdempotencyKey: "idem-key-describe-02",
+	})
+	if err != nil {
+		t.Fatalf("IngestMemo: %v", err)
+	}
+
+	got, err := s.SetMemoAudioInfo(ctx, res.Memo.ID, AudioInfo{DurationMS: 1000, Codec: "opus"})
+	if err != nil {
+		t.Fatalf("SetMemoAudioInfo: %v", err)
+	}
+	if got.SampleRateHz != nil {
+		t.Fatalf("an unknown sample rate was stored as %d rather than NULL", *got.SampleRateHz)
+	}
+}
+
+// 0003's CHECK is duration_ms > 0. Refused in Go so a bad probe is a caller
+// error with a sentence, not a wrapped constraint violation.
+func TestSetMemoAudioInfoRejectsANonPositiveDuration(t *testing.T) {
+	s, ctx := newTestStore(t)
+	author := newAuthor(t, s, ctx, "describer@example.com")
+
+	res, err := s.IngestMemo(ctx, Arrival{
+		AuthorID: author, ContentHash: hashOf("zero"), ByteSize: 128,
+		Source: SourceUpload, IdempotencyKey: "idem-key-describe-03",
+	})
+	if err != nil {
+		t.Fatalf("IngestMemo: %v", err)
+	}
+	for _, d := range []int32{0, -1} {
+		if _, err := s.SetMemoAudioInfo(ctx, res.Memo.ID, AudioInfo{DurationMS: d, Codec: "opus"}); !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("duration %d: want ErrInvalidInput, got %v", d, err)
+		}
+	}
+	if _, err := s.SetMemoAudioInfo(ctx, uuid.New(), AudioInfo{DurationMS: 100, Codec: "opus"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("describing a memo that does not exist: want ErrNotFound, got %v", err)
+	}
+}

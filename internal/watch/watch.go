@@ -38,9 +38,11 @@ import (
 	"github.com/Einlanzerous/chronicle/internal/store"
 )
 
-// Ingestor is the slice of the store that turns an arrival into a memo.
+// Ingestor is the slice of the store that turns an arrival into a memo, and
+// records what that recording turned out to be (CHRN-21).
 type Ingestor interface {
 	IngestMemo(ctx context.Context, in store.Arrival) (store.IngestResult, error)
+	SetMemoAudioInfo(ctx context.Context, id uuid.UUID, in store.AudioInfo) (store.Memo, error)
 }
 
 // Ledger is the tier-1 seen-ledger.
