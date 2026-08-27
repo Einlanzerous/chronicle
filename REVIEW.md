@@ -116,11 +116,31 @@ For any new table, query, or handler, say which side it is on. Concretely:
   side it meant.
 - **A new tier-2 table needs an explicit `REVOKE ALL … FROM chronicle_tier1`.**
   It is *redundant* — `chronicle_tier1` holds no `USAGE` on schema `tier2`, so
-  it could not reach the table anyway — and 0002 states it anyway, deliberately,
-  so that a later loosened grant shows up as a `schema.sql` diff rather than as
-  an absence nobody notices. A new tier-2 table without one is a 🟡, and the
-  comment in `0002_accounts.up.sql` says why. A new tier-2 table that *grants*
-  anything to `chronicle_tier1` is 🔴.
+  it could not reach the table anyway — and it is stated anyway as
+  **documentation of intent, at the point where the tier boundary is defined**.
+  A new tier-2 table without one is a 🟡. One that *grants* anything to
+  `chronicle_tier1` is 🔴. `0003_memos.up.sql` is the wording to match.
+
+  **Do not expect the `REVOKE` to be what makes a loosening visible.** This
+  section claimed that until CHRN-79 and it was false: `pg_dump` emits only
+  non-default ACLs, so revoking a privilege the role never held leaves nothing
+  to emit — which is why `schema.sql` carries no `REVOKE` for any tier-2 table.
+  What makes a loosening observable is the loosened **`GRANT`** itself, which
+  *is* a non-default ACL — and the observing is split between you and CI, so do
+  not go looking in the wrong half. **Yours is the migration**: `migrations/`
+  is in `sensitive_paths`, so a `GRANT … TO chronicle_tier1` in a new `.up.sql`
+  is in the diff you were given. **CI's is `schema.sql`, which you were not**
+  (§6, `.github/review-ignore`) — the regenerated file gains an ACL stanza and
+  the `schema` job (*migration staleness guard*) fails if the committed file
+  disagrees. Measured on CHRN-79 rather than reasoned: a probe `GRANT SELECT ON
+  tier2.memos TO chronicle_tier1` adds exactly one stanza, while all five
+  tier-2 `REVOKE`s the migrations state — two on schema `tier2` (`0001:25`,
+  `0001:36`), three covering its four tables (`0002:76-77`, `0003:177`) —
+  render nothing at all. That visibility comes from `gen-schema.sh` rendering
+  privileges instead of passing `--no-acl`, which is why the script is in
+  `sensitive_paths` and why removing the ACLs there would break no test. **The
+  requirement above is unchanged** — knowing the true reason is what keeps it
+  from being argued away by the next person who checks the old one.
 - **No tier-1 write path may reach a tier-2 table.** The enforcement is the
   Postgres grant; the proof is `TestTier1RoleCannotReachCredentials` in
   `internal/store/user_test.go`. That test **skips** without
