@@ -181,9 +181,14 @@ session. `internal/store/user.go` stores only `token_hash`; the plaintext is
   Traefik, so the request is plain HTTP and the request-derived version silently
   ships a non-`Secure` cookie. If a diff reintroduces request-derived flags,
   that is 🔴.
-- **`clientIP` trusts `X-Forwarded-For` only from `TrustedProxies`.** Widening
-  that, or reading the leftmost hop instead of the rightmost, lets any caller
-  pick its own rate-limit bucket.
+- **`clientIP` trusts `X-Forwarded-For` only when the request carries the secret
+  Traefik stamps** (`X-Chronicle-Proxy-Secret`, compared with `crypto/subtle`).
+  Reading the leftmost hop instead of the rightmost, or **treating the header's
+  presence as trust rather than comparing it**, lets any caller pick its own
+  rate-limit bucket. The presence-not-comparison version is the specific shape
+  CHRN-75 was: a neighbour going direct arrives with the header set and wrong.
+  This replaced `TrustedProxies`, which could not express the question — on
+  `construct_net` no CIDR distinguishes Traefik from a neighbour.
 
 ### 5. Guards are applied in the route table
 

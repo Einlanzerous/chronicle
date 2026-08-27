@@ -108,8 +108,11 @@ jobs:
       #                         lands, this file is the estate's third copy.
       #   internal/api/ratelimit The throttle on both credential endpoints, and
       #                         `clientIP` — which trusts `X-Forwarded-For` only
-      #                         from `TrustedProxies`. Get that wrong and every
-      #                         caller picks its own bucket.
+      #                         when the request carries the secret Traefik
+      #                         stamps (CHRN-75). Get that wrong and every
+      #                         caller picks its own bucket; the previous
+      #                         version keyed on a CIDR that contained the whole
+      #                         shared network, which is how that happened.
       #   internal/api/router   The route table. Sign-in is wrapped here
       #                         (`a.limitSignIn(...)`) and the `Accounts`
       #                         interface is declared here; a dropped wrapper

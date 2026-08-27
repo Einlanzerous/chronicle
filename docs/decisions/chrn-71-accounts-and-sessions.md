@@ -192,6 +192,28 @@ and it is keyed on its real address — the lateral case this limiter exists for
 Unset, the coarse behaviour returns and boot warns about it rather than leaving
 it to be discovered.
 
+> **[rev] The paragraph above is FALSE as deployed, and CHRN-75 replaced the
+> mechanism it describes.** It is left standing rather than edited, per the
+> pattern CHRN-18 set: a decision record that quietly rewrites its own reasoning
+> is worth less than one that shows the correction.
+>
+> The claim that "a neighbour container connecting directly is not a trusted
+> peer" was never true on this network. `CHRONICLE_TRUSTED_PROXIES` shipped as
+> `172.16.0.0/12`, which **contains `construct_net` (`172.19.0.0/16`)** — so
+> every one of the eighteen containers on the shared network *was* a trusted
+> peer, and any of them could pick its own rate-limit bucket by writing an
+> `X-Forwarded-For`. **The lateral case this deviation exists for was the one
+> case it did not cover**, and neither limiter covered it.
+>
+> And no value of that variable could have fixed it: `construct_net` is
+> `external:` with default IPAM and Traefik takes a DHCP address there, so no
+> prefix distinguishes the edge from a neighbour. The peer address cannot
+> express *how a request arrived*, which is the question being asked.
+>
+> CHRN-75 retires the variable and trusts a shared secret Traefik stamps
+> instead, compared in constant time and never treated as trusted merely for
+> being present. See `docs/decisions/chrn-75-proxy-trust-and-the-signin-limiter.md`.
+
 **[rev]** It covers `POST /auth/sso/cloudflare` too. Limiting only one of the two
 unauthenticated credential-minting endpoints just moves the target: the SSO path
 drives a JWKS fetch and a database write per call.

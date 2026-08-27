@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"net/netip"
 	"time"
 
 	"github.com/google/uuid"
@@ -68,10 +67,13 @@ type Deps struct {
 	// sees in the deployment it ships, WAN entrypoint included.
 	SecureCookies bool
 
-	// TrustedProxies are the peers whose X-Forwarded-For may be believed when
-	// keying the sign-in rate limiter. Empty means trust nobody, which makes
-	// every request through Traefik share one bucket.
-	TrustedProxies []netip.Prefix
+	// ProxySecret is the value Traefik stamps on X-Chronicle-Proxy-Secret, and
+	// the whole of the trust decision for X-Forwarded-For when keying the
+	// sign-in limiter (CHRN-75). Empty means believe nobody, which makes every
+	// request through Traefik share one bucket.
+	//
+	// It is not authentication. Nothing outside clientIP may consult it.
+	ProxySecret string
 
 	// Audio is the on-disk store of recordings (CHRN-23). Nil until
 	// CHRONICLE_AUDIO_DIR is set, and GET /admin/storage then answers 503
@@ -86,15 +88,18 @@ type Deps struct {
 
 // api holds what the handlers share.
 type api struct {
-	accounts       Accounts
-	logger         *slog.Logger
-	cfAccess       *CFAccessVerifier
-	mobileBaseURL  string
-	secureCookies  bool
-	trustedProxies []netip.Prefix
-	signInLimiter  *ipRateLimiter
-	audio          *audio.Store
-	corpus         Corpus
+	accounts      Accounts
+	logger        *slog.Logger
+	cfAccess      *CFAccessVerifier
+	mobileBaseURL string
+	secureCookies bool
+	proxySecret   string
+	mismatch      *mismatchWarner
+	absent        *mismatchWarner
+	proxySeen     *proxySeen
+	signInLimiter *ipRateLimiter
+	audio         *audio.Store
+	corpus        Corpus
 }
 
 // NewRouter builds the HTTP handler.
@@ -115,15 +120,18 @@ type api struct {
 // address before committing to it, which happens before any credential exists.
 func NewRouter(d Deps) http.Handler {
 	a := &api{
-		accounts:       d.Accounts,
-		logger:         d.Logger,
-		cfAccess:       d.CFAccess,
-		mobileBaseURL:  d.MobileBaseURL,
-		secureCookies:  d.SecureCookies,
-		trustedProxies: d.TrustedProxies,
-		signInLimiter:  newIPRateLimiter(signInRateWindow, signInRateBurst),
-		audio:          d.Audio,
-		corpus:         d.Corpus,
+		accounts:      d.Accounts,
+		logger:        d.Logger,
+		cfAccess:      d.CFAccess,
+		mobileBaseURL: d.MobileBaseURL,
+		secureCookies: d.SecureCookies,
+		proxySecret:   d.ProxySecret,
+		mismatch:      &mismatchWarner{now: time.Now},
+		absent:        &mismatchWarner{now: time.Now},
+		proxySeen:     &proxySeen{},
+		signInLimiter: newIPRateLimiter(signInRateWindow, signInRateBurst),
+		audio:         d.Audio,
+		corpus:        d.Corpus,
 	}
 
 	mux := http.NewServeMux()

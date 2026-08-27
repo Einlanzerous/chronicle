@@ -136,13 +136,29 @@ func runServe(args []string) error {
 		return err
 	}
 
-	// Announced rather than silent: with no trusted proxy the sign-in limiter
+	// Announced rather than silent: with no proxy secret the sign-in limiter
 	// keys on Traefik's own address, so every browser and app request shares one
 	// bucket and a stranger hammering the direct host can lock the owner out.
-	if len(cfg.TrustedProxies) == 0 {
-		logger.Warn("CHRONICLE_TRUSTED_PROXIES is unset: the sign-in rate limit will apply "+
+	//
+	// The other half of that visibility is in clientIP: a secret that is set but
+	// does not MATCH produces the same coarse behaviour, and warns per request
+	// rather than at boot, because it is a running condition rather than a
+	// configuration one (CHRN-75 §3).
+	if cfg.ProxySecret == "" {
+		logger.Warn("CHRONICLE_PROXY_SECRET is unset: the sign-in rate limit will apply "+
 			"globally rather than per client, because every request through Traefik shares its address",
-			"remedy", "set CHRONICLE_TRUSTED_PROXIES to the reverse proxy's address or subnet")
+			"remedy", "set CHRONICLE_PROXY_SECRET to the value Traefik stamps on "+api.ProxySecretHeader)
+	}
+	// Warned and ignored rather than refused. compose pins :latest and
+	// construct-server still sets this, so erroring would turn a retired knob
+	// into a crash loop the moment the image lands ahead of the SERV change --
+	// and unlike the half-configured Access pair, a retired variable that
+	// affects nothing is not a silent security failure. It becomes an error one
+	// release later.
+	if cfg.RetiredTrustedProxies {
+		logger.Warn("CHRONICLE_TRUSTED_PROXIES is set and is being IGNORED: it was retired by CHRN-75, "+
+			"because no CIDR can distinguish Traefik from a neighbour on construct_net",
+			"remedy", "remove it and set CHRONICLE_PROXY_SECRET instead")
 	}
 	// The corpus has nowhere to live until this is set, so the storage report
 	// answers 503 and CHRN-19/20 will have nothing to write to. A warning
@@ -160,14 +176,14 @@ func runServe(args []string) error {
 
 	var watcher *watch.Watcher
 	deps := api.Deps{
-		DB:             st,
-		Accounts:       st,
-		Logger:         logger,
-		Version:        buildVersion(),
-		Commit:         commit,
-		MobileBaseURL:  cfg.MobileBaseURL,
-		SecureCookies:  cfg.SecureCookies,
-		TrustedProxies: cfg.TrustedProxies,
+		DB:            st,
+		Accounts:      st,
+		Logger:        logger,
+		Version:       buildVersion(),
+		Commit:        commit,
+		MobileBaseURL: cfg.MobileBaseURL,
+		SecureCookies: cfg.SecureCookies,
+		ProxySecret:   cfg.ProxySecret,
 	}
 	if cfg.AudioDir != "" {
 		audioStore, err := audio.New(cfg.AudioDir)

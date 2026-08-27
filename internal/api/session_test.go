@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -667,61 +669,83 @@ func TestBothSignInEndpointsAreRateLimited(t *testing.T) {
 	}
 }
 
-// Keying on RemoteAddr alone collapses everything behind Traefik into one
-// bucket, so one attacker locks out every real user. X-Forwarded-For is
-// believed only when the peer is a configured proxy.
-func TestClientIPTrustsForwardedOnlyFromATrustedProxy(t *testing.T) {
-	proxy := netip.MustParsePrefix("172.19.0.0/16")
-	a := &api{trustedProxies: []netip.Prefix{proxy}}
+// CHRN-75. Keying on RemoteAddr alone collapses everything behind Traefik into
+// one bucket, so one attacker locks out every real user. X-Forwarded-For is
+// believed only when the request carries the secret Traefik stamps -- because
+// on construct_net the PEER ADDRESS cannot tell Traefik from a neighbour, which
+// is what the retired CHRONICLE_TRUSTED_PROXIES tried and failed to do.
+func TestClientIPTrustsForwardedOnlyWithTheProxySecret(t *testing.T) {
+	const secret = "chrn75-test-fixture-not-a-real-value"
+	a := &api{proxySecret: secret, logger: discardLogger(), mismatch: &mismatchWarner{now: time.Now}}
 
-	t.Run("through the proxy", func(t *testing.T) {
+	withSecret := func(remote, presented, fwd string) *http.Request {
 		r := httptest.NewRequest(http.MethodPost, "/auth/session", nil)
-		r.RemoteAddr = "172.19.0.5:40000"
-		r.Header.Set("X-Forwarded-For", "203.0.113.44")
-		if got := a.clientIP(r); got != "203.0.113.44" {
+		r.RemoteAddr = remote
+		if presented != "" {
+			r.Header.Set(ProxySecretHeader, presented)
+		}
+		if fwd != "" {
+			r.Header.Set("X-Forwarded-For", fwd)
+		}
+		return r
+	}
+
+	t.Run("through Traefik", func(t *testing.T) {
+		if got := a.clientIP(withSecret("172.19.0.16:40000", secret, "203.0.113.44")); got != "203.0.113.44" {
 			t.Errorf("clientIP = %q, want the forwarded client", got)
 		}
 	})
 
-	t.Run("a neighbour container spoofing the header", func(t *testing.T) {
-		r := httptest.NewRequest(http.MethodPost, "/auth/session", nil)
-		r.RemoteAddr = "10.42.0.9:40000" // not a trusted proxy
-		r.Header.Set("X-Forwarded-For", "203.0.113.44")
-		if got := a.clientIP(r); got != "10.42.0.9" {
-			t.Errorf("clientIP = %q, want the real peer — the header is not trustworthy here", got)
+	// The case the whole ticket exists for. This peer is inside the RETIRED
+	// default 172.16.0.0/12, so the old code trusted it and it could pick any
+	// bucket it liked by writing a header.
+	t.Run("a neighbour on construct_net spoofing the header", func(t *testing.T) {
+		if got := a.clientIP(withSecret("172.19.0.20:40000", "", "203.0.113.44")); got != "172.19.0.20" {
+			t.Errorf("clientIP = %q, want the real peer — it presented no secret", got)
+		}
+	})
+
+	// And presence is not the test. A neighbour going direct arrives with the
+	// header PRESENT AND WRONG, which is lab case C from the decision.
+	t.Run("a neighbour presenting a wrong secret", func(t *testing.T) {
+		if got := a.clientIP(withSecret("172.19.0.20:40000", "FORGED-BY-CLIENT", "203.0.113.44")); got != "172.19.0.20" {
+			t.Errorf("clientIP = %q, want the real peer — the secret did not match", got)
+		}
+	})
+
+	// A prefix of the real secret must not pass either: ConstantTimeCompare is
+	// length-sensitive, and this is the shape a truncated env var takes.
+	t.Run("a truncated secret", func(t *testing.T) {
+		if got := a.clientIP(withSecret("172.19.0.20:40000", secret[:8], "203.0.113.44")); got != "172.19.0.20" {
+			t.Errorf("clientIP = %q, want the real peer", got)
 		}
 	})
 
 	t.Run("a chain takes the last hop", func(t *testing.T) {
-		r := httptest.NewRequest(http.MethodPost, "/auth/session", nil)
-		r.RemoteAddr = "172.19.0.5:40000"
-		r.Header.Set("X-Forwarded-For", "1.2.3.4, 203.0.113.44")
-		if got := a.clientIP(r); got != "203.0.113.44" {
+		if got := a.clientIP(withSecret("172.19.0.16:40000", secret, "1.2.3.4, 203.0.113.44")); got != "203.0.113.44" {
 			t.Errorf("clientIP = %q, want the rightmost hop", got)
 		}
 	})
 
-	t.Run("no trusted proxies configured", func(t *testing.T) {
+	t.Run("no secret configured", func(t *testing.T) {
 		bare := &api{}
-		r := httptest.NewRequest(http.MethodPost, "/auth/session", nil)
-		r.RemoteAddr = "172.19.0.5:40000"
-		r.Header.Set("X-Forwarded-For", "203.0.113.44")
-		if got := bare.clientIP(r); got != "172.19.0.5" {
-			t.Errorf("clientIP = %q, want the peer when nothing is trusted", got)
+		if got := bare.clientIP(withSecret("172.19.0.16:40000", secret, "203.0.113.44")); got != "172.19.0.16" {
+			t.Errorf("clientIP = %q, want the peer when nothing is believed", got)
 		}
 	})
 
-	// Two clients behind the same proxy get their own budgets — the property
-	// the whole trusted-proxy dance exists to buy.
+	// Two clients behind Traefik get their own budgets — the property the whole
+	// dance exists to buy, and the one "just use RemoteAddr" throws away.
 	h := NewRouter(Deps{
 		DB: fakePinger{}, Accounts: newFakeAccounts(), Logger: discardLogger(),
-		Version: "test", TrustedProxies: []netip.Prefix{proxy},
+		Version: "test", ProxySecret: secret,
 	})
 	exhaust := func(client string) int {
 		var last int
 		for i := 0; i < signInRateBurst+2; i++ {
 			req := jsonReq(http.MethodPost, "/auth/session", `{"token":"chr_no"}`)
-			req.RemoteAddr = "172.19.0.5:40000"
+			req.RemoteAddr = "172.19.0.16:40000"
+			req.Header.Set(ProxySecretHeader, secret)
 			req.Header.Set("X-Forwarded-For", client)
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
@@ -733,12 +757,104 @@ func TestClientIPTrustsForwardedOnlyFromATrustedProxy(t *testing.T) {
 		t.Errorf("first client not limited: %d", got)
 	}
 	req := jsonReq(http.MethodPost, "/auth/session", `{"token":"chr_no"}`)
-	req.RemoteAddr = "172.19.0.5:40000"
+	req.RemoteAddr = "172.19.0.16:40000"
+	req.Header.Set(ProxySecretHeader, secret)
 	req.Header.Set("X-Forwarded-For", "203.0.113.2")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code == http.StatusTooManyRequests {
-		t.Error("a second client behind the same proxy was locked out by the first")
+		t.Error("a second client behind Traefik was locked out by the first")
+	}
+}
+
+// The defect, as a bucket count rather than as a string comparison: a neighbour
+// rotating X-Forwarded-For must not get a fresh 20-request budget per value.
+//
+// This is the assertion that failed before CHRN-75. It cannot reference the
+// retired CHRONICLE_TRUSTED_PROXIES any more — the field is gone — so what it
+// pins is the behaviour: whatever the neighbour writes, it is keyed on its own
+// address and the 21st request is refused.
+func TestANeighbourCannotBuyBucketsWithAHeader(t *testing.T) {
+	h := NewRouter(Deps{
+		DB: fakePinger{}, Accounts: newFakeAccounts(), Logger: discardLogger(),
+		Version: "test", ProxySecret: "chrn75-test-fixture-not-a-real-value",
+	})
+
+	var last int
+	for i := 0; i < signInRateBurst+1; i++ {
+		req := jsonReq(http.MethodPost, "/auth/session", `{"token":"chr_no"}`)
+		// A neighbour on construct_net -- inside the retired default -- with a
+		// different spoofed client every time.
+		req.RemoteAddr = "172.19.0.20:40000"
+		req.Header.Set("X-Forwarded-For", fmt.Sprintf("203.0.113.%d", i+1))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		last = rec.Code
+	}
+	if last != http.StatusTooManyRequests {
+		t.Errorf("request %d = %d, want 429: a neighbour bought %d buckets with a header",
+			signInRateBurst+1, last, signInRateBurst+1)
+	}
+}
+
+// A mismatched secret is the likeliest first-deploy state and used to be
+// completely silent -- the same coarse behaviour as "unset", with none of the
+// warning. It must say so, and must not say so twenty-one times.
+func TestAMismatchedSecretWarnsOnceAndNeverCarriesEitherValue(t *testing.T) {
+	const secret = "chrn75-test-fixture-not-a-real-value"
+	var buf bytes.Buffer
+	a := &api{
+		proxySecret: secret,
+		logger:      slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})),
+		mismatch:    &mismatchWarner{now: time.Now},
+	}
+
+	for i := 0; i < 21; i++ {
+		r := httptest.NewRequest(http.MethodPost, "/auth/session", nil)
+		r.RemoteAddr = "172.19.0.20:40000"
+		r.Header.Set(ProxySecretHeader, "FORGED-BY-CLIENT")
+		a.clientIP(r)
+	}
+
+	out := buf.String()
+	if n := strings.Count(out, "did not match"); n != 1 {
+		t.Errorf("warned %d times across 21 mismatches, want 1 — a neighbour can trip this deliberately", n)
+	}
+	if !strings.Contains(out, "172.19.0.20") {
+		t.Error("the warning does not carry the peer, which is the whole diagnostic")
+	}
+	// Neither the configured value nor the presented one may reach a log.
+	if strings.Contains(out, secret) {
+		t.Error("the warning leaked the configured secret")
+	}
+	if strings.Contains(out, "FORGED-BY-CLIENT") {
+		t.Error("the warning leaked the presented value")
+	}
+
+	// A request with NO header is the ordinary lateral case and must stay quiet.
+	buf.Reset()
+	quiet := &api{proxySecret: secret, logger: a.logger, mismatch: &mismatchWarner{now: time.Now}}
+	r := httptest.NewRequest(http.MethodPost, "/auth/session", nil)
+	r.RemoteAddr = "172.19.0.20:40000"
+	quiet.clientIP(r)
+	if buf.Len() != 0 {
+		t.Errorf("an absent header warned: %s", buf.String())
+	}
+}
+
+func TestMismatchWarnerOpensAgainAfterItsWindow(t *testing.T) {
+	now := time.Now()
+	w := &mismatchWarner{now: func() time.Time { return now }}
+
+	if !w.allow() {
+		t.Fatal("the first warning was suppressed")
+	}
+	if w.allow() {
+		t.Error("a second warning inside the window was emitted")
+	}
+	now = now.Add(mismatchWarnEvery + time.Second)
+	if !w.allow() {
+		t.Error("the warner never reopened — a persistent misconfiguration would go quiet")
 	}
 }
 
@@ -774,4 +890,105 @@ func TestInvalidAccountKindIsABadRequest(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rec.Code)
 	}
+}
+
+// The state the reviewer found, which the signed-off decision had left out: an
+// ABSENT header and a MISSING MIDDLEWARE are indistinguishable at the request
+// level, and the second is a silent shared bucket on exactly the sign-in path.
+//
+// SERV-148 attaches the middleware to three routers and its own text warns
+// "all three, not only the /auth/ one" — miss chronicle-public-auth and every
+// WAN sign-in shares one bucket with nothing saying so.
+func TestAConfiguredSecretNoRequestCarriesIsReported(t *testing.T) {
+	const secret = "chrn75-test-fixture-not-a-real-value"
+	newAPI := func(buf *bytes.Buffer) *api {
+		return &api{
+			proxySecret: secret,
+			logger:      slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelWarn})),
+			mismatch:    &mismatchWarner{now: time.Now},
+			absent:      &mismatchWarner{now: time.Now},
+			proxySeen:   &proxySeen{},
+		}
+	}
+	bare := func(remote string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/auth/session", nil)
+		r.RemoteAddr = remote
+		return r
+	}
+
+	t.Run("reported until a request proves the middleware is attached", func(t *testing.T) {
+		var buf bytes.Buffer
+		a := newAPI(&buf)
+
+		for i := 0; i < 5; i++ {
+			a.clientIP(bare("172.19.0.16:40000"))
+		}
+		out := buf.String()
+		if n := strings.Count(out, "no request has ever carried it"); n != 1 {
+			t.Fatalf("warned %d times across 5 header-less requests, want 1", n)
+		}
+		if !strings.Contains(out, "SERV-148") {
+			t.Error("the warning does not name the ticket that fixes it")
+		}
+		if strings.Contains(out, secret) {
+			t.Error("the warning leaked the configured secret")
+		}
+	})
+
+	// One good request silences it for the life of the process: past that
+	// point an absent header really is the ordinary lateral case.
+	t.Run("silent once the middleware has proved itself", func(t *testing.T) {
+		var buf bytes.Buffer
+		a := newAPI(&buf)
+
+		through := httptest.NewRequest(http.MethodPost, "/auth/session", nil)
+		through.RemoteAddr = "172.19.0.16:40000"
+		through.Header.Set(ProxySecretHeader, secret)
+		through.Header.Set("X-Forwarded-For", "203.0.113.44")
+		if got := a.clientIP(through); got != "203.0.113.44" {
+			t.Fatalf("clientIP = %q, want the forwarded client", got)
+		}
+
+		buf.Reset()
+		a.absent = &mismatchWarner{now: time.Now} // a fresh window, so only the flag can quiet it
+		for i := 0; i < 5; i++ {
+			a.clientIP(bare("172.19.0.20:40000"))
+		}
+		if buf.Len() != 0 {
+			t.Errorf("still warning after a request carried the secret: %s", buf.String())
+		}
+	})
+
+	// A neighbour cannot suppress the warning, because it cannot produce a
+	// match — which is what stops this being a signal an attacker can turn off.
+	t.Run("a wrong secret does not count as proof", func(t *testing.T) {
+		var buf bytes.Buffer
+		a := newAPI(&buf)
+
+		forged := httptest.NewRequest(http.MethodPost, "/auth/session", nil)
+		forged.RemoteAddr = "172.19.0.20:40000"
+		forged.Header.Set(ProxySecretHeader, "FORGED-BY-CLIENT")
+		a.clientIP(forged)
+
+		if a.proxySeen.yes() {
+			t.Fatal("a forged secret was accepted as proof the middleware is attached")
+		}
+		buf.Reset()
+		a.clientIP(bare("172.19.0.16:40000"))
+		if !strings.Contains(buf.String(), "no request has ever carried it") {
+			t.Error("the warning was suppressed by a request that did not match")
+		}
+	})
+
+	// And with no secret configured at all, boot already warns — this path must
+	// stay quiet rather than doubling the noise on a LAN install.
+	t.Run("quiet when no secret is configured", func(t *testing.T) {
+		var buf bytes.Buffer
+		a := newAPI(&buf)
+		a.proxySecret = ""
+		a.clientIP(bare("172.19.0.20:40000"))
+		if buf.Len() != 0 {
+			t.Errorf("warned with no secret configured: %s", buf.String())
+		}
+	})
 }
