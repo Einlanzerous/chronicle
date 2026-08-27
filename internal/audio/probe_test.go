@@ -355,3 +355,57 @@ func secondsFromName(base string) (int32, bool) {
 	}
 	return 0, false
 }
+
+// PR #16 review, nit 2. The backwards scan used to take any "OggS" it found,
+// and the last one in the file is inside the final page's BODY, not its header.
+// Compressed Opus payload contains those four bytes about once per 4 GB, so at
+// a 4 KB final page this is roughly one file in a million — and the failure is
+// a silently wrong duration_ms, which is the worst kind.
+func TestProbeIgnoresTheCapturePatternInsidePageData(t *testing.T) {
+	const preSkip = 312
+	granule := int64(5)*opusGranuleRate + preSkip
+
+	// A final page whose payload contains "OggS" twice, once followed by bytes
+	// that would read as a plausible granule and once by a version byte of 0.
+	payload := make([]byte, 200)
+	copy(payload[40:], []byte("OggS\x00\x00\xff\xff\xff\xff\xff\xff\xff\x7f"))
+	copy(payload[120:], []byte("OggS\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00"))
+
+	b := oggPage(t, 0, 0, opusHeadPacket(1, preSkip, 48000))
+	b = append(b, oggPage(t, 0, 1, []byte("OpusTags\x00\x00\x00\x00\x00\x00\x00\x00"))...)
+	b = append(b, oggPage(t, granule, 2, payload)...)
+
+	info, err := Probe(writeStream(t, "m.opus", b))
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	if info.DurationMS != 5000 {
+		t.Fatalf("duration %d ms, want 5000 — an OggS inside the page body was read as a header",
+			info.DurationMS)
+	}
+}
+
+// The same check refuses a CHAINED stream rather than under-reporting it.
+// `cat a.opus b.opus` is two logical streams whose granules restart, so the
+// last link's granule is not the total; answering with it would be confidently
+// wrong. This reads one stream, and a chain is not one.
+func TestProbeRefusesAChainedStream(t *testing.T) {
+	const preSkip = 312
+	first := stream(t, 1, preSkip, 48000, int64(10)*opusGranuleRate+preSkip)
+
+	// A second link: same shape, different serial.
+	second := stream(t, 1, preSkip, 48000, int64(3)*opusGranuleRate+preSkip)
+	for i := 0; i+18 <= len(second); i++ {
+		if string(second[i:i+4]) == string(oggS) {
+			binary.LittleEndian.PutUint32(second[i+14:i+18], 99)
+		}
+	}
+
+	_, err := Probe(writeStream(t, "chain.opus", append(first, second...)))
+	if err == nil {
+		t.Fatal("a chained stream was reported as one recording; its duration would be the last link's alone")
+	}
+	if errors.Is(err, ErrNotOpus) {
+		t.Fatalf("a chain is Opus, just not one stream: %v", err)
+	}
+}

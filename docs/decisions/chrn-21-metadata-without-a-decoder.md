@@ -85,7 +85,8 @@ duration = (final_granule − pre_skip) / 48000
 
 The pre-skip is encoder delay — samples the decoder emits before the first real
 one. Subtracting it is the entire difference between this and `ffprobe`, which
-divides the granule and stops. Measured across seven files:
+divides the granule and stops. Five of the seven fixtures, the two omitted being
+`gen_1.0s` (+6.5, same as the rest) and `voice60` (+6.7, a 320-sample pre-skip):
 
 | file | `Probe` | `ffprobe` | delta |
 |---|---|---|---|
@@ -111,6 +112,37 @@ So a corpus of `sample_rate_hz = 48000` is the expected reading, not a bug. It i
 recorded because it is what the file says, not because it is informative — and
 the comment on the field says exactly that, so nobody investigates it later as a
 defect.
+
+### What the tail scan has to check, and why
+
+`[rev]` Found in review on PR #16, and the first fix for it was wrong.
+
+The backwards scan takes the **last** occurrence of `OggS` in the window — and
+the last real page's body comes *after* its own header. Compressed Opus payload
+contains those four bytes about once per 4 GB, so at a 4 KB final page that is
+roughly one file in a million, and the result is eight bytes of audio read as a
+granule: a silently wrong `duration_ms`, or a spurious "damaged" warning on a
+file that is fine. Small, silent and stored is the worst combination.
+
+A page header is now required to carry Ogg version 0 **and this stream's
+serial**, which takes a false positive from four bytes of coincidence to nine.
+
+**Chained streams** — `cat a.opus b.opus` — are a second, real case: granules
+restart per link, so no single granule describes the file. The first attempt
+recognised the next link *by its header shape*, and that was a mistake of
+exactly the class being fixed: payload that happens to look like a foreign
+header then **refuses a perfectly good file**, trading a rare wrong number for a
+rare wrong refusal. It is now detected by arithmetic — our stream's last page
+must end exactly at EOF, and its length is the sum of its own segment table.
+
+That also makes the answer independent of file size. Without it a small chain
+reports the *first* link's duration (the whole file fits in the window) while a
+large one errors (only the last link does), and a probe whose correctness
+depends on file length is worse than one that declines.
+
+Worth noting what the alternative does here: on a 1.0 s + 3.5 s concatenation,
+`ffprobe` confidently reports **3.5065 s** — the second link alone. Declining is
+the better answer.
 
 ## 4 · A probe failure never rejects a memo
 
@@ -159,6 +191,13 @@ from outside it.
 - **A granule of −1 is legal** — it means no packet completes on that page — so
   the backwards scan walks past it rather than taking the last `OggS` it finds.
   `TestProbeWalksPastPagesWithNoGranule` pins it.
+- **The described row is what the response is built from.** `describe` returns
+  the memo `SetMemoAudioInfo` wrote, and the upload path answers with it. An
+  earlier version described the memo and then answered from the copy it held
+  beforehand, so a first upload reported `"duration_ms": null` for a row that
+  said 3000 — and the first upload is the only delivery on which the probe runs,
+  so CHRN-21 was invisible over HTTP. Found in review on PR #16;
+  `TestACompletedUploadReportsTheMetadataItJustRecorded` fails against it.
 - **`OggS` is required at offset zero**, not searched for. Scanning deeper would
   accept a file with arbitrary junk in front of a valid stream.
 - **The unit tests build their own Ogg pages** rather than using a checked-in

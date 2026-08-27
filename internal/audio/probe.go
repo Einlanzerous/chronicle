@@ -117,16 +117,16 @@ func Probe(path string) (Info, error) {
 		return Info{}, fmt.Errorf("%w: file is empty", ErrNotOpus)
 	}
 
-	head, err := readAt(f, 0, min64(size, headWindow))
+	head, err := readAt(f, 0, min(size, headWindow))
 	if err != nil {
 		return Info{}, err
 	}
-	info, preSkip, err := parseOpusHead(head)
+	info, preSkip, serial, err := parseOpusHead(head)
 	if err != nil {
 		return Info{}, err
 	}
 
-	granule, err := lastGranule(f, size)
+	granule, err := lastGranule(f, size, serial)
 	if err != nil {
 		return Info{}, err
 	}
@@ -161,36 +161,39 @@ func Probe(path string) (Info, error) {
 // parseOpusHead finds the first Ogg page and reads the identification header
 // out of it, returning the pre-skip separately because it is arithmetic rather
 // than something to record.
-func parseOpusHead(buf []byte) (Info, uint16, error) {
+func parseOpusHead(buf []byte) (Info, uint16, uint32, error) {
 	if len(buf) < oggPageHeader || string(buf[:4]) != string(oggS) {
 		// Checked at offset zero rather than searched for. A file whose first
 		// bytes are not "OggS" is not an Ogg stream, and scanning for one
 		// deeper in would accept a file with arbitrary junk in front of it.
-		return Info{}, 0, fmt.Errorf("%w: no OggS at the start of the file", ErrNotOpus)
+		return Info{}, 0, 0, fmt.Errorf("%w: no OggS at the start of the file", ErrNotOpus)
 	}
+	// The logical stream this file is. Carried out so the tail scan can insist
+	// that the page it finds belongs to the SAME stream — see lastGranule.
+	serial := binary.LittleEndian.Uint32(buf[14:18])
 	segments := int(buf[26])
 	body := oggPageHeader + segments
 	if body > len(buf) {
-		return Info{}, 0, fmt.Errorf("%w: first page header is truncated", ErrNotOpus)
+		return Info{}, 0, 0, fmt.Errorf("%w: first page header is truncated", ErrNotOpus)
 	}
 
 	packet := buf[body:]
 	// RFC 7845 §5.1: the identification header is 19 bytes, and must be the
 	// only packet in the first page.
 	if len(packet) < 19 || string(packet[:8]) != string(opusHead) {
-		return Info{}, 0, fmt.Errorf("%w: first packet is not OpusHead", ErrNotOpus)
+		return Info{}, 0, 0, fmt.Errorf("%w: first packet is not OpusHead", ErrNotOpus)
 	}
 	if version := packet[8]; version>>4 != 0 {
 		// Major version 0 is the only one defined. A future major version may
 		// move these fields, so reading them anyway would be inventing data.
-		return Info{}, 0, fmt.Errorf("%w: OpusHead version %d is not one this understands", ErrNotOpus, version)
+		return Info{}, 0, 0, fmt.Errorf("%w: OpusHead version %d is not one this understands", ErrNotOpus, version)
 	}
 
 	channels := packet[9]
 	preSkip := binary.LittleEndian.Uint16(packet[10:12])
 	inputRate := binary.LittleEndian.Uint32(packet[12:16])
 	if channels == 0 {
-		return Info{}, 0, fmt.Errorf("%w: OpusHead declares zero channels", ErrNotOpus)
+		return Info{}, 0, 0, fmt.Errorf("%w: OpusHead declares zero channels", ErrNotOpus)
 	}
 	if inputRate > uint32(^uint32(0)>>1) {
 		// Beyond what an INTEGER column holds. Recorded as unknown rather than
@@ -202,20 +205,54 @@ func parseOpusHead(buf []byte) (Info, uint16, error) {
 		Codec:        CodecOpus,
 		SampleRateHz: int32(inputRate),
 		Channels:     int32(channels),
-	}, preSkip, nil
+	}, preSkip, serial, nil
 }
 
 // CodecOpus is the value recorded in tier2.memos.codec.
 const CodecOpus = "opus"
 
-// lastGranule finds the granule position of the last page that carries one.
+// lastGranule finds the granule position of the last page of THIS stream.
 //
 // Scanned backwards from the end because that is where the answer is, and
 // because reading forward would mean walking every page of a forty-minute
 // recording to learn one number. A page whose granule is -1 carries no
 // completed packet, which is legal, so the scan continues past those rather
 // than treating the first hit as the answer.
-func lastGranule(f *os.File, size int64) (int64, error) {
+//
+// # Why a match on "OggS" is not enough
+//
+// The scan runs backwards, so the FIRST thing it finds is the LAST occurrence
+// of the capture pattern — and the last real page's body comes after its own
+// header. Opus payload is compressed and effectively uniform, so those four
+// bytes occur inside it about once per 4 GB of audio; at a 4 KB final page that
+// is roughly one file in a million. The consequence is not a crash: eight bytes
+// of audio data are read as a granule, giving either a silently wrong
+// duration_ms or a "truncated or damaged" warning on a file that is fine. Small,
+// silent and stored is the worst combination, so it is checked rather than
+// accepted.
+//
+// Two comparisons close it. The version byte must be 0 — the only Ogg version
+// defined — and the serial must be the one from the OpusHead page. That takes a
+// false positive from four bytes to nine, which is not a rate worth naming.
+//
+// # Chained streams are refused, not answered
+//
+// Concatenating two Opus files (literally `cat a.opus b.opus`) gives two
+// logical streams whose granules restart, so no single granule describes the
+// file. That is detected by ARITHMETIC rather than by shape: our stream's last
+// page must end exactly at EOF, and its length is the segment table's sum.
+//
+// Recognising the next link by its header shape was tried first and was wrong —
+// payload that happens to look like a foreign page header then refuses a
+// perfectly good file, which trades a rare wrong number for a rare wrong
+// refusal. The EOF check cannot do that: it reads a length that is already in
+// the page we matched.
+//
+// It also makes the answer independent of file size. Without it a SMALL chain
+// reports the first link's duration (the whole file fits in the window) while a
+// LARGE one errors (only the last link does), and a probe whose correctness
+// depends on file length is worse than one that declines.
+func lastGranule(f *os.File, size int64, serial uint32) (int64, error) {
 	start := size - tailWindow
 	if start < 0 {
 		start = 0
@@ -225,10 +262,35 @@ func lastGranule(f *os.File, size int64) (int64, error) {
 		return 0, err
 	}
 
+	var checkedTail bool
 	for i := len(buf) - oggPageHeader; i >= 0; i-- {
 		if string(buf[i:i+4]) != string(oggS) {
 			continue
 		}
+		if buf[i+4] != 0 {
+			// Not an Ogg version this understands, so not a page header —
+			// almost certainly the pattern occurring inside a page body.
+			continue
+		}
+		if binary.LittleEndian.Uint32(buf[i+14:i+18]) != serial {
+			// A different logical stream, or payload. Either way not ours.
+			continue
+		}
+
+		// The first match is the LAST page of our stream, whatever its granule.
+		// If it does not end at EOF, something follows it — the second link of a
+		// chain, or trailing data. Checked by arithmetic on the segment table
+		// rather than by guessing at what the following bytes are, because an
+		// earlier attempt to recognise a foreign page header by shape refused
+		// perfectly good files whose payload happened to look like one.
+		if !checkedTail {
+			checkedTail = true
+			if end, ok := pageEnd(buf, i); ok && start+int64(end) != size {
+				return 0, fmt.Errorf("audio: probe: stream %d ends %d bytes before the end of the file, so this is a chain or has data appended; no single duration describes it",
+					serial, size-(start+int64(end)))
+			}
+		}
+
 		granule := int64(binary.LittleEndian.Uint64(buf[i+6 : i+14]))
 		if granule == -1 {
 			// No packet completes on this page. Legal; keep going back.
@@ -240,11 +302,27 @@ func lastGranule(f *os.File, size int64) (int64, error) {
 		}
 		return granule, nil
 	}
-	// A window this size holds several pages even at the maximum page length,
-	// so finding none means the tail is not Ogg — a truncated or overwritten
-	// file, which is exactly the case this is supposed to catch loudly.
-	return 0, fmt.Errorf("audio: probe: no Ogg page with a granule in the last %d bytes; the stream is truncated or damaged",
-		len(buf))
+	// A window this size holds several pages even at the maximum page length, so
+	// finding none means the tail does not belong to this stream — a truncated
+	// or overwritten file, or a chain whose last link is a different stream.
+	// Either way it is the case this is supposed to catch loudly.
+	return 0, fmt.Errorf("audio: probe: no page of stream %d with a granule in the last %d bytes; the stream is truncated, chained or damaged",
+		serial, len(buf))
+}
+
+// pageEnd is the offset just past the page starting at i, from its segment
+// table. Reports false when the table runs off the end of the window.
+func pageEnd(buf []byte, i int) (int, bool) {
+	segments := int(buf[i+26])
+	table := i + oggPageHeader
+	if table+segments > len(buf) {
+		return 0, false
+	}
+	end := table + segments
+	for _, lacing := range buf[table : table+segments] {
+		end += int(lacing)
+	}
+	return end, true
 }
 
 // readAt reads exactly n bytes at off.
@@ -254,11 +332,4 @@ func readAt(f *os.File, off, n int64) ([]byte, error) {
 		return nil, fmt.Errorf("audio: probe: reading %d bytes at %d: %w", n, off, err)
 	}
 	return buf, nil
-}
-
-func min64(a, b int64) int64 {
-	if a < b {
-		return a
-	}
-	return b
 }

@@ -3,6 +3,7 @@ package watch
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"os"
@@ -30,14 +31,18 @@ type fakeIngest struct {
 	sightings map[string]bool      // memo:source:ref
 	calls     []store.Arrival
 	err       error
-	// described counts SetMemoAudioInfo per memo (CHRN-21).
+	// described counts SetMemoAudioInfo per memo (CHRN-21), and info keeps what
+	// was recorded, so a test can assert the watcher's probe read the file the
+	// watcher just wrote.
 	described map[uuid.UUID]int
+	info      map[uuid.UUID]store.AudioInfo
 }
 
 func newFakeIngest() *fakeIngest {
 	return &fakeIngest{
 		memos:     map[string]uuid.UUID{},
 		described: map[uuid.UUID]int{},
+		info:      map[uuid.UUID]store.AudioInfo{},
 		arrivals:  map[string]int{},
 		sightings: map[string]bool{},
 	}
@@ -72,14 +77,14 @@ func (f *fakeIngest) IngestMemo(_ context.Context, in store.Arrival) (store.Inge
 	}, nil
 }
 
-// SetMemoAudioInfo records what a probe found (CHRN-21). The inbox fixtures are
-// not real Opus, so in these tests the probe fails and this is never reached —
-// which is itself the assertion in TestAnUnreadableRecordingStillBecomesAMemo.
-func (f *fakeIngest) SetMemoAudioInfo(_ context.Context, id uuid.UUID, _ store.AudioInfo) (store.Memo, error) {
+// SetMemoAudioInfo records what a probe found (CHRN-21).
+func (f *fakeIngest) SetMemoAudioInfo(_ context.Context, id uuid.UUID, in store.AudioInfo) (store.Memo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.described[id]++
-	return store.Memo{ID: id}, nil
+	f.info[id] = in
+	d := in.DurationMS
+	return store.Memo{ID: id, DurationMS: &d}, nil
 }
 
 func (f *fakeIngest) count() int {
@@ -641,4 +646,93 @@ func TestTheSweepDoesNotDropRowsForFilesItSimplyDidNotWalk(t *testing.T) {
 	if _, ok := h.ledger.entries[kept]; !ok {
 		t.Error("the sweep dropped a row for a file that is still on disk")
 	}
+}
+
+// --- CHRN-21 ---------------------------------------------------------------
+
+// PR #16 review, nit 3. `describe` exists twice — once here and once in
+// internal/upload — and only the upload copy had its success path covered. The
+// inbox fixtures elsewhere in this file are not Opus, so in every other test the
+// probe fails and SetMemoAudioInfo is never reached. The risk of the untested
+// copy is `w.audio.Path` resolving somewhere the watcher did not just write,
+// which is exactly what this catches.
+func TestAWatchedRecordingIsDescribed(t *testing.T) {
+	h := newHarness(t)
+	h.drop(t, "memo.opus", string(opusStream(7)))
+
+	if got := h.scan(t).Ingested; got != 1 {
+		t.Fatalf("ingested %d, want 1", got)
+	}
+
+	if len(h.ingest.calls) != 1 {
+		t.Fatalf("%d arrivals, want 1", len(h.ingest.calls))
+	}
+	id := h.ingest.memos[h.author.String()+":"+h.ingest.calls[0].ContentHash]
+	if n := h.ingest.described[id]; n != 1 {
+		t.Fatalf("the recording was described %d times, want 1 — the watcher's probe never reached the store", n)
+	}
+	if got := h.ingest.info[id].DurationMS; got != 7000 {
+		t.Fatalf("duration %d ms, want 7000", got)
+	}
+	if got := h.ingest.info[id].Codec; got != audio.CodecOpus {
+		t.Fatalf("codec %q, want %q", got, audio.CodecOpus)
+	}
+
+	// A rescan sees the same file again and must not re-describe it.
+	h.scan(t)
+	if n := h.ingest.described[id]; n != 1 {
+		t.Fatalf("described %d times after a rescan, want 1", n)
+	}
+}
+
+// The other half, on this path: a file the probe cannot read still becomes a
+// memo, with its bytes intact and the three columns left NULL.
+func TestAnUnreadableWatchedFileStillBecomesAMemo(t *testing.T) {
+	h := newHarness(t)
+	const content = "this is not an opus stream, it is a sentence"
+	h.drop(t, "memo.opus", content)
+
+	if got := h.scan(t).Ingested; got != 1 {
+		t.Fatalf("ingested %d, want 1 — an unreadable recording was refused", got)
+	}
+	if n := len(h.ingest.described); n != 0 {
+		t.Fatalf("SetMemoAudioInfo was called for a file that could not be probed (%d times)", n)
+	}
+	got, err := os.ReadFile(h.storedPath(t, content))
+	if err != nil || string(got) != content {
+		t.Fatalf("the recording was not stored intact: %v", err)
+	}
+}
+
+// opusStream is a minimal valid Ogg Opus file of the given length. The byte
+// layout is asserted against a real encoder in internal/audio; here it only has
+// to be something Probe accepts.
+func opusStream(seconds int) []byte {
+	const preSkip = 312
+	page := func(granule int64, seq uint32, payload []byte) []byte {
+		var segs []byte
+		for n := len(payload); ; n -= 255 {
+			if n < 255 {
+				segs = append(segs, byte(n))
+				break
+			}
+			segs = append(segs, 255)
+		}
+		p := append([]byte{}, 'O', 'g', 'g', 'S', 0, 0)
+		p = binary.LittleEndian.AppendUint64(p, uint64(granule))
+		p = binary.LittleEndian.AppendUint32(p, 1)
+		p = binary.LittleEndian.AppendUint32(p, seq)
+		p = binary.LittleEndian.AppendUint32(p, 0)
+		p = append(p, byte(len(segs)))
+		p = append(p, segs...)
+		return append(p, payload...)
+	}
+	head := append([]byte("OpusHead"), 1, 1)
+	head = binary.LittleEndian.AppendUint16(head, preSkip)
+	head = binary.LittleEndian.AppendUint32(head, 48000)
+	head = append(head, 0, 0, 0)
+
+	b := page(0, 0, head)
+	b = append(b, page(0, 1, []byte("OpusTags\x00\x00\x00\x00\x00\x00\x00\x00"))...)
+	return append(b, page(int64(seconds)*48000+preSkip, 2, make([]byte, 64))...)
 }
