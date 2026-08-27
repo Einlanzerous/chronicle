@@ -56,6 +56,27 @@ Lyceum's (SERV-60), and the database is provisioned the way Purser's is.
    `GET /admin/storage` (owner only, Access-gated host) reports what the corpus
    costs and whether the disk and the database agree.
 
+   **The app's upload path (CHRN-20) needs nothing beyond this directory.**
+   `POST /memos/uploads` is on as soon as `CHRONICLE_AUDIO_DIR` is set; unset,
+   the four `/memos/uploads` routes answer **503 naming the variable** and the
+   boot log says so. Uploads in flight are assembled in a reserved
+   subdirectory, `/data/chronicle/audio/.uploads`, which the service creates
+   itself — it is a fixed name inside a path you already supplied, not a path
+   anyone can typo. It is inside the audio root on purpose: finalising an upload
+   is an `os.Rename`, which is atomic only within one filesystem, and a staging
+   area on another mount would silently become a copy.
+
+   That directory is **not corpus**. `GET /admin/storage` counts it separately
+   as `disk.staging` / `disk.staging_bytes`, and an hourly sweep removes
+   sessions idle for seven days along with their bytes. Expiry is measured from
+   last activity, so a slow upload that is still progressing is never collected.
+
+   Sizing, so `.uploads` is not a surprise on the disk graph: an account may
+   hold **32 open sessions**, each declaring at most **1 GiB**. Both bounds
+   exist to contain a mistake rather than to be met — an hour of voice Opus is
+   around 14 MB — but the arithmetic worth knowing is that the ceiling is 32 GiB
+   per account against 256 G free.
+
    **`CHRONICLE_INBOX_DIR` is the Copyparty seam (CHRN-19), and it needs two
    more things before a phone can use it:**
 

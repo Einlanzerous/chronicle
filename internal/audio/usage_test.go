@@ -3,6 +3,7 @@ package audio
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -157,5 +158,74 @@ func TestVolumeReportsTheFilesystem(t *testing.T) {
 	}
 	if v.TotalBytes <= 0 || v.FreeBytes <= 0 || v.FreeBytes > v.TotalBytes {
 		t.Errorf("Volume = %+v, want a plausible filesystem", v)
+	}
+}
+
+// CHRN-20 puts uploads in flight under the root, in StagingDir. They are
+// neither corpus nor strays, and the scan has to say so: counted as corpus they
+// would inflate what the memos cost, and counted as strays every phone
+// mid-upload would read as a file nobody can name — which is the field that
+// exists to be alarming.
+func TestScanCountsStagingSeparatelyFromCorpusAndStrays(t *testing.T) {
+	root := t.TempDir()
+	s, err := New(root)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// One real recording.
+	ref := Ref{AuthorID: uuid.New(), ContentHash: strings.Repeat("ab", 32)}
+	rec, err := s.Path(ref)
+	if err != nil {
+		t.Fatalf("Path: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(rec), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(rec, make([]byte, 100), 0o644); err != nil {
+		t.Fatalf("write recording: %v", err)
+	}
+
+	// Two uploads in flight.
+	if err := os.MkdirAll(s.StagingRoot(), 0o755); err != nil {
+		t.Fatalf("mkdir staging: %v", err)
+	}
+	for _, n := range []int{40, 60} {
+		p := filepath.Join(s.StagingRoot(), uuid.NewString())
+		if err := os.WriteFile(p, make([]byte, n), 0o644); err != nil {
+			t.Fatalf("write staging: %v", err)
+		}
+	}
+
+	// And one genuine stray, so the field is not merely empty by accident.
+	if err := os.WriteFile(filepath.Join(root, "loose.opus"), make([]byte, 7), 0o644); err != nil {
+		t.Fatalf("write stray: %v", err)
+	}
+
+	d, err := s.Scan()
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(d.Files) != 1 || d.Bytes != 100 {
+		t.Fatalf("corpus is %d files / %d bytes, want 1 / 100 — staging leaked into it", len(d.Files), d.Bytes)
+	}
+	if len(d.Strays) != 1 || d.StrayBytes != 7 {
+		t.Fatalf("strays are %v (%d bytes), want just the loose file — staging leaked into them",
+			d.Strays, d.StrayBytes)
+	}
+	if d.Staging != 2 || d.StagingBytes != 100 {
+		t.Fatalf("staging is %d files / %d bytes, want 2 / 100", d.Staging, d.StagingBytes)
+	}
+}
+
+// The staging directory's name cannot collide with an author's, because no UUID
+// starts with a dot. Asserted so that a later rename of StagingDir to something
+// UUID-shaped fails here rather than in the storage report.
+func TestStagingDirCannotBeMistakenForAnAuthor(t *testing.T) {
+	if _, err := uuid.Parse(StagingDir); err == nil {
+		t.Fatalf("StagingDir %q parses as a UUID, so it could collide with an author directory", StagingDir)
+	}
+	if !strings.HasPrefix(StagingDir, ".") {
+		t.Fatalf("StagingDir %q does not start with a dot", StagingDir)
 	}
 }

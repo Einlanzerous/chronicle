@@ -125,6 +125,34 @@ CREATE TABLE public.schema_migrations (
 
 
 --
+-- Name: memo_uploads; Type: TABLE; Schema: tier1; Owner: -
+--
+
+CREATE TABLE tier1.memo_uploads (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    author_id uuid NOT NULL,
+    idempotency_key text NOT NULL,
+    content_hash text NOT NULL,
+    byte_size bigint NOT NULL,
+    retention text,
+    original_filename text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_activity_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT memo_uploads_byte_size_check CHECK ((byte_size > 0)),
+    CONSTRAINT memo_uploads_content_hash_check CHECK ((content_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT memo_uploads_idempotency_key_check CHECK (((length(idempotency_key) >= 16) AND (length(idempotency_key) <= 200))),
+    CONSTRAINT memo_uploads_retention_check CHECK (((retention IS NULL) OR (retention = ANY (ARRAY['discard_now'::text, 'days_30'::text, 'forever'::text]))))
+);
+
+
+--
+-- Name: TABLE memo_uploads; Type: COMMENT; Schema: tier1; Owner: -
+--
+
+COMMENT ON TABLE tier1.memo_uploads IS 'CHRN-20. Uploads in flight: what the client declared it is sending, so the bytes can be checked against it. Tier 1 — regenerable from the client, which still holds the recording until the memo is acknowledged. Holds no reference into tier 2.';
+
+
+--
 -- Name: watch_seen; Type: TABLE; Schema: tier1; Owner: -
 --
 
@@ -237,6 +265,14 @@ ALTER TABLE ONLY public.schema_migrations
 
 
 --
+-- Name: memo_uploads memo_uploads_pkey; Type: CONSTRAINT; Schema: tier1; Owner: -
+--
+
+ALTER TABLE ONLY tier1.memo_uploads
+    ADD CONSTRAINT memo_uploads_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: watch_seen watch_seen_pkey; Type: CONSTRAINT; Schema: tier1; Owner: -
 --
 
@@ -290,6 +326,20 @@ ALTER TABLE ONLY tier2.users
 
 ALTER TABLE ONLY tier2.users
     ADD CONSTRAINT users_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: memo_uploads_activity; Type: INDEX; Schema: tier1; Owner: -
+--
+
+CREATE INDEX memo_uploads_activity ON tier1.memo_uploads USING btree (last_activity_at);
+
+
+--
+-- Name: memo_uploads_key; Type: INDEX; Schema: tier1; Owner: -
+--
+
+CREATE UNIQUE INDEX memo_uploads_key ON tier1.memo_uploads USING btree (author_id, idempotency_key);
 
 
 --
@@ -392,6 +442,13 @@ REVOKE USAGE ON SCHEMA public FROM PUBLIC;
 --
 
 GRANT ALL ON SCHEMA tier1 TO chronicle_tier1;
+
+
+--
+-- Name: TABLE memo_uploads; Type: ACL; Schema: tier1; Owner: -
+--
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE tier1.memo_uploads TO chronicle_tier1;
 
 
 --

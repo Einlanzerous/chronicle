@@ -192,7 +192,21 @@ jobs:
       #                         same reason the note below gives: the package
       #                         that computes the path is as load-bearing as
       #                         the code that acts on it.
-      sensitive_paths: '^(internal/store/|internal/api/(session|cfaccess|ratelimit|router|storage)|internal/(invite|config|audio|watch)/|cmd/chronicle/|migrations/|deploy/|scripts/|verify\.sh|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore)'
+      #   internal/upload/      CHRN-20's app ingest path, and internal/watch's
+      #                         sibling: the other write path that creates
+      #                         tier-2 memos, and the one that is reachable
+      #                         from the WAN. It also DELETES files under the
+      #                         audio root — abandoned partials only, never a
+      #                         recording — which is a distinction a reviewer
+      #                         has to get right, so REVIEW.md 3 carries it.
+      #                         internal/api/upload is listed beside it for the
+      #                         auth wiring, on the same rule as the other api
+      #                         stems.
+      #                         NOTE this is not CHRN-20 claiming Mode C. It is
+      #                         the same judgement that put watch/ and audio/
+      #                         here: an ingest or deletion path earns the
+      #                         expensive tier whatever mode its ticket ran in.
+      sensitive_paths: '^(internal/store/|internal/api/(session|cfaccess|ratelimit|router|storage|upload)|internal/(invite|config|audio|watch|upload)/|cmd/chronicle/|migrations/|deploy/|scripts/|verify\.sh|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore)'
 
       # No `docs_skip_extra`: this repo commits no knowledge-graph cache, and
       # the one generated artifact it does carry is excluded outright in

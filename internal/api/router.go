@@ -14,6 +14,7 @@ import (
 
 	"github.com/Einlanzerous/chronicle/internal/audio"
 	"github.com/Einlanzerous/chronicle/internal/store"
+	"github.com/Einlanzerous/chronicle/internal/upload"
 )
 
 // Pinger is the slice of the store the readiness probe needs. An interface so
@@ -84,6 +85,13 @@ type Deps struct {
 
 	// Corpus is the database side of that report.
 	Corpus Corpus
+
+	// Uploads is the direct ingest path (CHRN-20). Nil when there is no audio
+	// store, in which case the four /memos/uploads routes answer 503 naming
+	// CHRONICLE_AUDIO_DIR -- the same shape the storage report uses, and for
+	// the same reason: "not configured here" and "wrong URL" are different
+	// facts and a client should be able to tell them apart.
+	Uploads *upload.Service
 }
 
 // api holds what the handlers share.
@@ -100,6 +108,7 @@ type api struct {
 	signInLimiter *ipRateLimiter
 	audio         *audio.Store
 	corpus        Corpus
+	uploads       *upload.Service
 }
 
 // NewRouter builds the HTTP handler.
@@ -132,6 +141,7 @@ func NewRouter(d Deps) http.Handler {
 		signInLimiter: newIPRateLimiter(signInRateWindow, signInRateBurst),
 		audio:         d.Audio,
 		corpus:        d.Corpus,
+		uploads:       d.Uploads,
 	}
 
 	mux := http.NewServeMux()
@@ -185,6 +195,22 @@ func NewRouter(d Deps) http.Handler {
 	mux.HandleFunc("GET /admin/users", a.requireOwner(a.handleAdminUserList))
 	mux.HandleFunc("POST /admin/users/{id}/invite", a.requireOwner(a.handleAdminUserInvite))
 	mux.HandleFunc("DELETE /admin/users/{id}", a.requireOwner(a.handleAdminUserDelete))
+
+	// Memo ingest from the app (CHRN-20). requireUser and not requireOwner:
+	// every account records its own memos, and the author is taken from the
+	// session rather than from anything the request carries.
+	//
+	// Deliberately NOT on limitSignIn. That wrapper exists for unauthenticated
+	// endpoints that mint a credential; putting a 20-per-minute bucket on a
+	// chunked upload would throttle ingest and nothing else. The edge agrees --
+	// traefik-chronicle.yml keeps chronicle-login-ratelimit on a separate
+	// PathPrefix(`/auth/`) router for exactly this ticket, by name. What bounds
+	// this surface instead is the per-account cap on open sessions and the
+	// declared-size limit, both in internal/upload.
+	mux.HandleFunc("POST /memos/uploads", a.requireUser(a.handleUploadOpen))
+	mux.HandleFunc("GET /memos/uploads/{id}", a.requireUser(a.handleUploadStatus))
+	mux.HandleFunc("PATCH /memos/uploads/{id}", a.requireUser(a.handleUploadAppend))
+	mux.HandleFunc("DELETE /memos/uploads/{id}", a.requireUser(a.handleUploadAbandon))
 
 	// What the corpus costs, and whether the disk agrees with the database
 	// (CHRN-23). A read: it reports orphans, it never deletes one.

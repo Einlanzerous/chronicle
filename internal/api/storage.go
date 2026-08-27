@@ -37,6 +37,14 @@ type diskReport struct {
 	// They are never counted as corpus and never offered to the pruner.
 	StraySample []string `json:"stray_sample,omitempty"`
 
+	// Staging is uploads in flight (CHRN-20) — files this service wrote and
+	// understands, which are not recordings yet and may never become any.
+	// Reported apart from both corpus and strays: counted as corpus it would
+	// inflate what the memos cost, and counted as strays every phone mid-upload
+	// would read as a file nobody can name.
+	Staging      int   `json:"staging"`
+	StagingBytes int64 `json:"staging_bytes"`
+
 	// No omitempty on the two figures: a full volume has FreeBytes == 0, and
 	// omitempty would delete the field at exactly the moment it matters most,
 	// leaving "volume_known": true beside no measurement. VolumeKnown is what
@@ -126,14 +134,16 @@ func (a *api) handleAdminStorage(w http.ResponseWriter, r *http.Request) {
 	rep := storageReport{
 		Root: a.audio.Root(),
 		Disk: diskReport{
-			Files:       len(onDisk.Files),
-			Bytes:       onDisk.Bytes,
-			Strays:      len(onDisk.Strays),
-			StrayBytes:  onDisk.StrayBytes,
-			StraySample: firstN(onDisk.Strays, listSample),
-			VolumeKnown: vol.Known,
-			VolumeTotal: vol.TotalBytes,
-			VolumeFree:  vol.FreeBytes,
+			Files:        len(onDisk.Files),
+			Bytes:        onDisk.Bytes,
+			Strays:       len(onDisk.Strays),
+			StrayBytes:   onDisk.StrayBytes,
+			StraySample:  firstN(onDisk.Strays, listSample),
+			Staging:      onDisk.Staging,
+			StagingBytes: onDisk.StagingBytes,
+			VolumeKnown:  vol.Known,
+			VolumeTotal:  vol.TotalBytes,
+			VolumeFree:   vol.FreeBytes,
 		},
 		Corpus: corpusReport{
 			Memos:         stats.Memos,
