@@ -23,6 +23,20 @@ type OnDisk struct {
 	// default for a directory holding the only copy of somebody's recording.
 	Strays     []string
 	StrayBytes int64
+
+	// Staging is what StagingDir holds: uploads in flight (CHRN-20). Counted
+	// separately from both corpus and strays, because it is neither — these
+	// are files this service wrote and understands, which are not yet
+	// recordings and may never become any.
+	//
+	// The distinction is not bookkeeping neatness. Left in Strays, a phone
+	// mid-upload would read as "files under the root that we cannot name",
+	// which is a warning; and a stalled upload would sit in that warning
+	// indefinitely, teaching whoever reads this report to ignore the field
+	// that exists to be alarming. Counted here it is just disk with a known
+	// owner and a known sweep.
+	Staging      int
+	StagingBytes int64
 }
 
 // Scan walks the store and reports what is actually on disk.
@@ -41,11 +55,24 @@ func (s *Store) Scan() (OnDisk, error) {
 		return d, fmt.Errorf("audio: reading root %s: %w", s.root, err)
 	}
 
+	staging := s.StagingRoot()
 	err := filepath.WalkDir(s.root, func(p string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if entry.IsDir() {
+			// Uploads in flight are measured, not walked. Their names are
+			// session ids rather than hashes, so every one of them would
+			// otherwise be reported as a stray for as long as it took to
+			// upload — see OnDisk.Staging.
+			if p == staging {
+				n, bytes, err := measure(p)
+				if err != nil {
+					return err
+				}
+				d.Staging, d.StagingBytes = n, bytes
+				return fs.SkipDir
+			}
 			return nil
 		}
 		info, err := entry.Info()
@@ -71,6 +98,38 @@ func (s *Store) Scan() (OnDisk, error) {
 	}
 	sort.Strings(d.Strays)
 	return d, nil
+}
+
+// measure totals the files directly under dir. Flat rather than recursive
+// because the staging layout is flat — one file per session id — and a
+// recursive walk here would quietly accept a shape nothing writes.
+func measure(dir string) (int, int64, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, 0, nil
+		}
+		return 0, 0, fmt.Errorf("audio: reading %s: %w", dir, err)
+	}
+	var n int
+	var total int64
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			if os.IsNotExist(err) {
+				// Finalised out from under the walk. Ordinary: an upload
+				// completing during a storage report is not a finding.
+				continue
+			}
+			return 0, 0, fmt.Errorf("audio: reading %s: %w", dir, err)
+		}
+		n++
+		total += info.Size()
+	}
+	return n, total, nil
 }
 
 // Expected is what the database says should be on disk: one entry per memo

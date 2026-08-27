@@ -76,6 +76,38 @@ func New(dir string) (*Store, error) {
 // Root is the directory this Store owns.
 func (s *Store) Root() string { return s.root }
 
+// StagingDir is the reserved subdirectory holding uploads in flight (CHRN-20).
+//
+// **It is inside the audio root on purpose, and the purpose is os.Rename.** A
+// finalised upload becomes a recording by being renamed into place, and rename
+// is atomic only within a filesystem — so a staging area configured separately
+// could be pointed at another mount, at which point the finalise silently
+// degrades from an atomic rename to a copy, and the guarantee that there is
+// never a half-written file at a recording's path is gone. CHRN-19 relies on
+// exactly the same property for its temp files and says so.
+//
+// The leading dot is not decoration. Every other entry directly under the root
+// is an author's UUID, and no UUID starts with one, so this name cannot collide
+// with a directory the layout writes — which is what lets Scan skip it by name
+// rather than by guessing.
+const StagingDir = ".uploads"
+
+// StagingRoot is where uploads in flight are assembled.
+func (s *Store) StagingRoot() string { return filepath.Join(s.root, StagingDir) }
+
+// StagingPath is where one upload session's bytes accumulate.
+//
+// Named by the session id and by nothing else — not the hash, which is not
+// known to be true until the last byte lands, and not the filename, which is
+// authored text arriving from a client. A path assembled from either would be
+// a path a caller can influence; a UUID is a UUID.
+func (s *Store) StagingPath(id uuid.UUID) (string, error) {
+	if id == uuid.Nil {
+		return "", fmt.Errorf("audio: upload id is required")
+	}
+	return filepath.Join(s.StagingRoot(), id.String()), nil
+}
+
 // RelPath is the path of a recording relative to the root:
 //
 //	<author_id>/<first two hash characters>/<hash>

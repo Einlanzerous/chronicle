@@ -143,6 +143,17 @@ func TestUnauthenticatedRequestsAreRefused(t *testing.T) {
 		{http.MethodPost, "/admin/users"},
 		{http.MethodPost, "/admin/users/" + uuid.New().String() + "/invite"},
 		{http.MethodDelete, "/admin/users/" + uuid.New().String()},
+		// CHRN-20's third Done-when. Asserted in the route table rather than in
+		// the handlers, because a handler is not guarded by having a
+		// guard-shaped name — it is guarded by the line that registers it
+		// (REVIEW.md 5). Note these are 401 and not 503: requireUser runs
+		// before the handler discovers there is no audio store, which is the
+		// right order — an unauthenticated caller learns nothing about how this
+		// deployment is configured.
+		{http.MethodPost, "/memos/uploads"},
+		{http.MethodGet, "/memos/uploads/" + uuid.New().String()},
+		{http.MethodPatch, "/memos/uploads/" + uuid.New().String()},
+		{http.MethodDelete, "/memos/uploads/" + uuid.New().String()},
 	} {
 		t.Run(route.method+" "+route.path, func(t *testing.T) {
 			rec := httptest.NewRecorder()

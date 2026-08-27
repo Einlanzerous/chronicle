@@ -23,6 +23,7 @@ import (
 	"github.com/Einlanzerous/chronicle/internal/config"
 	"github.com/Einlanzerous/chronicle/internal/invite"
 	"github.com/Einlanzerous/chronicle/internal/store"
+	"github.com/Einlanzerous/chronicle/internal/upload"
 	"github.com/Einlanzerous/chronicle/internal/watch"
 )
 
@@ -175,6 +176,7 @@ func runServe(args []string) error {
 	}
 
 	var watcher *watch.Watcher
+	var uploads *upload.Service
 	deps := api.Deps{
 		DB:            st,
 		Accounts:      st,
@@ -210,6 +212,21 @@ func runServe(args []string) error {
 		deps.Corpus = st
 		logger.Info("audio store ready", "root", audioStore.Root())
 
+		// The app's ingest path (CHRN-20). Wired inside this block for the same
+		// reason the watcher is: an upload endpoint with nowhere to put a
+		// finished recording would accept forty minutes of audio and have no
+		// destination for it.
+		uploads, err = upload.New(upload.Options{
+			Audio:    audioStore,
+			Sessions: st,
+			Ingest:   st,
+			Logger:   logger,
+		})
+		if err != nil {
+			return err
+		}
+		deps.Uploads = uploads
+
 		// The Copyparty seam (CHRN-19). It needs the audio store, so it is
 		// wired inside this block: an inbox with nowhere to copy files TO
 		// would read every memo and drop it on the floor.
@@ -242,6 +259,13 @@ func runServe(args []string) error {
 				return err
 			}
 		}
+	}
+	if cfg.AudioDir == "" {
+		// Said out loud, for the reason the inbox branch below is. Unset, there
+		// is no upload service, and POST /memos/uploads answers 503 naming the
+		// variable -- which a client sees but nobody watching the logs would.
+		logger.Info("no upload endpoint: CHRONICLE_AUDIO_DIR is unset, so /memos/uploads will answer 503",
+			"ingest", "none")
 	}
 	if cfg.InboxDir == "" {
 		// Said out loud. Unset, no watcher is constructed and the configured
@@ -285,6 +309,19 @@ func runServe(args []string) error {
 			defer watching.Done()
 			if err := watcher.Run(ctx); err != nil {
 				logger.Error("the inbox watcher stopped", "error", err)
+			}
+		}()
+	}
+	// The sweep collects ABANDONED PARTIAL UPLOADS, which is not what CHRN-22
+	// does and must not be confused with it: a partial upload is regenerable
+	// because the phone still holds the recording, while a finished memo's
+	// audio is not. internal/upload/sweep.go states the difference at length.
+	if uploads != nil {
+		watching.Add(1)
+		go func() {
+			defer watching.Done()
+			if err := uploads.Run(ctx); err != nil {
+				logger.Error("the upload sweeper stopped", "error", err)
 			}
 		}()
 	}
