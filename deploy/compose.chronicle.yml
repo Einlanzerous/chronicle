@@ -74,13 +74,35 @@ services:
       # deriving it would drop the flag off a durable credential on the
       # WAN-facing entrypoint. Only set this false for a plain-HTTP LAN install.
       - CHRONICLE_COOKIE_SECURE=${CHRONICLE_COOKIE_SECURE:-true}
-      # Whose X-Forwarded-For the sign-in rate limiter may believe. Traefik's
-      # entrypoints set `forwardedHeaders.trustedIPs: []`, so it overwrites
-      # whatever a caller sent with the address it actually saw — which makes
-      # this trustworthy from Traefik and from nowhere else. Unset, every
-      # request through the proxy shares one bucket and one attacker can lock
-      # out every real user; the server warns at boot when that is the case.
-      - CHRONICLE_TRUSTED_PROXIES=${CHRONICLE_TRUSTED_PROXIES:-172.16.0.0/12}
+      # Whose X-Forwarded-For the sign-in rate limiter may believe (CHRN-75).
+      #
+      # This replaced CHRONICLE_TRUSTED_PROXIES, and the comment that used to
+      # sit here claimed the old value made the header "trustworthy from Traefik
+      # and from nowhere else". That was FALSE: the default was 172.16.0.0/12,
+      # which CONTAINS construct_net (172.19.0.0/16), so every container on the
+      # box was a trusted proxy and could pick its own rate-limit bucket by
+      # writing a header. No CIDR can fix it — Traefik takes a DHCP address on
+      # construct_net and nothing distinguishes it from a neighbour.
+      #
+      # So the trust decision is a shared secret only Traefik can produce.
+      # Traefik stamps it with `customRequestHeaders`, which OVERWRITES whatever
+      # the caller sent, so through the edge it is honest and around the edge a
+      # forgery stays a forgery. Chronicle compares it in constant time and
+      # never treats mere presence as trust.
+      #
+      # ⚠ REQUIRES SERV-148, in three parts: the Signet secret,
+      # an env line on the TRAEFIK service, and the middleware in
+      # config/traefik/dynamic/routers.yml templated as
+      # '{{ env "CHRONICLE_PROXY_SECRET" }}' — the file provider does not expand
+      # ${...}, so a $-style reference would stamp the literal string.
+      #
+      # Unset, every request through the proxy shares one bucket and the server
+      # warns at boot. Set but NOT MATCHING behaves identically, and warns once
+      # a minute at runtime instead. So does set-but-never-presented, which is
+      # what a half-applied SERV-148 looks like: parts 1 and 2 landed, and the
+      # middleware missing from one router. All three degraded states are one
+      # shared bucket, and none of them is silent.
+      - CHRONICLE_PROXY_SECRET=${CHRONICLE_PROXY_SECRET:-}
       # CHRN-23. Where memo audio lives. Inside the container this is the same
       # path as on the host so a path in a log line means one thing wherever it
       # is read. /data is the NVMe (458 G, 256 G free) and is what Copyparty

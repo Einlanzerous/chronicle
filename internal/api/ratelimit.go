@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/subtle"
 	"net"
 	"net/http"
 	"net/netip"
@@ -17,6 +18,11 @@ import (
 // external. The container is reachable on the shared Docker network by every
 // other service on the box without passing Traefik, so the edge limiter
 // CHRN-16 attaches to PathPrefix(/auth/) does nothing for that path.
+//
+// That was true and the limiter did not deliver it until CHRN-75: keying
+// trusted CHRONICLE_TRUSTED_PROXIES, whose deployed value 172.16.0.0/12
+// CONTAINS construct_net, so every neighbour was a trusted proxy and could
+// choose its own bucket. See clientIP.
 //
 // The burst is generous on purpose: this exists to bound an automated attempt,
 // not to inconvenience someone mistyping a device label.
@@ -116,31 +122,150 @@ func (a *api) limitSignIn(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// ProxySecretHeader is what Traefik stamps on every request it proxies here.
+//
+// It is NOT authentication and nothing outside clientIP may consult it. It
+// answers one question -- did this request come through the estate's edge --
+// and a secret that starts as a keying hint and ends up gating a route is how
+// this kind of header becomes a credential nobody rotated.
+const ProxySecretHeader = "X-Chronicle-Proxy-Secret"
+
+// mismatchWarnEvery bounds how often a mismatched secret is reported. The
+// lateral path lets a neighbour trip that warning deliberately, so it is rate
+// limited -- but never silenced, because silence is the failure this exists to
+// prevent.
+const mismatchWarnEvery = time.Minute
+
+// mismatchWarner emits at most one line per window.
+type mismatchWarner struct {
+	mu   sync.Mutex
+	last time.Time
+	now  func() time.Time
+}
+
+// proxySeen records whether any request has ever carried the right secret.
+//
+// It exists because an ABSENT header has two causes that look identical at the
+// request level: a neighbour talking to the container directly (ordinary, and
+// not worth a line), and a WAN request that came through Traefik with the
+// middleware NOT ATTACHED. The second is a silent degraded state -- the secret
+// is set, so boot does not warn; the header is absent, so the mismatch path
+// does not warn; and every sign-in shares one bucket, which is exactly the
+// owner-lockout this ticket exists to close.
+//
+// SERV-148's own text flags the likeliest way in: it attaches the middleware to
+// three routers, and warns "all three, not only the /auth/ one". Miss
+// chronicle-public-auth and it is the sign-in path that degrades.
+//
+// So: warn on an absent header until one request proves the middleware is
+// attached, then go permanently quiet. A neighbour cannot produce a match, so
+// it cannot silence the warning; and the warning stops the moment the deploy is
+// actually correct.
+type proxySeen struct {
+	mu   sync.Mutex
+	seen bool
+}
+
+func (p *proxySeen) mark() {
+	p.mu.Lock()
+	p.seen = true
+	p.mu.Unlock()
+}
+
+func (p *proxySeen) yes() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.seen
+}
+
+func (w *mismatchWarner) allow() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	now := w.now()
+	if !w.last.IsZero() && now.Sub(w.last) < mismatchWarnEvery {
+		return false
+	}
+	w.last = now
+	return true
+}
+
 // clientIP is the address this request should be rate-limited against.
 //
-// The naive answer — always RemoteAddr, never X-Forwarded-For, because the
-// header is client-settable — is right about the header and wrong about the
+// The naive answer -- always RemoteAddr, never X-Forwarded-For, because the
+// header is client-settable -- is right about the header and wrong about the
 // outcome. Every request that arrives through Traefik carries Traefik's address
 // as its peer, so keying on it collapses all legitimate browser and app traffic
 // into ONE bucket: twenty sign-ins a minute across everybody, and an attacker
 // hammering the direct host locks out every real user. A limiter that a
 // stranger can use to deny the owner their own service is worse than none.
 //
-// So the header is trusted exactly when its source is: only when the immediate
-// peer is a configured trusted proxy. That is sound here because Traefik's
-// entrypoints set `forwardedHeaders.trustedIPs: []`, which makes Traefik
-// overwrite whatever the caller sent with the address it actually saw. A
-// neighbour container connecting directly is not a trusted peer, so its own
-// X-Forwarded-For is ignored and it is keyed on its real address — which is the
-// lateral case this limiter exists for in the first place.
+// So the header is trusted exactly when its source is. The question that has to
+// be answered is "did this request come through the edge", and on this network
+// THE PEER ADDRESS CANNOT ANSWER IT: construct_net is `external:` with default
+// IPAM, Traefik holds no reserved address there (172.19.0.16 today, by
+// allocation order), and nothing distinguishes it from the other seventeen
+// containers. CHRN-75's first draft of this file believed a CIDR could, and the
+// deployed value -- 172.16.0.0/12 -- contained the whole shared network, so
+// every neighbour was trusted and could pick its own bucket by writing a header.
 //
-// With no trusted proxies configured, nothing is believed and the coarse
-// behaviour is the one above; setup logs a warning saying so.
+// A shared secret answers that question and nothing else. Traefik sets
+// ProxySecretHeader with `customRequestHeaders`, which OVERWRITES whatever the
+// caller sent -- the same mechanism strip-identity-headers already relies on --
+// so through Traefik the value is honest no matter what the client sends, and
+// around Traefik the client keeps its own forgery.
+//
+// Which is why this is a COMPARISON AND NEVER A PRESENCE TEST. A neighbour
+// going direct arrives with the header present and wrong; treating "set" as
+// "trusted" would reintroduce the whole defect in a new spelling.
+//
+// With no secret configured nothing is believed and the coarse behaviour above
+// returns; setup logs a warning saying so.
 func (a *api) clientIP(r *http.Request) string {
 	peer := remoteIP(r)
-	if !a.isTrustedProxy(peer) {
+	if a.proxySecret == "" {
 		return peer.String()
 	}
+
+	presented := r.Header.Get(ProxySecretHeader)
+	if presented == "" {
+		// No header at all. Two causes, indistinguishable here: a neighbour
+		// talking to the container directly (ordinary), or Traefik proxying
+		// without the middleware attached (a silent shared bucket). See
+		// proxySeen -- until one request proves the middleware is on, this is
+		// reported; afterwards it is the lateral case and stays quiet.
+		if a.proxySeen != nil && !a.proxySeen.yes() &&
+			a.absent != nil && a.logger != nil && a.absent.allow() {
+			a.logger.Warn(ProxySecretHeader+" is configured but no request has ever carried it; "+
+				"X-Forwarded-For is being ignored and sign-ins share one bucket",
+				"peer", peer.String(),
+				"hint", "is the Traefik middleware attached to every Chronicle router, including chronicle-public-auth? (SERV-148)")
+		}
+		return peer.String()
+	}
+	if subtle.ConstantTimeCompare([]byte(presented), []byte(a.proxySecret)) != 1 {
+		// Present and wrong. Either Traefik and Chronicle disagree about the
+		// secret -- a typo, a half-applied rotation, or an image deployed ahead
+		// of the compose change -- or a neighbour is forging it. Both put this
+		// request on the coarse path, and the difference is visible in the peer:
+		// Traefik's address means the deploy is broken, anything else means
+		// somebody is probing.
+		//
+		// NEITHER VALUE IS LOGGED. requestLogger emits no headers by
+		// construction and this must not become the exception.
+		if a.mismatch != nil && a.logger != nil && a.mismatch.allow() {
+			a.logger.Warn(ProxySecretHeader+" did not match; X-Forwarded-For is being ignored",
+				"peer", peer.String(),
+				"hint", "Traefik and Chronicle disagree about the secret, or a neighbour is forging it")
+		}
+		return peer.String()
+	}
+
+	// A match proves the middleware is attached, which is what silences the
+	// absent-header warning above for the life of the process.
+	if a.proxySeen != nil {
+		a.proxySeen.mark()
+	}
+
 	// Rightmost entry: with trustedIPs empty Traefik writes a single address,
 	// and where a chain exists the last hop is the only one our trusted peer
 	// actually observed. Reading the leftmost would take the caller's word.
@@ -154,18 +279,6 @@ func (a *api) clientIP(r *http.Request) string {
 		return addr.String()
 	}
 	return peer.String()
-}
-
-func (a *api) isTrustedProxy(addr netip.Addr) bool {
-	if !addr.IsValid() {
-		return false
-	}
-	for _, p := range a.trustedProxies {
-		if p.Contains(addr) {
-			return true
-		}
-	}
-	return false
 }
 
 // remoteIP is the transport peer, or the invalid zero Addr when RemoteAddr is

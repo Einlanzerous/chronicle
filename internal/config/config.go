@@ -6,7 +6,6 @@ package config
 import (
 	"fmt"
 	"log/slog"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -53,11 +52,24 @@ type Config struct {
 	// only so a plain-HTTP LAN install can turn it off on purpose.
 	SecureCookies bool
 
-	// TrustedProxies are the peers whose X-Forwarded-For is believed when
-	// keying the sign-in rate limiter. Empty means trust nobody, which makes
-	// everything arriving through Traefik share a single bucket — serve()
-	// warns about that rather than leaving it to be discovered.
-	TrustedProxies []netip.Prefix
+	// ProxySecret is the value Traefik stamps on X-Chronicle-Proxy-Secret, and
+	// the whole of the trust decision for X-Forwarded-For (CHRN-75). Empty
+	// means the header is never believed and every request through the proxy
+	// shares one rate-limit bucket; boot warns when that is the case.
+	//
+	// It replaced CHRONICLE_TRUSTED_PROXIES, which could not express the thing
+	// it needed to: on construct_net Traefik takes a DHCP address
+	// indistinguishable from every other container's, so no prefix separates
+	// "came through the edge" from "is a neighbour".
+	ProxySecret string
+
+	// RetiredTrustedProxies reports that CHRONICLE_TRUSTED_PROXIES was set.
+	// Load does not error on it -- compose pins :latest and construct-server
+	// still sets the variable, so refusing to boot would turn a retired knob
+	// into a crash loop the moment the image lands ahead of the SERV change.
+	// cmd/chronicle warns and ignores it; this becomes an error one release
+	// later, once no deployed compose file still carries it.
+	RetiredTrustedProxies bool
 
 	// AudioDir is the root of the on-disk store of recordings (CHRN-23).
 	// Absolute, and empty when unset -- the storage report then answers 503
@@ -186,23 +198,11 @@ func Load() (Config, error) {
 		}
 	}
 
-	for _, raw := range splitList(os.Getenv("CHRONICLE_TRUSTED_PROXIES")) {
-		// A bare address is accepted as a single-host prefix, because that is
-		// what an operator naturally writes for "Traefik lives here".
-		if !strings.Contains(raw, "/") {
-			addr, perr := netip.ParseAddr(raw)
-			if perr != nil {
-				return c, fmt.Errorf("config: CHRONICLE_TRUSTED_PROXIES %q is not an IP or CIDR", raw)
-			}
-			c.TrustedProxies = append(c.TrustedProxies, netip.PrefixFrom(addr.Unmap(), addr.BitLen()))
-			continue
-		}
-		prefix, perr := netip.ParsePrefix(raw)
-		if perr != nil {
-			return c, fmt.Errorf("config: CHRONICLE_TRUSTED_PROXIES %q is not an IP or CIDR", raw)
-		}
-		c.TrustedProxies = append(c.TrustedProxies, prefix.Masked())
-	}
+	// Not parsed, not validated, not used -- only noticed, so the warning can
+	// name it. See RetiredTrustedProxies.
+	c.RetiredTrustedProxies = strings.TrimSpace(os.Getenv("CHRONICLE_TRUSTED_PROXIES")) != ""
+
+	c.ProxySecret = strings.TrimSpace(os.Getenv("CHRONICLE_PROXY_SECRET"))
 
 	// A malformed base is refused rather than shrugged at: clients prefer the
 	// server's URL over one they would have built, so an unusable value both

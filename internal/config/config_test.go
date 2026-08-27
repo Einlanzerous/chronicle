@@ -275,3 +275,55 @@ func TestLoadWatcherSettings(t *testing.T) {
 		}
 	})
 }
+
+// CHRN-75. The secret is the whole trust decision now; the CIDR list it
+// replaced is noticed only so the warning can name it.
+func TestLoadProxySecretAndTheRetiredCIDRList(t *testing.T) {
+	withOwner(t)
+	t.Setenv("CHRONICLE_DATABASE_URL", "postgres://x/y")
+
+	t.Run("set", func(t *testing.T) {
+		t.Setenv("CHRONICLE_TRUSTED_PROXIES", "")
+		t.Setenv("CHRONICLE_PROXY_SECRET", "  config-test-fixture  ")
+		c, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if c.ProxySecret != "config-test-fixture" {
+			t.Errorf("ProxySecret = %q, want it trimmed", c.ProxySecret)
+		}
+		if c.RetiredTrustedProxies {
+			t.Error("RetiredTrustedProxies is true with the variable unset")
+		}
+	})
+
+	// The load-bearing half: a value that used to be parsed, and used to be
+	// able to fail parsing, must now be ignored without erroring. compose pins
+	// :latest and construct-server still sets this, so erroring here is a crash
+	// loop the moment the image lands ahead of the SERV change.
+	t.Run("the retired variable is noticed, never parsed, and never fatal", func(t *testing.T) {
+		for _, v := range []string{"172.16.0.0/12", "not-an-ip-at-all", "10.0.0.1, garbage/99"} {
+			t.Setenv("CHRONICLE_PROXY_SECRET", "config-test-fixture")
+			t.Setenv("CHRONICLE_TRUSTED_PROXIES", v)
+			c, err := Load()
+			if err != nil {
+				t.Fatalf("Load errored on a retired variable (%q): %v", v, err)
+			}
+			if !c.RetiredTrustedProxies {
+				t.Errorf("RetiredTrustedProxies = false with %q set", v)
+			}
+		}
+	})
+
+	t.Run("unset means believe nobody", func(t *testing.T) {
+		t.Setenv("CHRONICLE_TRUSTED_PROXIES", "")
+		t.Setenv("CHRONICLE_PROXY_SECRET", "")
+		c, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if c.ProxySecret != "" {
+			t.Errorf("ProxySecret = %q", c.ProxySecret)
+		}
+	})
+}
