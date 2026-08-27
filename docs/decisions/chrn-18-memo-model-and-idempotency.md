@@ -567,6 +567,12 @@ separate one-line change and not this ticket's — `REVIEW.md` is explicit that 
 false comment in this repo is expensive, and this one has been sitting in the
 migration that defines the tier boundary.
 
+`[rev]` Both follow-ups have landed. **CHRN-78** corrected `0002` (`4ea9875`),
+and **CHRN-79** corrected `REVIEW.md` §1, which turned out to be the last place
+in the repo still stating the claim — and worse, it cited the very comment that
+refutes it. Closing the loop here so the trail does not end at a forward
+reference.
+
 ### The functions
 
 ```sql
