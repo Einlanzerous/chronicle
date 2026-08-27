@@ -343,6 +343,7 @@ func (a *api) writeUpload(w http.ResponseWriter, status int, res upload.Result) 
 // offset" from "those were the wrong bytes".
 func (a *api) uploadError(w http.ResponseWriter, r *http.Request, what string, err error) {
 	var conflict *upload.OffsetConflict
+	var cut *upload.TransferCut
 	switch {
 	case errors.As(err, &conflict):
 		// The whole point of the 409: it carries where to resume from.
@@ -364,11 +365,35 @@ func (a *api) uploadError(w http.ResponseWriter, r *http.Request, what string, e
 			http.StatusUnprocessableEntity)
 	case errors.Is(err, upload.ErrOversend):
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+	case errors.As(err, &cut):
+		// A dropped connection is the ordinary event this endpoint was built
+		// for, and it must not answer like a fault. On the default branch it
+		// reached a.serverError, which logs `request failed` at ERROR and
+		// answers 500 — so every phone that loses signal mid-chunk emitted a
+		// line indistinguishable from a real one, in the log CLAUDE.md wants
+		// Dozzle and Datadog to read.
+		//
+		// 408 says what actually happened, and carries the new offset because
+		// the bytes that landed were kept: this is a resume instruction.
+		// requestLogger classifies a 4xx as a warning on its own, so correcting
+		// the status is the whole of the fix — no special-cased log line.
+		w.Header().Set(UploadOffsetHeader, strconv.FormatInt(cut.Offset, 10))
+		writeJSON(w, http.StatusRequestTimeout, uploadResponse{
+			Status: "incomplete",
+			Offset: cut.Offset,
+		})
 	case errors.Is(err, store.ErrKeyReused):
 		http.Error(w, "that idempotency_key already produced a different memo; mint a new one",
 			http.StatusConflict)
 	case errors.Is(err, store.ErrInvalidInput):
 		http.Error(w, err.Error(), http.StatusBadRequest)
+	case errors.Is(err, upload.ErrStagingLost):
+		// The declaration still stands and the session is left alone, so the
+		// remedy is to send the bytes again from the beginning. Answered as a
+		// conflict carrying offset 0, which is the shape a client already
+		// handles.
+		w.Header().Set(UploadOffsetHeader, "0")
+		writeJSON(w, http.StatusConflict, uploadResponse{Status: "incomplete", Offset: 0})
 	case errors.Is(err, store.ErrNotFound):
 		http.Error(w, "no such upload", http.StatusNotFound)
 	default:

@@ -60,6 +60,27 @@ Size is compared, not content. Re-hashing a recording on every open would make
 the cheap path as expensive as the transfer it exists to avoid, and a size
 disagreement is itself sufficient reason to fall back to sending the bytes.
 
+`[rev]` **The same state was reachable by another door, and the first
+implementation did not close it.** `finalise`'s no-staging-file branch committed
+on the strength of a *comment* about what `offset()` had already established —
+and that could be false by the time it ran. Two overlapping requests both enter
+`finalise`; the first finds a hash mismatch and removes the staging file; the
+second stats `ENOENT`, falls through, and writes a memo with nothing renamed
+into place. An `Abandon` landing between a `Status`'s two stats does it with no
+second finalise at all. Found in review on PR #14.
+
+Two fixes, both taken, and they are not substitutes for each other:
+
+- **`finalise` re-checks `alreadyHeld` where it depends on it**, and returns
+  `ErrStagingLost` rather than committing. A comment asserting what a caller did
+  is not a check. `TestFinaliseRefusesToCommitWhenTheBytesAreGone` calls it
+  directly, because no request can reach that state any more — which is the
+  point: the invariant has to hold even when the caller was wrong.
+- **`Status` and `Open`'s done-branch take the session lock**, which only
+  `Append` and `Abandon` did. Both can finalise, and a finalise moves a file and
+  writes a memo; read-only is a property of what a function does, not of the
+  verb in its name.
+
 ## 3 · Staging lives inside the audio root
 
 `os.Rename` is atomic only within a filesystem. A separately configured
@@ -114,6 +135,16 @@ inconsistency unless the reason is written down.
 right bytes — the connection died, the content did not — and discarding them
 throws away exactly the progress this ticket exists to preserve. The next request
 resumes from the new offset.
+
+`[rev]` It also has to be *classified* as the ordinary event this section calls
+it, which the first implementation did not do: a bare wrapped error fell through
+to `a.serverError`, so a phone losing signal answered **500** and logged
+`request failed` at **ERROR**, indistinguishable from a real fault in the log
+CLAUDE.md wants Dozzle and Datadog to read. Found in review on PR #14. It is now
+a typed `*TransferCut` carrying the new offset, answered as **408** with
+`Upload-Offset` — and `requestLogger` classifies a 4xx as a warning on its own,
+so correcting the status was the whole of the fix rather than a special-cased log
+line.
 
 **A client that sends more than it declared has the chunk discarded** and the
 file truncated back to where the request found it. A client whose byte count is
@@ -178,6 +209,13 @@ things. All four held without argument:
   surface instead is `DefaultMaxOpen` (32 sessions per account) and
   `DefaultMaxBytes` (1 GiB per declaration) — both authenticated-caller bounds,
   which is the right shape for an authenticated endpoint.
+
+  `[rev]` The session cap is enforced **only against a session that turns out to
+  be new**, checked after `OpenUpload` rather than before it. Checked before, it
+  refused a *resume* — and a client that has lost its upload id cannot `DELETE`
+  its way out either, because `DELETE` needs the id it lost, so an account at the
+  cap was stuck for `DefaultTTL`. "Many stalled sessions" is exactly when resume
+  matters most. Found in review on PR #14.
 - **`X-Chronicle-Proxy-Secret` is not consulted.** `requireUser` is the
   authorisation, and the secret decides one thing in one function.
 

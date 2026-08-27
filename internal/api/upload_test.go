@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -518,4 +520,48 @@ func TestStatusReportsWhereToResume(t *testing.T) {
 	if got.Offset != 640 || got.ByteSize != 1500 {
 		t.Fatalf("status reports offset %d of %d, want 640 of 1500", got.Offset, got.ByteSize)
 	}
+}
+
+// PR #14 review, nit 2. A connection cut mid-chunk is the ordinary event this
+// endpoint exists for. It used to fall to uploadError's default branch, which
+// logs `request failed` at ERROR and answers 500 — so every phone that lost
+// signal emitted a line indistinguishable from a real fault.
+//
+// 408 says what happened, and carries the offset because the bytes that landed
+// were kept. requestLogger classifies a 4xx as a warning on its own, which is
+// why correcting the status is the whole of the fix.
+func TestACutTransferIsNotReportedAsAServerError(t *testing.T) {
+	r := newUploadRig(t)
+	content := audioBytes(2000)
+	open := r.openUpload(t, testKey, content)
+
+	// A body that yields 600 bytes and then dies, declaring 1200.
+	body := io.MultiReader(bytes.NewReader(content[:600]), failingReader{})
+	req := httptest.NewRequest(http.MethodPatch, "/memos/uploads/"+open.UploadID, body)
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set(UploadOffsetHeader, "0")
+	req.ContentLength = 1200
+
+	rec := r.do(req)
+	if rec.Code == http.StatusInternalServerError {
+		t.Fatal("a dropped connection answered 500; it would log at ERROR beside real faults")
+	}
+	if rec.Code != http.StatusRequestTimeout {
+		t.Fatalf("status %d, want 408", rec.Code)
+	}
+	if got := rec.Header().Get(UploadOffsetHeader); got != "600" {
+		t.Fatalf("%s = %q, want \"600\" — the bytes that landed were kept, so the client resumes from there",
+			UploadOffsetHeader, got)
+	}
+
+	// And it really did keep them: the next request resumes rather than restarts.
+	if rec := r.appendChunk(open.UploadID, 600, content[600:]); rec.Code != http.StatusOK {
+		t.Fatalf("resume after a cut: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) {
+	return 0, errors.New("connection reset by peer")
 }

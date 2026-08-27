@@ -927,3 +927,194 @@ func TestRecoveringByKeyAfterACrashReleasesTheSession(t *testing.T) {
 		t.Fatalf("the key was not released: %v", err)
 	}
 }
+
+// PR #14 review, Important. finalise's no-staging-file branch used to commit on
+// the strength of a comment about what offset() had checked. It is checked here
+// instead, because a comment asserting a caller's work is not a check — and the
+// failure it prevents is a memo whose audio is not on disk, which is CHRN-23's
+// `missing`.
+//
+// Called directly: no request can reach this state on its own any more, which
+// is the point. The invariant has to hold even when the caller was wrong.
+func TestFinaliseRefusesToCommitWhenTheBytesAreGone(t *testing.T) {
+	r := newRig(t)
+	content := memoBytes(500)
+	ctx := context.Background()
+
+	res := r.open(t, keyA, content, "")
+	u := r.session(t, res.Session.ID)
+
+	// Neither a staging file nor a recording: the state a racing finalise or a
+	// concurrent Abandon leaves behind.
+	if _, err := r.svc.finalise(ctx, u); !errors.Is(err, ErrStagingLost) {
+		t.Fatalf("want ErrStagingLost, got %v", err)
+	}
+	if n := len(r.ingest.memos); n != 0 {
+		t.Fatalf("%d memos written with no audio on disk", n)
+	}
+	// The declaration still stands, so the client can simply send them again.
+	if _, err := r.sessions.GetUpload(ctx, u.ID); err != nil {
+		t.Fatalf("the session was destroyed; the client would have to re-declare: %v", err)
+	}
+	done, err := r.svc.Append(ctx, r.session(t, u.ID), 0, bytes.NewReader(content))
+	if err != nil {
+		t.Fatalf("resending after the bytes were lost: %v", err)
+	}
+	if done.Committed == nil {
+		t.Fatal("the resend did not complete the upload")
+	}
+}
+
+// The other half of the same finding: Status and Open take the session lock,
+// which they did not, so two overlapping requests could both enter finalise.
+// The one that mattered was a mismatched upload — the first removes the staging
+// file, and the second used to fall through and commit.
+func TestConcurrentFinalisesCannotWriteAMemoWithNoAudio(t *testing.T) {
+	r := newRig(t)
+	content := memoBytes(900)
+	ctx := context.Background()
+
+	res := r.open(t, keyA, content, "")
+	u := r.session(t, res.Session.ID)
+
+	// A complete staging file whose bytes are NOT what was declared: same
+	// length, different content, so only the hash can tell.
+	wrong := memoBytes(900)
+	wrong[0] ^= 0xff
+	path, err := r.audio.StagingPath(u.ID)
+	if err != nil {
+		t.Fatalf("StagingPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, wrong, 0o644); err != nil {
+		t.Fatalf("write staging: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	results := make([]Result, 4)
+	errs := make([]error, 4)
+	for i := range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i], errs[i] = r.svc.Status(ctx, u)
+		}()
+	}
+	wg.Wait()
+
+	// The assertion that matters: whatever order they ran in, no memo exists,
+	// because no bytes matching the declaration were ever on disk.
+	if n := len(r.ingest.memos); n != 0 {
+		t.Fatalf("%d memos written for an upload that never matched its hash", n)
+	}
+	for i, err := range errs {
+		if err == nil && results[i].Committed != nil {
+			t.Fatalf("call %d committed a memo with no audio behind it", i)
+		}
+		if err != nil && !errors.Is(err, ErrHashMismatch) && !errors.Is(err, ErrStagingLost) {
+			t.Fatalf("call %d: unexpected error %v", i, err)
+		}
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("the mismatched staging file was left on disk")
+	}
+	final, err := r.audio.Path(refFor(r.author, hashOf(content)))
+	if err != nil {
+		t.Fatalf("Path: %v", err)
+	}
+	if _, err := os.Stat(final); !os.IsNotExist(err) {
+		t.Fatal("unverified bytes reached the audio store")
+	}
+}
+
+// PR #14 review, nit 1. The open-session cap used to be checked before
+// OpenUpload, so it refused a RESUME — the one request that must not be refused
+// when an account is full of stalled sessions, because DELETE needs the id the
+// client has just lost.
+func TestTheOpenSessionCapDoesNotRefuseAResume(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+
+	svc, err := New(Options{
+		Audio: r.audio, Sessions: r.sessions, Ingest: r.ingest,
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		MaxOpen: 3,
+	})
+	if err != nil {
+		t.Fatalf("upload.New: %v", err)
+	}
+
+	// Fill the account to the cap, keeping the first one's key.
+	var firstKey string
+	var firstID uuid.UUID
+	for i := range 3 {
+		content := memoBytes(500 + i)
+		key := fmt.Sprintf("idem-key-%016d", i)
+		res, err := svc.Open(ctx, OpenRequest{
+			AuthorID: r.author, IdempotencyKey: key,
+			ContentHash: hashOf(content), ByteSize: int64(len(content)),
+		})
+		if err != nil {
+			t.Fatalf("open %d: %v", i, err)
+		}
+		if i == 0 {
+			firstKey, firstID = key, res.Session.ID
+		}
+	}
+
+	// A NEW session is refused, as it should be.
+	fresh := memoBytes(4000)
+	if _, err := svc.Open(ctx, OpenRequest{
+		AuthorID: r.author, IdempotencyKey: "idem-key-one-too-many",
+		ContentHash: hashOf(fresh), ByteSize: int64(len(fresh)),
+	}); !errors.Is(err, ErrTooManyOpen) {
+		t.Fatalf("a new session at the cap: want ErrTooManyOpen, got %v", err)
+	}
+	// And the refusal left nothing behind — the rollback has to be real, or the
+	// cap ratchets down by one on every refused attempt.
+	if n, _ := r.sessions.CountOpenUploads(ctx, r.author); n != 3 {
+		t.Fatalf("%d sessions after a refused open, want 3", n)
+	}
+
+	// The resume is not.
+	content := memoBytes(500)
+	again, err := svc.Open(ctx, OpenRequest{
+		AuthorID: r.author, IdempotencyKey: firstKey,
+		ContentHash: hashOf(content), ByteSize: int64(len(content)),
+	})
+	if err != nil {
+		t.Fatalf("resuming at the cap was refused: %v", err)
+	}
+	if again.Session == nil || again.Session.ID != firstID {
+		t.Fatalf("the resume did not return the existing session: %+v", again)
+	}
+}
+
+// A cut transfer is typed so the handler can classify it. The offset it carries
+// is where the upload now stands, because the bytes that landed were kept.
+func TestACutTransferReportsWhereItGotTo(t *testing.T) {
+	r := newRig(t)
+	content := memoBytes(2000)
+	ctx := context.Background()
+
+	res := r.open(t, keyA, content, "")
+	u := r.session(t, res.Session.ID)
+
+	_, err := r.svc.Append(ctx, u, 0, iotest(content, 750))
+	var cut *TransferCut
+	if !errors.As(err, &cut) {
+		t.Fatalf("want a *TransferCut, got %v", err)
+	}
+	if cut.Offset != 750 {
+		t.Fatalf("the cut reports offset %d, want 750", cut.Offset)
+	}
+	st, err := r.svc.Status(ctx, r.session(t, u.ID))
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if st.Session.Offset != 750 {
+		t.Fatalf("the session is at %d, so the error disagrees with the file", st.Session.Offset)
+	}
+}

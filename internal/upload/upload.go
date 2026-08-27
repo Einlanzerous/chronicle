@@ -137,6 +137,25 @@ func (e *OffsetConflict) Error() string {
 	return fmt.Sprintf("upload: offset does not match; the server holds %d bytes", e.Offset)
 }
 
+// TransferCut reports that the request body ended before the chunk did — the
+// connection died mid-send.
+//
+// Whatever landed is KEPT and Offset is where the upload now stands, so this is
+// a resume instruction rather than a fault. Decision 5 calls a cut transfer the
+// ordinary event this endpoint was built for; typed rather than a bare wrapped
+// error so the handler can classify it as one, instead of it falling through to
+// a 500 and an ERROR line indistinguishable from a real fault.
+type TransferCut struct {
+	Offset int64
+	Err    error
+}
+
+func (e *TransferCut) Error() string {
+	return fmt.Sprintf("upload: the request body ended after %d bytes: %v", e.Offset, e.Err)
+}
+
+func (e *TransferCut) Unwrap() error { return e.Err }
+
 var (
 	// ErrHashMismatch means the bytes that arrived are not the bytes that were
 	// declared. The session is destroyed: a memo is never written from
@@ -146,6 +165,15 @@ var (
 	// ErrOversend means the client sent more than it said it would. The chunk
 	// is discarded rather than truncated to fit — see Append.
 	ErrOversend = errors.New("upload: more bytes than declared")
+
+	// ErrStagingLost means a session's bytes vanished before they could be
+	// recorded, so there is nothing to make a memo out of. The declaration is
+	// still good and the session is left alone — the client resumes from zero.
+	//
+	// It exists so that "the bytes are gone" is answerable. The alternative was
+	// to commit anyway on the strength of a comment about what the caller had
+	// checked, which is how a memo gets written with no audio behind it.
+	ErrStagingLost = errors.New("upload: the bytes are no longer on disk; send them again")
 
 	// ErrTooLarge and ErrTooManyOpen are the two bounds on what an
 	// authenticated client may ask for.
@@ -324,13 +352,20 @@ func (s *Service) Open(ctx context.Context, in OpenRequest) (Result, error) {
 		return Result{Committed: committed}, nil
 	}
 
+	// The cap is read here but ENFORCED after OpenUpload, and only against a
+	// session that turns out to be new.
+	//
+	// Checked before, it refuses a RESUME — which is the one request that must
+	// never be refused when an account is full of them. A phone that lost its
+	// upload id (a reinstall, a crash) re-presents the key it still has; if that
+	// answers 429 it cannot DELETE its way out either, because DELETE needs the
+	// id it lost, and the account is stuck until the sessions expire a week
+	// later. "Many stalled sessions" is exactly when resume matters most.
 	open, err := s.sessions.CountOpenUploads(ctx, in.AuthorID)
 	if err != nil {
 		return Result{}, err
 	}
-	if open >= s.maxOpen {
-		return Result{}, fmt.Errorf("%w: %d open, limit is %d", ErrTooManyOpen, open, s.maxOpen)
-	}
+	atCap := open >= s.maxOpen
 
 	u, created, err := s.sessions.OpenUpload(ctx, store.Upload{
 		AuthorID:         in.AuthorID,
@@ -344,6 +379,16 @@ func (s *Service) Open(ctx context.Context, in OpenRequest) (Result, error) {
 		return Result{}, err
 	}
 
+	if created && atCap {
+		// A genuinely new session past the cap. Undo it: it holds no bytes yet,
+		// so removing the row is the whole of the rollback. The count read
+		// above is the honest one to report — it is what the account held when
+		// the request arrived.
+		if err := s.sessions.ClearUploadKey(ctx, in.AuthorID, in.IdempotencyKey); err != nil {
+			return Result{}, err
+		}
+		return Result{}, fmt.Errorf("%w: %d open, limit is %d", ErrTooManyOpen, open, s.maxOpen)
+	}
 	if created {
 		// Created here rather than at boot, and it is not the same call the
 		// audio root gets. The root is an operator's path and a typo in it must
@@ -354,6 +399,11 @@ func (s *Service) Open(ctx context.Context, in OpenRequest) (Result, error) {
 			return Result{}, fmt.Errorf("upload: create staging directory: %w", err)
 		}
 	}
+
+	// Same lock Append and Status take, for the same reason: the branch below
+	// can finalise.
+	unlock := s.lock(u.ID)
+	defer unlock()
 
 	sess, done, err := s.status(u)
 	if err != nil {
@@ -374,7 +424,16 @@ func (s *Service) Open(ctx context.Context, in OpenRequest) (Result, error) {
 
 // Status reports how far a session has got, finalising it if the bytes are all
 // there. Ownership is the caller's to check.
+//
+// It takes the session lock even though it writes nothing itself, because it can
+// finalise — and a finalise moves a file and writes a memo. Two unlocked
+// Statuses on one complete session both reach finalise, and the second finds the
+// staging file the first has already dealt with. Read-only is a property of what
+// a function does, not of the verb in its name.
 func (s *Service) Status(ctx context.Context, u store.Upload) (Result, error) {
+	unlock := s.lock(u.ID)
+	defer unlock()
+
 	sess, done, err := s.status(u)
 	if err != nil {
 		return Result{}, err
@@ -458,7 +517,7 @@ func (s *Service) Append(ctx context.Context, u store.Upload, offset int64, body
 			s.logger.Warn("could not record upload progress; the session may expire early",
 				"upload_id", u.ID, "error", touchErr)
 		}
-		return Result{}, fmt.Errorf("upload: reading the request body after %d bytes: %w", written, copyErr)
+		return Result{}, &TransferCut{Offset: at + written, Err: copyErr}
 	}
 
 	// Did the client have more to send than it declared? LimitReader stopped at
@@ -636,9 +695,35 @@ func (s *Service) finalise(ctx context.Context, u store.Upload) (*Committed, err
 		}
 	} else if !os.IsNotExist(err) {
 		return nil, fmt.Errorf("upload: stat staging file: %w", err)
+	} else {
+		// No staging file. offset() reaches this only for the
+		// crash-between-rename-and-memo case, where the recording IS on disk —
+		// but that was established by the caller, and the invariant is checked
+		// again here because this is where it is depended on.
+		//
+		// It can be false by the time we arrive. Two overlapping requests both
+		// see a complete staging file and both enter finalise; the first finds
+		// a hash mismatch and removes it, and the second then stats ENOENT with
+		// nothing ever renamed. Committing there would write a memo whose audio
+		// is not on disk — CHRN-23's `missing`, the exact state the file-gate on
+		// the already-held shortcut exists to prevent, reached by another door.
+		// An Abandon landing between a Status's two stats does the same with no
+		// second finalise at all.
+		//
+		// The lock in Status and Open closes the window; this closes the
+		// invariant, and they are not the same fix. A comment asserting what a
+		// caller did is not a check.
+		held, err := s.alreadyHeld(ref, u.ByteSize)
+		if err != nil {
+			return nil, err
+		}
+		if !held {
+			s.logger.Warn("an upload's bytes are gone before it could be recorded; "+
+				"no memo was written and the client must send them again",
+				"upload_id", u.ID, "declared_bytes", u.ByteSize)
+			return nil, ErrStagingLost
+		}
 	}
-	// No staging file: offset() already established the recording is on disk
-	// at the right size, which is the crash-between-rename-and-memo case.
 
 	return s.commit(ctx, u, "uploaded")
 }
