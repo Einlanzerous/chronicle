@@ -125,13 +125,18 @@ For any new table, query, or handler, say which side it is on. Concretely:
   section claimed that until CHRN-79 and it was false: `pg_dump` emits only
   non-default ACLs, so revoking a privilege the role never held leaves nothing
   to emit — which is why `schema.sql` carries no `REVOKE` for any tier-2 table.
-  What makes a loosening observable is the loosened **`GRANT`**, which *is* a
-  non-default ACL, appears in the `schema.sql` diff on its own, and fails the
-  `schema` job — *migration staleness guard* on the checks list — when the
-  committed file disagrees. Measured on CHRN-79, not reasoned: a probe
-  `GRANT SELECT ON tier2.memos TO chronicle_tier1` adds exactly one ACL stanza
-  to the regenerated file. That visibility comes from
-  `gen-schema.sh` rendering privileges instead of passing `--no-acl`, which is
+  What makes a loosening observable is the loosened **`GRANT`** itself, which
+  *is* a non-default ACL — and the observing is split between you and CI, so do
+  not go looking in the wrong half. **Yours is the migration.** `migrations/` is
+  in `sensitive_paths`, so a `GRANT … TO chronicle_tier1` in a new `.up.sql` is
+  in the diff you were given. **CI's is `schema.sql`, which you were not** (§6,
+  `.github/review-ignore`): the regenerated file gains an ACL stanza and the
+  `schema` job — *migration staleness guard* on the checks list — fails when the
+  committed file disagrees. Measured on CHRN-79 rather than reasoned: a probe
+  `GRANT SELECT ON tier2.memos TO chronicle_tier1` adds exactly one stanza,
+  while all ten tier-2 `REVOKE`s the migrations state render nothing at all.
+  That visibility comes from `gen-schema.sh` rendering
+  privileges instead of passing `--no-acl`, which is
   why the script is in `sensitive_paths` and why removing the ACLs there would
   break no test. **The requirement above is unchanged** — knowing the true
   reason is what keeps it from being argued away by the next person who checks
