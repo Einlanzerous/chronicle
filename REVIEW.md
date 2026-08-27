@@ -161,6 +161,27 @@ the transcription result path, trace what happens when transcription **failed**,
 predicate is a timestamp comparison and nothing else is 🔴 regardless of how the
 surrounding code reads.
 
+**One deletion path in this repo is deliberately not that, and reading it as
+the pruner would produce a false 🔴 on every PR that touches it.**
+`internal/upload/sweep.go` (CHRN-20) collects **abandoned partial uploads**, and
+its predicate *is* a timestamp comparison and nothing else — correctly, because a
+partial upload is regenerable: the phone still holds the recording until the
+memo is acknowledged, which is the same argument that makes
+`tier1.memo_uploads` a tier-1 table. The two are told apart by what the code can
+name, not by how it reads:
+
+| | sweep | pruner (CHRN-22) |
+|---|---|---|
+| deletes | partial uploads in `audio.StagingDir` | recordings under an author's directory |
+| regenerable | **yes** | **no** |
+| gate | idle for a TTL | a durable transcript |
+
+So the check on a sweep diff is narrower and just as firm: **can it name
+anything outside `tier1.memo_uploads` and `StagingDir`?** If a change lets it
+walk an author's directory, read a memo row, or take a path from a caller, that
+is 🔴 — it has stopped being the sweep. `TestSweepNeverReachesAFinishedRecording`
+is the assertion; a diff that weakens or deletes it is the finding.
+
 ### 4. Credentials
 
 Sign-in is invite-based: a single-use invite redeems into a durable per-device
