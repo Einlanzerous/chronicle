@@ -80,7 +80,20 @@ step "gofmt"        gofmt_check
 step "go vet"       go vet ./...
 step "build"        go build ./...
 step "asr client"   asrclient_check
-step "test"         go test ./... -count=1
+# -p 1: ONE TEST BINARY AT A TIME.
+#
+# `go test ./...` runs packages in parallel by default, and more than one
+# package now resets the shared test database -- internal/store and
+# internal/transcribe both roll the migrations down and back up to start from
+# empty. Overlapped, they drop tables out from under each other and produce
+# failures that read as migration bugs ("relation tier2.users does not exist")
+# and are not.
+#
+# The alternative, an advisory lock in each harness, is more precise and has to
+# be remembered by whoever adds the third database-backed package. This cannot
+# be forgotten. The suite is seconds long; serialising it costs nothing worth
+# having.
+step "test"         go test ./... -count=1 -p 1
 
 if [ -z "${CHRONICLE_TEST_DATABASE_URL:-}" ]; then
   printf '\nNOTE: CHRONICLE_TEST_DATABASE_URL unset — database tests were skipped.\n'

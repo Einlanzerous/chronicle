@@ -327,3 +327,67 @@ func TestLoadProxySecretAndTheRetiredCIDRList(t *testing.T) {
 		}
 	})
 }
+
+// CHRN-27. The ASR pair is both-or-neither, for the reason the Cloudflare pair
+// is: half-configured, every submission fails with a 401 that reads like the
+// token was rejected rather than never set.
+func TestASRCredentialsAreBothOrNeither(t *testing.T) {
+	base := map[string]string{"CHRONICLE_DATABASE_URL": "postgres://x/y"}
+
+	t.Run("neither is fine", func(t *testing.T) {
+		c := loadWith(t, base)
+		if c.TranscriptionEnabled() {
+			t.Fatal("transcription reported as enabled with no URL")
+		}
+	})
+
+	t.Run("both is fine", func(t *testing.T) {
+		c := loadWith(t, merge(base, map[string]string{
+			"CHRONICLE_ASR_URL":   "http://asr:4011/",
+			"CHRONICLE_ASR_TOKEN": "a-token",
+		}))
+		if !c.TranscriptionEnabled() {
+			t.Fatal("transcription reported as disabled with both set")
+		}
+		// The trailing slash is trimmed: the generated client appends its own
+		// paths, and a doubled slash is a 404 nobody reads as a config typo.
+		if c.ASRBaseURL != "http://asr:4011" {
+			t.Fatalf("base URL = %q", c.ASRBaseURL)
+		}
+	})
+
+	for _, only := range []string{"CHRONICLE_ASR_URL", "CHRONICLE_ASR_TOKEN"} {
+		t.Run("only "+only+" is an error", func(t *testing.T) {
+			env := merge(base, map[string]string{only: "value-aaaaaaaaaaaaaaaaaaaa"})
+			for k, v := range env {
+				t.Setenv(k, v)
+			}
+			if _, err := Load(); err == nil {
+				t.Fatalf("setting only %s was accepted", only)
+			}
+		})
+	}
+}
+
+func loadWith(t *testing.T, env map[string]string) Config {
+	t.Helper()
+	for k, v := range env {
+		t.Setenv(k, v)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	return c
+}
+
+func merge(a, b map[string]string) map[string]string {
+	out := make(map[string]string, len(a)+len(b))
+	for k, v := range a {
+		out[k] = v
+	}
+	for k, v := range b {
+		out[k] = v
+	}
+	return out
+}
