@@ -592,6 +592,13 @@ fine currently reports **ready** and accepts work forever.
 `/healthz` stays dependency-free. A dead `whisper-server` is not a reason to
 restart `asrd` — `asrd` is the thing that restarts `whisper-server`.
 
+**[rev] This also settles a debt CHRN-25's review recorded against this
+ticket.** CHRN-25's *Surface* table promised `/readyz` would report *"the GPU
+lease and queue depth"*, and the shipped handler reports queue depth only —
+correctly, because there was no GPU lease to report until now. The reviewer
+flagged it as deferred rather than dropped and named this ticket. §3's lease is
+what makes it reportable, so it is paid here rather than amended away.
+
 ## Surface
 
 No change to `deploy/asr/openapi.yaml` except the readiness body, which gains
