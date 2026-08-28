@@ -1,6 +1,7 @@
 # CHRN-25 — The transcription job contract (decision)
 
-Status: **proposed — awaiting sign-off.**
+Status: **accepted 2026-08-28.** All three open rulings settled by magos; see the
+end of this document for what was decided and why the second one gained a guard.
 Ticket: CHRN-25 (Phase P2, parent CHRN-3). Tier `opus`, so Mode B: this document
 is the review artefact and the PR that follows it is mechanical.
 Decision owner: magos.
@@ -489,7 +490,9 @@ a review comment on its diff has nowhere to land.
   `partial` is a field the service sets, and your policy decides when.
 - **CHRN-22** — §5 is your predicate, read from Chronicle: **`succeeded` and not
   `partial`**. Empty text with a completed run is durable. Never compute it from
-  `covered_ms`, and never ask the ASR service.
+  `covered_ms`, and never ask the ASR service. Ruling 2 below adds the dry-run
+  **rate ceiling** — 20% by default, above a 10-memo floor — which is part of
+  your Mode C diff.
 - **CHRN-18's Done-when #7, second half** — *"that E3's worker skips ASR when a
   durable transcript already exists"* was explicitly deferred to E3 as needing
   E3's worker and E3's table. Both now exist, so that test lands here.
@@ -508,25 +511,43 @@ a review comment on its diff has nowhere to land.
 - **A callback/webhook instead of polling.** Deliberately not now: it needs the
   service to hold client credentials, which §2 rejected for the same reason.
 
-## Three things I would like ruled on rather than assumed
+## The three rulings, settled 2026-08-28 by magos
 
-Reviewed independently; the recommendation on each came back the same way, and
-the second one came back with an improvement worth taking.
+1. **§1, the separate database: yes.** Its own `asr` database and role on the
+   shared Postgres, credentials in Signet. The provisioning cost is one
+   `provision-db.sh` run now, against a coordinated migration across two live
+   services the day Catenary arrives — which is also the day it is least
+   convenient.
+2. **§5's empty-transcript ruling: yes, with a guard in CHRN-22 rather than in
+   the predicate.** The predicate stands exactly as §5 states it. The reasoning
+   for the guard is the one way this ruling could become corpus loss: an empty
+   result is the correct answer to silence *and* the exact symptom of a decoder
+   emitting silence — a broken ffmpeg pin, a wrong sample rate, a resampler
+   producing zeroes — across the whole corpus at once. One memo transcribing
+   empty is a fact about that memo; a third of them transcribing empty is a fact
+   about the decoder.
+3. **§9's 7-day result TTL: accepted.** It matches `upload.DefaultTTL` and
+   nothing depends on the exact number.
 
-1. **§1, the separate database.** Recommended **yes** — the provisioning cost is
-   one `provision-db.sh` run, against a coordinated migration across two services
-   the day Catenary arrives.
-2. **§5's empty-transcript ruling.** Recommended **yes, with the guard moved out
-   of the predicate and into CHRN-22.** The reasoning is worth stating because it
-   is the one way this ruling becomes corpus loss: an empty result is the correct
-   answer to silence *and* the exact symptom of a decoder emitting silence — a
-   broken ffmpeg pin, a wrong sample rate — across the whole corpus at once. So
-   keep the predicate as stated, and give **CHRN-22's dry run a rate ceiling**:
-   if the share of empty transcripts in a prune set exceeds a threshold, refuse
-   the run and say so. Cheap, and it closes the only path from this ruling to
-   irreversible loss.
-3. **§9's 7-day result TTL.** Recommended **fine**; it matches `upload.DefaultTTL`
-   and nothing depends on the exact number.
+### What ruling 2 binds on CHRN-22
+
+**The dry run carries a rate ceiling.** If the share of empty transcripts in a
+prune set exceeds a threshold, the run refuses and reports rather than deleting.
+
+Two details so the guard is not invented twice, and so it does not become a
+nuisance that gets disabled:
+
+- **Default 20%, configurable.** A healthy personal corpus produces the odd
+  pocket-recording; it does not produce one memo in five with no speech. The
+  threshold is set to catch a decoder regression, which shows up near 100%, not
+  to police ordinary variance.
+- **It applies only above a minimum set size — 10 memos.** On a prune set of
+  three, a single silent memo is 33% and would trip a percentage ceiling every
+  time. A guard that fires constantly on small sets is a guard someone turns off,
+  and then it is not there on the day it matters.
+
+Both belong to CHRN-22's Mode C diff. They are recorded here because the ruling
+that makes them necessary was taken here.
 
 ## Done when
 
