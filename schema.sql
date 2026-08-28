@@ -110,6 +110,40 @@ CREATE FUNCTION tier2.retention_rank(r text) RETURNS integer
 $$;
 
 
+--
+-- Name: transcripts_guard(); Type: FUNCTION; Schema: tier2; Owner: -
+--
+
+CREATE FUNCTION tier2.transcripts_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        RETURN NEW;
+    END IF;
+
+    IF NEW.memo_id IS DISTINCT FROM OLD.memo_id
+    OR NEW.model   IS DISTINCT FROM OLD.model THEN
+        RAISE EXCEPTION 'a transcript may not be re-attributed to another memo or model'
+            USING ERRCODE = 'CH004';
+    END IF;
+
+    IF OLD.partial = false AND NEW.partial = true THEN
+        RAISE EXCEPTION 'a complete transcript may not be replaced by a partial one'
+            USING ERRCODE = 'CH005';
+    END IF;
+
+    IF OLD.partial = false AND NEW.text IS DISTINCT FROM OLD.text THEN
+        RAISE EXCEPTION 'a complete transcript is authored content and is not rewritten in place'
+            USING ERRCODE = 'CH005';
+    END IF;
+
+    NEW.updated_at := now();
+    RETURN NEW;
+END
+$$;
+
+
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
@@ -122,6 +156,35 @@ CREATE TABLE public.schema_migrations (
     version text NOT NULL,
     applied_at timestamp with time zone DEFAULT now() NOT NULL
 );
+
+
+--
+-- Name: memo_jobs; Type: TABLE; Schema: tier1; Owner: -
+--
+
+CREATE TABLE tier1.memo_jobs (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    memo_id uuid NOT NULL,
+    idempotency_key text NOT NULL,
+    model text NOT NULL,
+    audio_sha256 text NOT NULL,
+    job_id uuid,
+    submitted_at timestamp with time zone,
+    collected_at timestamp with time zone,
+    failure_code text,
+    failure_message text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT memo_jobs_audio_sha256_check CHECK ((audio_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT memo_jobs_idempotency_key_check CHECK (((length(idempotency_key) >= 16) AND (length(idempotency_key) <= 200)))
+);
+
+
+--
+-- Name: TABLE memo_jobs; Type: COMMENT; Schema: tier1; Owner: -
+--
+
+COMMENT ON TABLE tier1.memo_jobs IS 'CHRN-27. Which ASR job a memo was submitted to, under which idempotency key. Tier 1 — regenerable, because Chronicle still holds the audio: losing a row costs one repeated GPU run and nothing else. Holds no transcript and no reference into tier 2.';
 
 
 --
@@ -223,6 +286,33 @@ CREATE TABLE tier2.memos (
 
 
 --
+-- Name: transcripts; Type: TABLE; Schema: tier2; Owner: -
+--
+
+CREATE TABLE tier2.transcripts (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    memo_id uuid NOT NULL,
+    text text NOT NULL,
+    segments jsonb DEFAULT '[]'::jsonb NOT NULL,
+    partial boolean NOT NULL,
+    model text NOT NULL,
+    backend text NOT NULL,
+    audio_duration_ms bigint,
+    covered_ms bigint,
+    transcribed_at timestamp with time zone DEFAULT now() NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: TABLE transcripts; Type: COMMENT; Schema: tier2; Owner: -
+--
+
+COMMENT ON TABLE tier2.transcripts IS 'CHRN-27. What a memo said. Tier 2 — it outlives the audio CHRN-22 prunes at thirty days, and nothing regenerates it once that audio is gone. `partial` is the gate that pruner reads: durable iff a run completed and partial is false. Empty text with a completed run IS durable.';
+
+
+--
 -- Name: user_tokens; Type: TABLE; Schema: tier2; Owner: -
 --
 
@@ -265,6 +355,14 @@ ALTER TABLE ONLY public.schema_migrations
 
 
 --
+-- Name: memo_jobs memo_jobs_pkey; Type: CONSTRAINT; Schema: tier1; Owner: -
+--
+
+ALTER TABLE ONLY tier1.memo_jobs
+    ADD CONSTRAINT memo_jobs_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: memo_uploads memo_uploads_pkey; Type: CONSTRAINT; Schema: tier1; Owner: -
 --
 
@@ -297,6 +395,14 @@ ALTER TABLE ONLY tier2.memos
 
 
 --
+-- Name: transcripts transcripts_pkey; Type: CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.transcripts
+    ADD CONSTRAINT transcripts_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: user_tokens user_tokens_pkey; Type: CONSTRAINT; Schema: tier2; Owner: -
 --
 
@@ -326,6 +432,27 @@ ALTER TABLE ONLY tier2.users
 
 ALTER TABLE ONLY tier2.users
     ADD CONSTRAINT users_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: memo_jobs_in_flight; Type: INDEX; Schema: tier1; Owner: -
+--
+
+CREATE UNIQUE INDEX memo_jobs_in_flight ON tier1.memo_jobs USING btree (memo_id) WHERE ((collected_at IS NULL) AND (failure_code IS NULL));
+
+
+--
+-- Name: memo_jobs_key; Type: INDEX; Schema: tier1; Owner: -
+--
+
+CREATE UNIQUE INDEX memo_jobs_key ON tier1.memo_jobs USING btree (idempotency_key);
+
+
+--
+-- Name: memo_jobs_memo; Type: INDEX; Schema: tier1; Owner: -
+--
+
+CREATE INDEX memo_jobs_memo ON tier1.memo_jobs USING btree (memo_id);
 
 
 --
@@ -378,6 +505,20 @@ CREATE UNIQUE INDEX memos_author_content ON tier2.memos USING btree (author_id, 
 
 
 --
+-- Name: transcripts_durable; Type: INDEX; Schema: tier2; Owner: -
+--
+
+CREATE INDEX transcripts_durable ON tier2.transcripts USING btree (memo_id) WHERE (NOT partial);
+
+
+--
+-- Name: transcripts_memo_model; Type: INDEX; Schema: tier2; Owner: -
+--
+
+CREATE UNIQUE INDEX transcripts_memo_model ON tier2.transcripts USING btree (memo_id, model);
+
+
+--
 -- Name: user_tokens_user_id; Type: INDEX; Schema: tier2; Owner: -
 --
 
@@ -396,6 +537,13 @@ CREATE UNIQUE INDEX users_single_owner ON tier2.users USING btree (is_owner) WHE
 --
 
 CREATE TRIGGER memos_guard BEFORE INSERT OR UPDATE ON tier2.memos FOR EACH ROW EXECUTE FUNCTION tier2.memos_guard();
+
+
+--
+-- Name: transcripts transcripts_guard; Type: TRIGGER; Schema: tier2; Owner: -
+--
+
+CREATE TRIGGER transcripts_guard BEFORE INSERT OR UPDATE ON tier2.transcripts FOR EACH ROW EXECUTE FUNCTION tier2.transcripts_guard();
 
 
 --
@@ -423,6 +571,14 @@ ALTER TABLE ONLY tier2.memos
 
 
 --
+-- Name: transcripts transcripts_memo_id_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.transcripts
+    ADD CONSTRAINT transcripts_memo_id_fkey FOREIGN KEY (memo_id) REFERENCES tier2.memos(id) ON DELETE RESTRICT;
+
+
+--
 -- Name: user_tokens user_tokens_user_id_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
 --
 
@@ -442,6 +598,13 @@ REVOKE USAGE ON SCHEMA public FROM PUBLIC;
 --
 
 GRANT ALL ON SCHEMA tier1 TO chronicle_tier1;
+
+
+--
+-- Name: TABLE memo_jobs; Type: ACL; Schema: tier1; Owner: -
+--
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE tier1.memo_jobs TO chronicle_tier1;
 
 
 --

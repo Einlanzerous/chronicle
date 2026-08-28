@@ -149,6 +149,31 @@ services:
       # keeps the guarantee from having to fire.
       - CHRONICLE_WATCH_INTERVAL=${CHRONICLE_WATCH_INTERVAL:-5s}
       - CHRONICLE_WATCH_SETTLE=${CHRONICLE_WATCH_SETTLE:-10s}
+      # Transcription (CHRN-27). The estate ASR service, reached
+      # container-to-container on construct_net -- it publishes no port, so
+      # this is the only way to it.
+      #
+      # BOTH OR NEITHER: config.Load errors when exactly one is set, so a URL
+      # beside an empty token crash-loops rather than failing every submission
+      # with a 401 that reads like the token was wrong. Unset, Chronicle boots
+      # and warns, memos are ingested and never transcribed, and
+      # GET /admin/transcription says so -- which is the point: an ingest path
+      # that files memos nobody transcribes looks entirely healthy until
+      # somebody goes looking for a transcript.
+      #
+      # The token is a .env indirection and the URL is a literal, for the
+      # reason the Access pair above gives: a hostname is not a secret, and a
+      # credential never belongs in a compose file. Add the Signet target:
+      #   signet target add-key --project construct-server \
+      #     --path /opt/construct-server/.env --name CHRONICLE_ASR_TOKEN
+      # It must equal the `chronicle:` half of ASR_CLIENT_TOKENS on the asr
+      # service (deploy/asr/compose.asr.yml).
+      - CHRONICLE_ASR_URL=http://asr:4011
+      - CHRONICLE_ASR_TOKEN=${CHRONICLE_ASR_TOKEN}
+      # Empty takes the ASR deployment's own default, which is the right
+      # behaviour: it knows what models are on its disk and Chronicle does not.
+      - CHRONICLE_ASR_MODEL=${CHRONICLE_ASR_MODEL:-}
+      - CHRONICLE_TRANSCRIBE_INTERVAL=${CHRONICLE_TRANSCRIBE_INTERVAL:-10s}
     volumes:
       # rw: the only durable store for tier-2 audio, which nothing regenerates.
       # Create both before the first boot or the container refuses to start:
