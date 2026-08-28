@@ -1,0 +1,7 @@
+# in-container-per-invocation | image estate-asr:dev | whisper 1fe009caeda75f69bc864d6370b10674e45a92bd | sdk 1.4.357.1 | mesa 25.2.8-0ubuntu0.24.04.2 | loader 1.3.275.0-1build1 | ffmpeg 7:6.1.1-3ubuntu5
+# clip voice60 | repeats 3 | clips_per_proc 1 | loadavg 0.78 -> 5.80 | 2026-08-28T00:20:10-05:00
+model,backend,decode_ms,infer_ms,total_ms,realtime_x
+base.en,vulkan,154,817,971,61.8
+small.en,vulkan,154,1223,1377,43.6
+medium.en,vulkan,154,2184,2338,25.7
+large-v3,vulkan,154,4608,4762,12.6
