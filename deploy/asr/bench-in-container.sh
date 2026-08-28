@@ -48,8 +48,30 @@ cp "$RIG/audio/$CLIP.opus" "$WORK/audio/"
 
 mkdir -p "$OUT_DIR"
 
+# provenance — the pin set this image was built from, read off its own labels
+# rather than restated here, so the two cannot drift. Prepended to each CSV: a
+# re-measure after a pin bump overwrites these files in place, and a diff of
+# numbers with nothing saying which pins are on each side of it is the exact
+# silent drift the Dockerfile header argues against.
+provenance() {
+  docker image inspect "$IMAGE" --format \
+    'whisper {{index .Config.Labels "estate.asr.whisper_ref"}} | sdk {{index .Config.Labels "estate.asr.vulkan_sdk"}} | mesa {{index .Config.Labels "estate.asr.mesa"}} | loader {{index .Config.Labels "estate.asr.libvulkan"}} | ffmpeg {{index .Config.Labels "estate.asr.ffmpeg"}}'
+}
+
 run() {                       # run <label> <clips_per_proc>
-  local label="$1" cpp="$2"
+  local label="$1" cpp="$2" load_start load_end
+  # Both ends of the load, not one. bench.sh's guard is a START-of-run check:
+  # it refuses to begin on a busy box and then cannot see load that arrives
+  # while it runs, which for a four-model sweep is minutes of exposure. The
+  # models run in order, so late load lands on the last rows — and a figure
+  # taken under it looks exactly like a figure taken idle. Recording both makes
+  # that visible in the artefact instead of leaving it to be inferred.
+  #
+  # Read the end figure with its caveat: the sweep drives load itself (ffmpeg,
+  # mel, tokenisation are all CPU-side), so a rise from idle to several is
+  # partly self-inflicted and is not on its own evidence of contention. It is a
+  # flag to check a suspect row against the reference, not a verdict on one.
+  load_start=$(awk '{print $1}' /proc/loadavg)
   echo "=== $label (CLIPS_PER_PROC=$cpp) ==="
   docker run --rm \
     --device "$RENDER_NODE:$RENDER_NODE" \
@@ -66,7 +88,13 @@ run() {                       # run <label> <clips_per_proc>
     -e OUTFILE="/bench/results/$label.csv" \
     --entrypoint bash \
     "$IMAGE" /bench/bench.sh
-  cp "$WORK/results/$label.csv" "$OUT_DIR/"
+  load_end=$(awk '{print $1}' /proc/loadavg)
+  {
+    printf '# %s | image %s | %s\n' "$label" "$IMAGE" "$(provenance)"
+    printf '# clip %s | repeats %s | clips_per_proc %s | loadavg %s -> %s | %s\n' \
+      "$CLIP" "$REPEATS" "$cpp" "$load_start" "$load_end" "$(date -Is)"
+    cat "$WORK/results/$label.csv"
+  } > "$OUT_DIR/$label.csv"
 }
 
 for mode in $MODES; do

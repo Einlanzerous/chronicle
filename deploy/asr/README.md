@@ -32,10 +32,19 @@ output to say so.
 | `VULKAN_SDK_VERSION` | `1.4.357.1` | **required, not preference** — see below |
 | `MESA_VERSION` | `25.2.8-0ubuntu0.24.04.2` | the RADV the reference numbers were taken on |
 | `LIBVULKAN_VERSION` | `1.3.275.0-1build1` | the loader they were taken on — see below |
+| `FFMPEG_VERSION` | `7:6.1.1-3ubuntu5` | the decode is *inside* the measurement, not next to it |
 
 Mesa is pinned **exactly**, so when that version rotates out of `noble-updates`
 the build fails loudly rather than quietly measuring a different driver. Bump it
 as a decision, then re-measure and update the table at the bottom of this file.
+
+**`ubuntu:24.04` is deliberately not on that list.** It is a moving tag, rebuilt
+regularly, and pinning it by digest would buy little that the five rows above do
+not already buy. That is only defensible because the one thing it supplies that
+reaches a published figure — ffmpeg — is pinned on its own line. Every figure
+here counts an Opus decode, so a base bump that changed ffmpeg would move
+`decode_ms` against a gate whose whole margin is a couple of percent, which is
+precisely the silent drift the rest of this file exists to prevent.
 
 ### The SDK is required, and the reason is invisible
 
@@ -115,6 +124,23 @@ whisper_backend_init_gpu: using Vulkan0 backend
 `WARNING: radv is not a conformant Vulkan implementation` is Mesa's standard
 conformance notice, not a defect. Transcripts are identical to ROCm's.
 
+That invocation takes a WAV. **An actual memo is Opus, and `whisper-cli` cannot
+read it** — ffmpeg is in the image for exactly that, so the shape is two steps:
+
+```bash
+docker run --rm --device /dev/dri/renderD129 \
+  -v ~/tools/whisper.cpp/models:/opt/whisper/models:ro \
+  -v ~/projects/catenary/spike/r3-whisper/audio:/audio:ro \
+  --entrypoint bash estate-asr:dev -c '
+    ffmpeg -y -hide_banner -loglevel error -i /audio/voice60.opus \
+      -ac 1 -ar 16000 -c:a pcm_s16le /tmp/voice60.wav
+    whisper-cli -m /opt/whisper/models/ggml-small.en.bin -f /tmp/voice60.wav'
+```
+
+Joining those two steps behind the job contract is CHRN-25's work, not this
+image's. Shown here only so the documented path is one the image can actually
+run on the format the estate records in.
+
 ## Benchmark
 
 ```bash
@@ -136,16 +162,17 @@ suggest a problem. Wait for the box.
 ## Measured, in this container
 
 Same box, same clip (`voice60`), same harness, decode counted, median of 3 after
-a discarded warm-up, load guard honoured on both runs. CSVs in `results/`.
+a discarded warm-up, both halves started on an idle box (load 0.78 and 0.64).
+CSVs in `results/`, each carrying the pin set that produced it.
 
 **Per invocation — CHRN-24's gate.**
 
 | model | in container | CHRN-12 reference | delta |
 |---|---|---|---|
-| `base.en` | 62.0× | 63.9× | −3.0% |
-| **`small.en`** | **43.7×** (1374 ms) | **43.2×** (1390 ms) | **+1.2%** |
-| `medium.en` | 25.2× | 25.6× | −1.6% |
-| `large-v3` | 12.3× | 12.6× | −2.4% |
+| `base.en` | 61.8× | 63.9× | −3.3% |
+| **`small.en`** | **43.6×** (1377 ms) | **43.2×** (1390 ms) | **+0.9%** |
+| `medium.en` | 25.7× | 25.6× | +0.4% |
+| `large-v3` | 12.6× | 12.6× | 0.0% |
 
 **Model resident — recorded, not gated on.** CHRN-26 is what makes this the
 operative column; it is measured here so that ticket starts from a number taken
@@ -153,17 +180,36 @@ through this image rather than a host-native one.
 
 | model | in container | CHRN-12 reference | delta |
 |---|---|---|---|
-| `base.en` | 76.5× | 76.4× | +0.1% |
-| `small.en` | 58.1× | 59.6× | −2.5% |
+| `base.en` | 76.7× | 76.4× | +0.4% |
+| `small.en` | 57.9× | 59.6× | −2.9% |
 | `medium.en` | 35.9× | 36.8× | −2.4% |
-| `large-v3` | 18.2× | 18.3× | −0.5% |
+| `large-v3` | 18.3× | 18.3× | 0.0% |
 
-Every cell lands within 3% of host-native, in both directions, which is what
-"within noise" should look like — a container that came out uniformly *faster*
-would mean the two runs were not measuring the same work. **Containerising this
-build costs nothing measurable.** The decode is the one consistent difference:
-151–158 ms here against 149 ms host-native, a few percent slower and ~3% of the
-total, which is the ffmpeg build differing and is not worth chasing.
+Worst cell 3.3%, four of eight inside 1%, two landing on the reference exactly,
+and the deviations run in both directions. **Containerising this build costs
+nothing measurable** — a container that came out uniformly *faster* would have
+meant the two runs were not measuring the same work.
+
+The decode is the one systematic difference: 154 ms here against 149 ms
+host-native, which is the ffmpeg build differing. The number that makes it
+ignorable is the **difference**, not the share — **5 ms on the gated row, 0.36%
+of its 1377 ms total**. The share is no use as a single figure because it moves
+by an order of magnitude across the table: decode is 11.2% of `small.en` per
+invocation and 3.2% of `large-v3`.
+
+### One measurement was thrown away, and why it is worth knowing
+
+An earlier sweep read `large-v3` at **11.5×** per invocation — 8.7% under
+reference, while every other cell sat inside 3%. It was not a real result. The
+harness's load guard is a **start-of-run** check: it refuses to begin on a busy
+box and then cannot see load arriving during the minutes that follow. Models run
+in order, so late load lands on the last rows, and `large-v3` is last.
+
+Re-run from idle, it reads 12.6× — the reference figure exactly. That is why the
+CSVs now record load at **both ends** of each run rather than one. Read the end
+figure with its caveat, though: the sweep drives load itself, so a rise from idle
+is partly self-inflicted and is a flag to check a suspect row against the
+reference, not a verdict on one.
 
 ---
 

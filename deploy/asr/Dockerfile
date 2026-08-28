@@ -5,13 +5,19 @@
 #
 #   docker build -f deploy/asr/Dockerfile -t estate-asr:dev deploy/asr
 #
-# Everything below is pinned, and the pins are the deliverable rather than
-# housekeeping. IDEA-26 could not promise that a later whisper.cpp keeps this
-# backend fast, and this rig has now produced a confidently wrong number twice
-# (a slow backend that looked correct, then a decode flag that looked like
-# formatting). A float in any of these four values moves a published latency
-# figure with nothing in the output to say so.
-
+# Everything that enters a published number is pinned, and the pins are the
+# deliverable rather than housekeeping. IDEA-26 could not promise that a later
+# whisper.cpp keeps this backend fast, and this rig has now produced a
+# confidently wrong number twice (a slow backend that looked correct, then a
+# decode flag that looked like formatting). A float in any of the five values
+# below moves a published latency figure with nothing in the output to say so.
+#
+# The base tag is the exception and is deliberately NOT one of the five:
+# `ubuntu:24.04` is rebuilt regularly and is not a fixed input. That is only
+# acceptable because every component of it that reaches a measurement is pinned
+# individually below — ffmpeg above all, since the decode is counted in every
+# figure and a base-image bump would otherwise move `decode_ms` against a gate
+# whose whole margin is a few percent.
 ARG UBUNTU=24.04
 
 # whisper.cpp 1fe009ca (2026-08-14) / ggml 0.20.0 — the exact tree IDEA-26 built
@@ -31,6 +37,17 @@ ARG VULKAN_SDK_VERSION=1.4.357.1
 # fails loudly instead of quietly measuring a different driver. Bump it as a
 # decision, then re-measure and update deploy/asr/README.md.
 ARG MESA_VERSION=25.2.8-0ubuntu0.24.04.2
+
+# The Vulkan loader. Declared once here and inherited by both stages that need
+# it, so the two cannot drift apart and leave the README's single-row claim
+# true of only one of them.
+ARG LIBVULKAN_VERSION=1.3.275.0-1build1
+
+# ffmpeg, which is in a measurement rather than merely near one: every figure
+# this image is compared against counts an Opus decode, so an ffmpeg that
+# arrives with whatever the base tag happens to hold that month is a moving
+# part inside the gate.
+ARG FFMPEG_VERSION=7:6.1.1-3ubuntu5
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +71,7 @@ RUN curl -fsSL -o /tmp/vulkan_sdk.tar.xz \
 # ---------------------------------------------------------------------------
 FROM ubuntu:${UBUNTU} AS build
 ARG WHISPER_REF
-ARG LIBVULKAN_VERSION=1.3.275.0-1build1
+ARG LIBVULKAN_VERSION
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential cmake git ca-certificates \
         "libvulkan1=${LIBVULKAN_VERSION}" \
@@ -101,7 +118,22 @@ RUN cmake -S /src/whisper.cpp -B /src/whisper.cpp/build-vk \
 # ---------------------------------------------------------------------------
 FROM ubuntu:${UBUNTU} AS runtime
 ARG MESA_VERSION
-ARG LIBVULKAN_VERSION=1.3.275.0-1build1
+ARG LIBVULKAN_VERSION
+ARG FFMPEG_VERSION
+ARG WHISPER_REF
+ARG VULKAN_SDK_VERSION
+
+# The pins, carried on the image so a measurement can record what produced it
+# without a script re-stating values that would then drift from these. The whole
+# argument above is that a moved pin must not be able to move a published figure
+# silently; a CSV that cannot name its own pin set has that hole in it.
+LABEL org.opencontainers.image.title="estate-asr" \
+      org.opencontainers.image.description="whisper.cpp on the R9700 (gfx1201) via Vulkan/RADV — shared estate ASR runner, CHRN-24" \
+      estate.asr.whisper_ref="${WHISPER_REF}" \
+      estate.asr.vulkan_sdk="${VULKAN_SDK_VERSION}" \
+      estate.asr.mesa="${MESA_VERSION}" \
+      estate.asr.libvulkan="${LIBVULKAN_VERSION}" \
+      estate.asr.ffmpeg="${FFMPEG_VERSION}"
 
 # ffmpeg is here because the job contract accepts compressed audio and decodes
 # it — decided on the epic 2026-08-27, after CHRN-21 established that Chronicle
@@ -116,7 +148,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         "mesa-vulkan-drivers=${MESA_VERSION}" \
         "libvulkan1=${LIBVULKAN_VERSION}" \
         libgomp1 \
-        ffmpeg \
+        "ffmpeg=${FFMPEG_VERSION}" \
         bsdextrautils \
     && rm -rf /var/lib/apt/lists/*
 
