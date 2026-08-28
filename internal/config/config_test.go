@@ -2,6 +2,7 @@ package config
 
 import (
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 )
@@ -326,4 +327,83 @@ func TestLoadProxySecretAndTheRetiredCIDRList(t *testing.T) {
 			t.Errorf("ProxySecret = %q", c.ProxySecret)
 		}
 	})
+}
+
+// CHRN-27. The ASR pair is both-or-neither, for the reason the Cloudflare pair
+// is: half-configured, every submission fails with a 401 that reads like the
+// token was rejected rather than never set.
+func TestASRCredentialsAreBothOrNeither(t *testing.T) {
+	base := map[string]string{"CHRONICLE_DATABASE_URL": "postgres://x/y"}
+
+	t.Run("neither is fine", func(t *testing.T) {
+		c := loadWith(t, base)
+		if c.TranscriptionEnabled() {
+			t.Fatal("transcription reported as enabled with no URL")
+		}
+	})
+
+	t.Run("both is fine", func(t *testing.T) {
+		c := loadWith(t, merge(base, map[string]string{
+			"CHRONICLE_ASR_URL":   "http://asr:4011/",
+			"CHRONICLE_ASR_TOKEN": "a-token",
+		}))
+		if !c.TranscriptionEnabled() {
+			t.Fatal("transcription reported as disabled with both set")
+		}
+		// The trailing slash is trimmed: the generated client appends its own
+		// paths, and a doubled slash is a 404 nobody reads as a config typo.
+		if c.ASRBaseURL != "http://asr:4011" {
+			t.Fatalf("base URL = %q", c.ASRBaseURL)
+		}
+	})
+
+	// The value for each half must be one the OTHER checks would accept, or
+	// this test passes for the wrong reason. It used to set both halves to
+	// "value-aaaa…", which for the URL half also fails the absolute-URL check
+	// three lines further down in Load — so the subtest named for the
+	// both-or-neither guard would still have passed with that guard deleted.
+	valid := map[string]string{
+		"CHRONICLE_ASR_URL":   "http://asr:4011",
+		"CHRONICLE_ASR_TOKEN": "a-perfectly-good-token",
+	}
+	for only, value := range valid {
+		t.Run("only "+only+" is an error", func(t *testing.T) {
+			for k, v := range merge(base, map[string]string{only: value}) {
+				t.Setenv(k, v)
+			}
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("setting only %s was accepted", only)
+			}
+			// And it is the RIGHT error: naming both variables, not the
+			// URL-shape complaint that would fire on a malformed value.
+			if !strings.Contains(err.Error(), "CHRONICLE_ASR_URL") ||
+				!strings.Contains(err.Error(), "CHRONICLE_ASR_TOKEN") {
+				t.Fatalf("error = %v; the both-or-neither guard should name both variables", err)
+			}
+		})
+	}
+}
+
+func loadWith(t *testing.T, env map[string]string) Config {
+	t.Helper()
+	for k, v := range env {
+		t.Setenv(k, v)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	return c
+}
+
+func merge(a, b map[string]string) map[string]string {
+	out := make(map[string]string, len(a)+len(b))
+	for k, v := range a {
+		out[k] = v
+	}
+	for k, v := range b {
+		out[k] = v
+	}
+	return out
 }

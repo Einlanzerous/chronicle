@@ -119,8 +119,11 @@ jobs:
           fi
           echo "internal/asrclient matches the contract."
 
+      # -p 1 for the reason verify.sh gives at length: more than one package
+      # resets the shared test database, and overlapped they drop tables out
+      # from under each other, producing failures that read as migration bugs.
       - name: Test
-        run: go test -race ./... -count=1
+        run: go test -race ./... -count=1 -p 1
 
   lint:
     name: lint
