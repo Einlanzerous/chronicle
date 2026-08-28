@@ -1,0 +1,31 @@
+# What never needs to reach a docker build context.
+#
+# Added by CHRN-25, when deploy/asr/Dockerfile started building a Go binary and
+# therefore had to be built from the repository root rather than from
+# deploy/asr. Both images are built from this context now, and neither wants any
+# of the below.
+#
+# Kept SHORT and obviously-irrelevant on purpose. A .dockerignore that excludes
+# source is a .dockerignore that produces a build failure nobody can reproduce
+# outside Docker, so nothing here is a file either binary compiles.
+
+# Local build output, already in .gitignore.
+/bin/
+/chronicle
+*.test
+coverage.*
+
+# History. Neither image reads it: the build identity comes in as VERSION and
+# GIT_SHA build args, precisely so an image cannot claim a version from a tree
+# it was not built from.
+.git/
+.github/
+
+# Benchmark evidence. CSVs and the harness that produced them, which belong in
+# the repository and not in an image layer.
+/deploy/asr/results/
+
+# Local environment. Never in an image, and never in a context that could put
+# one in an image by accident.
+.env
+.env.*

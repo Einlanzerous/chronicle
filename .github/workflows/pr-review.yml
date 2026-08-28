@@ -206,7 +206,11 @@ jobs:
       #                         the same judgement that put watch/ and audio/
       #                         here: an ingest or deletion path earns the
       #                         expensive tier whatever mode its ticket ran in.
-      sensitive_paths: '^(internal/store/|internal/api/(session|cfaccess|ratelimit|router|storage|upload)|internal/(invite|config|audio|watch|upload)/|cmd/chronicle/|migrations/|deploy/|scripts/|verify\.sh|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore)'
+      # internal/asr/ and cmd/asrd/ are the ASR service (CHRN-25): a job queue,
+      # a lease, an auth surface and a second database. deploy/asr/openapi.yaml
+      # is the contract two services generate from, and it is already covered by
+      # the `deploy/` entry.
+      sensitive_paths: '^(internal/store/|internal/asr/|internal/api/(session|cfaccess|ratelimit|router|storage|upload)|internal/(invite|config|audio|watch|upload)/|cmd/(chronicle|asrd)/|migrations/|deploy/|scripts/|verify\.sh|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore)'
 
       # No `docs_skip_extra`: this repo commits no knowledge-graph cache, and
       # the one generated artifact it does carry is excluded outright in
