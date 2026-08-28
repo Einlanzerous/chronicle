@@ -194,3 +194,41 @@ func TestRetranscribeRefusesAnUnknownMemo(t *testing.T) {
 		t.Fatalf("error = %v; it should name the memo that does not exist", err)
 	}
 }
+
+// A MEMO WHOSE AUDIO IS GONE IS NOT RELEASED.
+//
+// Nothing sets audio_pruned_at until CHRN-22, so this cannot fire today. The day
+// it can, releasing one would put it in `queued` — where
+// MemosAwaitingTranscription excludes pruned memos, so no sweep returns it, no
+// report lists it as stuck, and it counts in `pending` forever. A silent
+// permanent limbo is worse than a refusal that says why.
+func TestRetranscribeRefusesAMemoWhoseAudioIsGone(t *testing.T) {
+	s, ctx := retranscribeStore(t)
+	memoID := heldMemoAtTheCeiling(t, s, ctx, "pruned@example.test")
+
+	if _, err := s.Pool().Exec(ctx,
+		`UPDATE tier2.memos SET audio_pruned_at = now() WHERE id = $1`, memoID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runRetranscribe([]string{"--memo", memoID.String()}); err != nil {
+		t.Fatalf("retranscribe: %v", err)
+	}
+
+	m, err := s.GetMemo(ctx, memoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.State != store.StateHeld {
+		t.Fatalf("state %q; a memo with no audio was released into a queue that will never "+
+			"return it, and nothing would report it as stuck", m.State)
+	}
+	// And the attempts were not cleared either — nothing about it changed.
+	n, err := s.CountMemoJobs(ctx, memoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != transcribe.MaxAttempts {
+		t.Fatalf("countable attempts = %d; a refused release must not spend them", n)
+	}
+}

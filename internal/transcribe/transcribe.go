@@ -239,10 +239,13 @@ func (s *Service) submit(ctx context.Context) {
 		// EXISTS. Read from Chronicle and never from the ASR service, whose
 		// answer at thirty days is a 410 — see store.HasDurableTranscript.
 		//
-		// This is not merely an optimisation. A memo whose audio has been
-		// pruned has nothing to send, and `held` keeps an exit to `queued`
-		// even after a prune, so without this check a re-queued memo would
-		// loop forever failing to read bytes that are gone.
+		// It stands on that Done-when alone. An earlier version of this
+		// comment also claimed it was what stopped a memo whose audio had
+		// been pruned looping forever, and that was wrong:
+		// MemosAwaitingTranscription already carries `audio_pruned_at IS
+		// NULL`, so such a memo never reaches this line. Attributing a check
+		// to a loop something else prevents is how a check gets deleted later
+		// by someone who tested the wrong claim.
 		durable, err := s.store.HasDurableTranscript(ctx, memo.ID)
 		if err != nil {
 			s.logError(ctx, "could not check for an existing transcript", err, "memo", memo.ID)
@@ -366,10 +369,29 @@ func (s *Service) send(ctx context.Context, job store.MemoJob, memo store.Memo) 
 
 	case resp.JSON409 != nil:
 		// This key was used for a different spec or different audio, which
-		// should be impossible: the key is minted per attempt and never
-		// reused. It means Chronicle's row and the service's disagree, so
-		// settle this attempt and let the next sweep mint a fresh key.
-		s.fail(ctx, job, memo, "idempotency_mismatch", resp.JSON409.Message)
+		// SHOULD BE IMPOSSIBLE: the key is minted per attempt and never
+		// reused, and a memo's content hash is immutable. It means
+		// Chronicle's row and the service's disagree about what this key
+		// named.
+		//
+		// REQUEUED, not held, and the distinction is the one the first
+		// version of this comment got wrong: it said "let the next sweep mint
+		// a fresh key" while calling fail(), which holds — and a held memo is
+		// never returned by MemosAwaitingTranscription, so no sweep would ever
+		// have come. The recovery it promised could not happen.
+		//
+		// Requeueing is also what CHRN-25 §3 prescribes: "the client mints a
+		// fresh key and retries". A fresh attempt gets a fresh key, which by
+		// construction has never been used, so it succeeds. The attempt
+		// ceiling bounds it if something is genuinely wrong.
+		//
+		// Warned separately because self-healing is not the same as fine: a
+		// state disagreement that recovers silently is one nobody ever looks
+		// into.
+		s.logger.WarnContext(ctx, "the ASR service rejected our idempotency key as reused; "+
+			"Chronicle's record and the service's disagree",
+			"memo", memo.ID, "attempt", job.ID, "detail", resp.JSON409.Message)
+		s.requeue(ctx, job, memo, "idempotency_mismatch", resp.JSON409.Message)
 
 	case resp.JSON415 != nil:
 		s.fail(ctx, job, memo, "unsupported_media_type",

@@ -607,6 +607,7 @@ func runRetranscribe(args []string) error {
 	st := store.New(pool)
 
 	var targets []store.HeldMemo
+	var truncated bool
 	if *memoID != "" {
 		id, err := uuid.Parse(*memoID)
 		if err != nil {
@@ -630,11 +631,19 @@ func runRetranscribe(args []string) error {
 		}
 		targets = []store.HeldMemo{{ID: m.ID, AuthorID: m.AuthorID, CapturedAt: m.CapturedAt, Reason: reason}}
 	} else {
-		// No limit that hides work: releasing "some" held memos and not
-		// saying which is worse than releasing none.
-		targets, err = st.HeldMemos(ctx, 10000)
+		// A cap, AND IT SAYS SO WHEN IT HITS ONE. The comment here used to
+		// argue against a limit that hides work and then pass 10000, which is
+		// a limit that hides work with a comment claiming otherwise.
+		//
+		// Fetched one over the cap so truncation is detectable rather than
+		// inferred from a round number.
+		targets, err = st.HeldMemos(ctx, retranscribeCap+1)
 		if err != nil {
 			return err
+		}
+		if len(targets) > retranscribeCap {
+			targets = targets[:retranscribeCap]
+			truncated = true
 		}
 	}
 
@@ -644,7 +653,20 @@ func runRetranscribe(args []string) error {
 	}
 
 	released := 0
+	skipped := 0
 	for _, h := range targets {
+		// NEVER RELEASE A MEMO WHOSE AUDIO IS GONE. Nothing sets
+		// audio_pruned_at until CHRN-22, so this cannot fire today — and the
+		// day it can, releasing one would put it in `queued`, where
+		// MemosAwaitingTranscription (which excludes pruned memos) never
+		// returns it, no report lists it as stuck, and it counts in `pending`
+		// forever. A silent permanent limbo is worse than a refusal that says
+		// why.
+		if m, err := st.GetMemo(ctx, h.ID); err == nil && m.AudioPruned() {
+			fmt.Printf("  %s  NOT released: its audio was pruned, so there is nothing to transcribe\n", h.ID)
+			skipped++
+			continue
+		}
 		// SUPERSEDE FIRST, and this order is the whole of the command working.
 		//
 		// The pump's attempt ceiling counts attempt rows. Releasing the memo
@@ -667,8 +689,21 @@ func runRetranscribe(args []string) error {
 	}
 
 	fmt.Printf("released %d of %d held memo(s)\n", released, len(targets))
+	if skipped > 0 {
+		fmt.Printf("%d skipped because their audio is gone; a transcript is the only record now\n", skipped)
+	}
+	if truncated {
+		fmt.Printf("MORE THAN %d held memos exist. Only the %d most recently updated were "+
+			"considered; run this again to continue.\n", retranscribeCap, retranscribeCap)
+	}
 	if released > 0 {
 		fmt.Println("the running server picks these up on its next sweep; nothing else to do")
 	}
 	return nil
 }
+
+// retranscribeCap bounds one run of `chronicle retranscribe`. It exists so the
+// command cannot build an unbounded slice on a corpus that has gone badly
+// wrong; when it binds, the command says so rather than reporting a total that
+// silently means "the first ten thousand".
+const retranscribeCap = 10000

@@ -117,7 +117,13 @@ func (f *fakeASR) serve(t *testing.T) ASR {
 		}
 
 		if status != 0 {
-			http.Error(w, `{"code":"nope","message":"programmed failure"}`, status)
+			// writeJSON rather than http.Error: http.Error sends text/plain,
+			// and the generated client only fills JSON409 when the response
+			// says it is JSON — so the branch under test would never be
+			// reached and the test would pass against a default case.
+			writeJSON(w, status, asrclient.Error{
+				Code: "programmed", Message: "programmed failure",
+			})
 			return
 		}
 
@@ -630,4 +636,48 @@ func TestMediaTypeFor(t *testing.T) {
 func sha256Hex(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
+}
+
+// A 409 REQUEUES FOR A FRESH KEY, it does not hold.
+//
+// A held memo is never returned by MemosAwaitingTranscription, so the first
+// version of this path settled the attempt and left a comment promising that
+// "the next sweep mints a fresh key" — a recovery no code path provided. CHRN-25
+// §3 prescribes the opposite: on a mismatch the client mints a fresh key and
+// retries.
+func TestAnIdempotencyMismatchRequeuesForAFreshKey(t *testing.T) {
+	h := newHarness(t)
+	asr := newFakeASR()
+	asr.set(func(f *fakeASR) { f.submitStatus = http.StatusConflict })
+	p := h.pump(t, asr.serve(t))
+	memo := h.memo(t, "mismatch@example.test", "said once")
+
+	p.Tick(h.ctx)
+
+	m := h.state(t, memo.ID)
+	if m.State == store.StateHeld {
+		t.Fatal("a 409 held the memo. Nothing sweeps a held memo, so the fresh key the " +
+			"contract prescribes would never be minted and only the CLI could recover it")
+	}
+	if m.State != store.StateQueued {
+		t.Fatalf("state %q, want queued", m.State)
+	}
+	first := asr.seenKeys()
+	if len(first) != 1 {
+		t.Fatalf("%d submits, want 1", len(first))
+	}
+
+	// The next sweep really does mint a fresh key, and the memo completes.
+	asr.set(func(f *fakeASR) { f.submitStatus = 0 })
+	p.Tick(h.ctx)
+	p.Tick(h.ctx)
+
+	keys := asr.seenKeys()
+	if keys[len(keys)-1] == first[0] {
+		t.Fatalf("the retry reused the rejected key %q; a mismatch means that key already "+
+			"names something else", first[0])
+	}
+	if got := h.state(t, memo.ID).State; got != store.StateTranscribed {
+		t.Fatalf("state %q; the memo did not recover", got)
+	}
 }

@@ -2,6 +2,7 @@ package config
 
 import (
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 )
@@ -356,14 +357,29 @@ func TestASRCredentialsAreBothOrNeither(t *testing.T) {
 		}
 	})
 
-	for _, only := range []string{"CHRONICLE_ASR_URL", "CHRONICLE_ASR_TOKEN"} {
+	// The value for each half must be one the OTHER checks would accept, or
+	// this test passes for the wrong reason. It used to set both halves to
+	// "value-aaaa…", which for the URL half also fails the absolute-URL check
+	// three lines further down in Load — so the subtest named for the
+	// both-or-neither guard would still have passed with that guard deleted.
+	valid := map[string]string{
+		"CHRONICLE_ASR_URL":   "http://asr:4011",
+		"CHRONICLE_ASR_TOKEN": "a-perfectly-good-token",
+	}
+	for only, value := range valid {
 		t.Run("only "+only+" is an error", func(t *testing.T) {
-			env := merge(base, map[string]string{only: "value-aaaaaaaaaaaaaaaaaaaa"})
-			for k, v := range env {
+			for k, v := range merge(base, map[string]string{only: value}) {
 				t.Setenv(k, v)
 			}
-			if _, err := Load(); err == nil {
+			_, err := Load()
+			if err == nil {
 				t.Fatalf("setting only %s was accepted", only)
+			}
+			// And it is the RIGHT error: naming both variables, not the
+			// URL-shape complaint that would fire on a malformed value.
+			if !strings.Contains(err.Error(), "CHRONICLE_ASR_URL") ||
+				!strings.Contains(err.Error(), "CHRONICLE_ASR_TOKEN") {
+				t.Fatalf("error = %v; the both-or-neither guard should name both variables", err)
 			}
 		})
 	}
