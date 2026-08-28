@@ -1,7 +1,26 @@
 # CHRN-26 — The resident worker and the GPU lease (decision)
 
-Status: **proposed 2026-08-28.** Three rulings at the end need magos before any
-code is written.
+Status: **proposed 2026-08-28, revised the same day after review.** Three
+rulings at the end still need magos before any code is written.
+
+**Revised after review.** Seven findings, all accepted, and **four of them are
+decisions this document left open that an implementer would have closed
+silently** — the shape CHRN-25's revision was for. Changes are marked **[rev]**;
+they close gaps rather than reverse positions, and the one that matters is §7's:
+a *hung* child, as opposed to a crashed one, deadlocked the queue with every
+lease reporting healthy.
+
+Every claim this document makes about `whisper-server` is now **checked against
+the pinned tree** at `1fe009ca` rather than inferred from its `--help`, and the
+reading turned up two things the review did not have — both of which would have
+produced a passing Done-when over broken behaviour:
+
+- **§1**: the server's decode defaults are **greedy** where every reference
+  number was measured under beam search. The review had these matching. An
+  unpinned run beats 57.9× for a reason that is not residency.
+- **§4**: `response_format` defaults to `json`, which returns text and **no
+  segments** — and CHRN-25's contract makes an empty segment list *valid*, so
+  nothing downstream would ever complain.
 Ticket: CHRN-26 (Phase P2, parent CHRN-3). Tier `opus`, so Mode B: this document
 is the review artefact and the PR that follows it should be mechanical.
 Decision owner: magos.
@@ -78,6 +97,54 @@ it with backoff if it exits, and reports it in `/readyz`. A resident process
 nobody supervises is a resident process that dies once and turns the service
 into a queue that fills forever — which looks exactly like a busy service.
 
+**[rev] It has a `/health` endpoint, and that is what to wait on.**
+`server.cpp:1205-1213` answers `{"status":"ok"}` when READY and **503** with
+`{"status":"loading model"}` while a model is loading — so "started" and "ready
+to take work" are distinguishable without guessing at a sleep. The supervisor
+polls it at startup and after every `/load`.
+
+**[rev] It carries its own single-flight line, and that is worth knowing rather
+than relying on.** `whisper_mutex` (`server.cpp:638`) is held for the whole of
+`/inference` (`819`) and the whole of `/load` (`1164`), so a second concurrent
+request **blocks** rather than running. That is a second guarantee under §3's
+semaphore, not a replacement for it: it is per-process, so it says nothing about
+two `asrd` processes, and blocking is not admission control — a queue of
+requests parked on a mutex is invisible to everything that would want to see a
+queue. Belt and braces, with the semaphore as the belt.
+
+### [rev] The decode parameters must be pinned, and the review had this backwards
+
+The review's read was that `whisper-server`'s defaults match `whisper-cli`'s, so
+this ticket's throughput Done-when is a fair comparison. **They do not match**,
+checked in the pinned tree's `--help` for both binaries:
+
+| | `whisper-cli` | `whisper-server` |
+|---|---|---|
+| `--beam-size` | **5** | **-1** (greedy) |
+| `--best-of` | **5** | **2** |
+| `--threads` | 4 | 4 |
+| `--flash-attn` | true | true |
+
+And `bench.sh` passes only `-m` and `-f`, so **every CHRN-12 and CHRN-24
+reference number was measured at beam search with beam size 5.**
+
+A `whisper-server` left on its defaults therefore decodes **greedily**, and that
+is worse than a small discrepancy in two ways at once. It is *faster*, so this
+ticket's own Done-when — "within a few percent of the resident column" — would
+be met by a different decode rather than by residency working, and would look
+like a pass. And it is a different transcript: CHRN-12's model comparison,
+including the `Frédéric`/`Fradique` observation that ruled out `large-v3`, was
+made under beam search, so a corpus decoded greedily is not the corpus that
+benchmark describes.
+
+**`asrd` passes `-bs 5 -bo 5` explicitly**, and the throughput claim is only
+meaningful with the decode parameters matched. This is the **third** time in
+this epic that an unmatched knob would have invalidated a comparison — after
+`-nt` being a decode change rather than a formatting flag, and the load guard
+being a start-of-run check only. The pattern is consistent enough to state as a
+rule: **a number compared against CHRN-24 must name the decode it was taken
+with.**
+
 ## 2 · What "resident" is worth, and the framing that makes it obvious
 
 The honest number for a 60-second memo is **28%**: 1.39 s per invocation against
@@ -86,14 +153,15 @@ container in CHRN-24). Stated that way this ticket looks like a modest
 optimisation, and it is worth saying why that framing is wrong.
 
 R3 isolated the cost by transcribing a **1-second** clip: **388 ms on Vulkan**,
-essentially all of it fixed per-process setup. It is a constant, not a share.
-So on the memos this system actually receives:
+essentially all of it fixed per-process setup (`~/projects/catenary/spike/r3-whisper/FINDINGS.md`
+§8; the same table reads 3611 ms for HIP). It is a constant, not a share. So on
+the memos this system actually receives:
 
 | memo | inference at 59.6× | + 388 ms tax | per-invocation is |
 |---|---|---|---|
 | 5 s | 84 ms | 472 ms | **5.6× slower** |
 | 30 s | 503 ms | 891 ms | 1.8× slower |
-| 60 s | 1.01 s | 1.39 s | 1.28× slower |
+| 60 s | 1.01 s | 1.39 s | 1.38× slower |
 | 40 min | 40.3 s | 40.7 s | 1.01× slower |
 
 **The tax is paid per job, so it dominates exactly the memos there are most
@@ -101,8 +169,15 @@ of.** A voice note is far more often ten seconds than forty minutes. The 28%
 figure is the number for the longest jobs, which is the case that needed this
 least.
 
+**[rev] The two framings are one fact, and the table said so wrongly.** The 60 s
+row read 1.28×, which is the 28% figure leaking into a column of time ratios;
+1.39 s against 1.01 s is **1.38×**. Both describe the same thing — per-invocation
+takes 38% longer, resident saves 27% of the wall clock — and every other row was
+already a time ratio. Corrected above.
+
 There is a second cost the table does not show. Model load alone is **145 ms for
-`base.en` and 1.9 s for `large-v3`'s 3.1 GB** — so per-invocation, the upgrade
+`base.en` and 1.9 s for `large-v3`'s 3.1 GB** (`docs/benchmarks/whisper-model-choice.md`)
+— so per-invocation, the upgrade
 path CHRN-12 recommends (`medium.en`) and the model somebody will eventually try
 (`large-v3`) are the ones the tax punishes hardest, and residency is what keeps
 that door open.
@@ -141,7 +216,10 @@ Three things make that an acceptable place to stop, and they should be checked
 rather than taken on trust:
 
 1. **Concurrency with Ollama is a slowdown, not a failure.** The R9700 reports
-   34,208,743,424 bytes — 31.9 GB — and `small.en` is 466 MB resident against
+   **34,208,743,424 bytes — 31.9 GB** — read from
+   `/sys/class/drm/renderD129/device/mem_info_vram_total` on this box, which is
+   the `amdgpu` card and therefore the right one (CHRN-24: the render-node
+   numbering reads the wrong way round). `small.en` is 466 MB resident against
    `large-v3`'s 3.1 GB. Two consumers
    contend for compute and memory bandwidth, and both get slower. Neither gets a
    wrong answer, and neither is evicted.
@@ -170,6 +248,28 @@ and new, or somebody running a second one by hand. An advisory lock is released
 automatically when its connection dies, which is the same property CHRN-25's
 job lease relies on and for the same reason — a crashed process must not hold
 the device.
+
+**[rev] It is taken ONCE, FOR THE PROCESS'S LIFETIME, and not per inference.**
+The first draft implied per-inference and that is worse in three ways.
+
+A session advisory lock lives on **one connection**, so a per-inference lock
+means pinning a pool connection for the length of every job and unpinning it
+after — and if that connection drops mid-inference the lock silently vanishes
+while the work continues, which is precisely the "lease lost, work still
+running" class this document is careful about everywhere else.
+
+Taken at startup instead, it says something more useful: **this `asrd` owns the
+device.** A process that cannot get it is a standby — it claims no jobs and
+loads no model, so it holds no VRAM either, which per-inference locking does not
+give you. And it makes finding 3's fairness bookkeeping safe to keep in memory
+rather than in a query, because there is exactly one process doing the claiming.
+
+**[rev] `ASR_GPU_LOCK_KEY` is dropped, because its rationale was backwards.**
+Advisory locks are scoped to the **database**. Two deployments on one Postgres
+have two `asr` databases and therefore cannot collide however they are keyed, so
+a distinguishing knob buys nothing; and two deployments genuinely sharing one
+GPU would need a *shared* lock, which separate databases cannot give them. A
+knob that cannot do either job is a knob somebody will one day set.
 
 It is deliberately **not** the job lease from CHRN-25. Those are different
 things: the job lease says *this worker owns this job*, and the GPU lease says
@@ -207,10 +307,86 @@ of a queue nobody is watching.
 
 **Model switching is a `/load` on the resident server, not a restart.** The
 endpoint is present in the pinned binary — `/load` and `/inference` are both in
-`build-vk/bin/whisper-server` at `1fe009ca` — so this is a checked fact rather
-than an assumption about upstream. A restart is the fallback if it turns out not
-to do what its name says, and it is not painful: the same model load plus
-process startup, paid only at a switch.
+`build-vk/bin/whisper-server` at `1fe009ca`.
+
+### [rev] What `/load` actually does, read rather than assumed
+
+The first draft verified `/load` by **string presence in the binary**, which is
+not the same as verifying what it does. Read at
+`examples/server/server.cpp:1184-1194` of the pinned tree, it does this:
+
+```c
+        // clean up
+        whisper_free(ctx);
+        ctx = whisper_init_from_file_with_params(model.c_str(), cparams);
+
+        // TODO perhaps load prior model here instead of exit
+        if (ctx == nullptr) {
+            exit(1);
+        }
+```
+
+**It frees the old model first, and calls `exit(1)` if the new one fails to
+initialise.** That comment is upstream's, verbatim. So a failed switch is not an
+error response — it is the resident process terminating, and the supervisor from
+§1 restarting it. With which model?
+
+Three rules follow, and none of them are optional:
+
+1. **Restart with the last-known-good model, never the one that just failed.**
+   Restarting with the failure reproduces it, and §1's backoff then produces a
+   restart loop rather than a service.
+2. **A model that fails to initialise is marked UNLOADABLE**, and jobs naming it
+   are `failed` with a code rather than queued. This is consistent with what
+   CHRN-28 inherits: a model that will not load is a deployment fault, not a job
+   to retry.
+3. **A model that is merely ABSENT is a different answer.** `/load` returns
+   **400** for a path that does not exist and does not exit
+   (`server.cpp:1175-1182`) — so "not installed" and "installed and broken" are
+   distinguishable, and only the second costs the resident process.
+
+**A correction to the review, which is worth having right because code would be
+written for it.** `/inference` does **not** answer 503 during a load. Both
+handlers take the same `whisper_mutex` (`server.cpp:638`, locked at `819` for
+inference and `1164` for load), so an inference arriving mid-switch **blocks on
+the mutex until the load finishes**. The 503 comes from `/health` only
+(`server.cpp:1206-1213`), which reports `{"status":"loading model"}` while the
+state is `SERVER_STATE_LOADING_MODEL`. The practical rule the review wanted is
+right — asrd must read a switch as *wait*, not as job failure — but the
+mechanism is a blocking call and a `/health` probe, not a 503 on the inference
+path. Handling a 503 there would be handling a response that never arrives.
+
+### [rev] The response format is a trap, and it is silent
+
+`response_format` defaults to `json` (`server.cpp:117`), and that branch emits
+**`{"text": ...}` and nothing else** (`server.cpp:1153-1160`). No segments, no
+timestamps, no duration.
+
+That is the dangerous shape: CHRN-25's contract makes an empty `segments` list
+**valid**, because a memo with no speech legitimately has one. So a worker that
+forgot to ask for `verbose_json` would produce transcripts that pass every
+check, satisfy the durable-transcript predicate, and quietly carry no timing at
+all — across the whole corpus, with nothing to say so. **`verbose_json` is
+required, and a job whose response carries text but no segments for audio that
+is not silent should be loud about it.**
+
+Two consequences of that format, both checked:
+
+- **Its timestamps are float SECONDS**, `t0 * 0.01` (`server.cpp:1089-1090`),
+  where the placeholder reads integer milliseconds from `whisper-cli -oj`. The
+  conversion is mechanical; leaving it out is a corpus of transcripts timed a
+  thousand times short.
+- **It computes language probabilities by default**, which the source itself
+  calls an "expensive operation" (`server.cpp:1066-1078`). Pass `-nlp`. Nothing
+  in Chronicle reads them, and CHRN-24's reference numbers were taken with
+  `whisper-cli -oj`, which does no such detection — leaving it on would make
+  this ticket's own throughput Done-when unfair to itself.
+- It also reports `duration` in float seconds, so the WAV-header arithmetic the
+  placeholder does can go.
+
+A restart is still the fallback if `/load` misbehaves in some way the source
+does not show, and it is not painful: the same model load plus process startup,
+paid only at a switch.
 
 ## 5 · Fairness is round-robin by client, and it is a promise to client two
 
@@ -241,17 +417,52 @@ second. That is the intended behaviour and it is worth writing down so that
 "Chronicle should always win" is a decision somebody takes deliberately rather
 than a bug report.
 
+### [rev] …and that "about a second" only holds under one model
+
+§4 and this section compose, and the first draft did not say in which order.
+Worse, the reassuring number above is **only true when both clients are asking
+for the resident model.** If Catenary's backfill names a different one, a
+Chronicle memo waits `ASR_MODEL_SWITCH_MAX_WAIT` **plus** one job — so ruling 1
+is not only a starvation knob, it **is the fairness bound under mixed models**,
+and CHRN-29 must publish that number rather than the one-second figure.
+
+The claim order, stated so it cannot be composed two ways:
+
+1. **A job for a non-resident model that has waited longer than
+   `ASR_MODEL_SWITCH_MAX_WAIT`** → switch to its model and take it. Starvation
+   beats residency; it is the only rule with an unbounded downside.
+2. **Otherwise, round-robin among jobs for the RESIDENT model.** This is the
+   common case and the one the benchmark describes.
+3. **Otherwise** — nothing queued for the resident model — round-robin among
+   everything and switch to whatever wins.
+
+**[rev] Adding an index for this is allowed, and so is a new store method.**
+§6 says a PR that alters the job table has gone wrong, and taken literally that
+would stop an implementer adding the index this ordering needs — a
+`MAX(started_at) GROUP BY client_id` over a table CHRN-25 calls "unbounded by
+design" is a sequential scan per claim. What §6 forbids is changing what the
+table *means*: its states, its columns' semantics, the idempotency uniqueness.
+**An index migration is fine. A new `Store` method is fine.** Finding 6's
+process-lifetime lock also makes the cheaper option safe — one owning process
+can hold last-served per client in memory, because there is exactly one.
+
 ## 6 · What happens to CHRN-25's placeholder
 
 Deleted, not extended. `internal/asr/worker.go` is one file, it is labelled a
 placeholder in three places, and the shape it has — claim, shell out, write —
 is not the shape of a worker that holds a model and a device lease.
 
-**What survives unchanged, and must**: the job table, the five stored states,
-the compare-and-swap claim, `RenewLease`, the reaper, and every `Store` method.
-CHRN-25 built those to be the durable half precisely so this ticket could
-replace the worker without touching them, and a PR here that alters the job
-table is a PR that has gone wrong.
+**What survives unchanged, and must**: the five stored states, the
+compare-and-swap claim, `RenewLease`, the reaper, and the meaning of every
+column. CHRN-25 built those to be the durable half precisely so this ticket
+could replace the worker without touching them, and a PR here that changes what
+the job table *means* is a PR that has gone wrong.
+
+**[rev] That is not the same as "touch nothing".** The first draft said "the job
+table … and every `Store` method", which reads as a freeze and would stop two
+changes this ticket needs: **an index migration** for §5's claim ordering, and
+**a new `Store` method** for §8's child-death release. Both add; neither
+redefines. The test is whether an existing caller's behaviour changes.
 
 **`leased` and `running` earn their separation here.** CHRN-25 kept them apart
 for this ticket's benefit and this is what that benefit is: a job is `leased`
@@ -276,13 +487,52 @@ inference holds, a long job expires its own lease and is reaped out from under
 itself — and the reaper then hands it to the worker that is still running it.
 The rule is that **nothing on the renewal path may acquire the GPU lease.**
 
+### [rev] And that rule, alone, deadlocks the queue on a hung child
+
+This is the finding that changes the ticket's own Done-when, so it is stated
+before the remedy: **decoupling the renewal from the GPU is correct for a long
+job and catastrophic for a wedged one.**
+
+The Done-when says *"a crashed worker releases its lease rather than deadlocking
+the queue"*, and every mechanism in this document is built for a worker that
+**dies**. A `whisper-server` that **hangs** — a GPU stall, a wedged driver, an
+inference that never returns — does not die. `asrd` is alive, its renewal
+goroutine is ticking exactly as designed, the job lease never expires, the
+reaper never fires, the GPU semaphore is held, and the advisory lock is held.
+**Every lease reports healthy and nothing moves, forever.** §9's "how long the
+current inference has been running" was offered as the answer and is not one:
+that is a number on a readiness probe, not a bound.
+
+**Every job gets an inference deadline, derived from the audio.** A wall clock
+is the only thing that can tell a long job from a stuck one, because from
+outside they are identical:
+
+> `deadline = max(30 s, 5 × audio_duration_ms ÷ expected_rate(model))`
+
+Five times the expected inference time, floored at 30 s so short memos are not
+tripped by a cold cache. On `small.en` that is 30 s for a 60-second memo and
+about 200 s for a forty-minute one; on `large-v3`, about 11 minutes for the
+same forty minutes. Wide enough that contention with Ollama — which §3 accepts
+and does not prevent — cannot trip it, and finite.
+
+**On breach: kill the child, restart it, release the job.** Killing is what
+distinguishes this from the lease, which cannot help: the process holding
+everything is the healthy one.
+
+`audio_duration_ms` is known before inference starts — the decode produced it,
+and `verbose_json` reports it too — so this needs nothing new to compute. And
+the per-job inference wall-clock it requires **is the same number ruling 2 wants
+for contention detection**, so the two findings cost one measurement between
+them.
+
 ## 8 · When the resident process is not there
 
 Four failures, and they want different answers.
 
 | | |
 |---|---|
-| **`whisper-server` exits** | restart with backoff; jobs in flight lose their lease and are reaped back to `queued` with `attempts` incremented, exactly as CHRN-25's kill -9 path already does. Nothing new is needed |
+| **`whisper-server` exits** | restart with backoff, and **release the job explicitly** — see the [rev] below, because "the reaper handles it" was wrong |
+| **`whisper-server` hangs** | the inference deadline in §7 kills and restarts it. This is the case no lease can see |
 | **it will not start at all** (no model, no device) | `/readyz` **unready**, naming the check. Jobs are still ACCEPTED — the queue is the right place for work a service cannot do yet, and rejecting submissions would push the retry into two clients |
 | **the GPU is absent and it falls back to CPU** | this is CHRN-24's named nightmare, and CHRN-25 already logs the device once per process and warns on a software rasteriser. That warning moves here, to the supervised child's startup |
 | **an individual job fails** | unchanged from CHRN-25: `failed` with a code, the client sees it, CHRN-28 decides about retries |
@@ -290,6 +540,47 @@ Four failures, and they want different answers.
 **Accepting work a service cannot currently do is deliberate.** CHRN-25's
 contract has no "try later" answer, and inventing one would mean two clients
 implementing a backoff against a state that is usually transient.
+
+### [rev] "Nothing new is needed" was wrong, and it would have failed jobs
+
+The first draft said a dying child needs nothing because the reaper already
+handles it. **That is the path for `asrd` dying.** When the CHILD dies, `asrd`
+is alive: it sees a connection reset from a request it made, and the
+placeholder's handling of a failed transcriber run turns a `FailureError` into
+a **`failed` job** — so one child crash would permanently fail a memo that
+nothing was wrong with. Waiting for the lease instead is not much better: it
+costs the TTL plus the reap interval, about 35 s of an idle GPU with a live
+worker sitting next to it.
+
+**A new `Store.Release` method**: `running` → `queued`, `attempts + 1`, lease
+cleared. That edge is **already legal** in CHRN-25's trigger — `'running>queued'`
+is in the transition array, put there for the reaper — so this is a new method
+over an existing edge and not a schema change. Per §6's [rev], that is allowed.
+
+And the case §1 used to argue against cgo deserves finishing: **a malformed file
+that segfaults the decoder now loops** — crash, release, re-claim, crash — until
+CHRN-28's ceiling stops it. That is the correct behaviour for this ticket (the
+alternative is failing jobs on transient crashes) and it is exactly why CHRN-28
+needs a ceiling rather than wanting one.
+
+### [rev] Cancelling a running job, which was undecided
+
+CHRN-25 §8 says a `running` job is marked and *"the worker observes it and stops
+renewing its lease."* Against the placeholder that worked: `exec.CommandContext`
+killed `whisper-cli`. Against a resident server it does not. `/inference` holds
+`whisper_mutex` for the whole synchronous call (`server.cpp:819`), so **dropping
+the HTTP request does not stop the inference** — it runs to completion holding
+the device, and the mutex blocks every job behind it.
+
+Two options. Let it finish and discard the result: simple, and it spends up to
+131 s of GPU on `large-v3` work somebody explicitly cancelled, with the queue
+stalled behind it. Or **kill the child and restart it**, which is the decision:
+it costs 388 ms of process startup plus a model load, at most about 2.3 s, and
+it is the only one that actually stops the work.
+
+The job then reaches `cancelled` exactly as CHRN-25 §8 describes — the worker
+stops renewing, the reaper reads `cancel_requested_at`, and it is never
+requeued. Nothing about that contract changes.
 
 ## 9 · Readiness reports the device, not just the database
 
@@ -315,18 +606,29 @@ or response shape is one that should be questioned.
 | `ASR_WHISPER_SERVER_BIN` | `whisper-server` | the supervised child |
 | `ASR_WHISPER_SERVER_ADDR` | `127.0.0.1:8081` | loopback only, never the container interface |
 | `ASR_LEASE_TTL` | 30 s | unchanged from CHRN-25; §7 says why it holds |
-| `ASR_MODEL_SWITCH_MAX_WAIT` | ruling 1 | how long a job for a non-resident model waits before forcing a switch |
-| `ASR_GPU_LOCK_KEY` | fixed | the advisory-lock key. Named so a second deployment on one Postgres can differ |
+| `ASR_MODEL_SWITCH_MAX_WAIT` | ruling 1 | how long a job for a non-resident model waits before forcing a switch. **[rev]** Also the fairness bound under mixed models — §5 |
+| `ASR_INFERENCE_DEADLINE_FACTOR` | 5 | **[rev]** multiplier on expected inference time before a job is treated as wedged; floored at 30 s. §7 |
+
+**[rev] `ASR_GPU_LOCK_KEY` is gone.** Its stated rationale — "so a second
+deployment on one Postgres can differ" — was backwards: advisory locks are
+database-scoped, so two deployments have two `asr` databases and cannot collide
+however they are keyed, while two sharing one GPU would need a lock separate
+databases cannot give them. §3 has the argument.
 
 ## What each ticket inherits
 
-- **CHRN-28** — `attempts` is incremented by the reaper, unchanged. §8's table is
-  the set of failures you are writing policy for. A model that will not load is
-  a deployment fault and not a job to retry; a job that failed to decode is.
+- **CHRN-28** — `attempts` is incremented by the reaper, and now also by §8's
+  `Release`. §8's table is the set of failures you are writing policy for. A
+  model that will not load is a deployment fault and not a job to retry; a job
+  that failed to decode is. **[rev] Your ceiling is load-bearing, not a
+  nicety**: §8 establishes that a file which crashes the decoder loops until
+  something stops it, and that something is yours.
 - **CHRN-29** — §5's round-robin is a **promise to client two**, and the honest
   limitation is in that section: half the device under contention, not priority.
-  Publish it with the numbers, because a client that expects priority will read
-  fairness as a bug.
+  **[rev] Publish `ASR_MODEL_SWITCH_MAX_WAIT` as part of it.** Under mixed
+  models the wait is that value plus one job, not the one second the
+  single-model case gives — and a client told the smaller number will read the
+  real behaviour as a bug.
 - **CHRN-22** — nothing. This ticket does not touch the durable-transcript
   predicate, and if a PR here appears to, that is the signal to stop.
 
@@ -352,12 +654,23 @@ or response shape is one that should be questioned.
    outlier; short enough that nobody waits on a memo without an explanation. The
    switch costs at most 1.9 s, so the knob is bounding a wait, not a cost.
 
+   **[rev] Rule on it knowing it is two things.** §5's revision found that this
+   is also the **fairness bound under mixed models**: a Chronicle memo behind a
+   Catenary backfill on another model waits this long plus one job, not the
+   ~1 second the single-model case gives. 60 s is still the recommendation, but
+   it is now a number CHRN-29 publishes to client two rather than an internal
+   tuning knob.
+
 2. **Should contention be detected and logged?** The recommendation is **yes,
    cheaply**: record inference wall-clock per job against the model's CHRN-24
    reference and log once, at warn, when a rolling median drifts past a
    threshold — naming Ollama contention as the likely cause. §3 gives up
    arbitration; giving up *visibility* as well would mean the first symptom is a
-   timeout somewhere else. The cost is a few lines and one number per job.
+   timeout somewhere else.
+
+   **[rev] It is now free.** §7's inference deadline needs the same per-job
+   wall-clock, so the measurement is being taken either way and this ruling only
+   decides whether anything reads it.
 
 3. **Is §3's scope acceptable?** This is the ruling that matters, because it
    narrows what the ticket said it would deliver. Restated: `asrd` guarantees
@@ -377,7 +690,25 @@ or response shape is one that should be questioned.
 - **A crashed worker releases its lease rather than deadlocking the queue** —
   CHRN-25's kill -9 test, still passing, plus the GPU lock released with its
   connection.
+- **[rev] A HUNG worker does too.** A child that stops responding without
+  exiting is killed by §7's inference deadline and its job released — the case
+  where every lease reports healthy and nothing moves. Testable with a stub that
+  accepts a request and never answers.
+- **[rev] A dying child releases its job rather than failing it.** One crash
+  must not permanently fail a memo that nothing is wrong with.
+- **[rev] A failed model switch does not become a restart loop** — the
+  supervisor comes back on the last-known-good model, and the model that failed
+  is refused rather than retried.
+- **[rev] A cancelled `running` job actually stops the inference**, rather than
+  finishing and discarding the result while the queue waits behind it.
+- **[rev] Segments survive.** A transcript for audio that is not silent arrives
+  with timestamps, in milliseconds. `response_format` defaulting to `json`
+  yields text and no segments, and CHRN-25's contract makes that shape *valid* —
+  so nothing else in the system would ever complain.
 - Measured throughput on `small.en` lands within a few percent of CHRN-24's
   **resident** column (57.9× in-container), and the number goes in
-  `deploy/asr/README.md` beside the others.
+  `deploy/asr/README.md` beside the others — **[rev] measured with `-bs 5 -bo 5`
+  and recorded with those parameters named.** At the server's own defaults the
+  decode is greedy, which is faster, so an unpinned run would pass this
+  Done-when without residency having worked.
 - `/readyz` reports the resident model and refuses readiness when it is absent.
