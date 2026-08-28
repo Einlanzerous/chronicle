@@ -1,0 +1,40 @@
+# Shared estate ASR runner — compose fragment. CHRN-24.
+#
+# Not a service definition yet: the HTTP job contract is CHRN-25 and the
+# resident worker is CHRN-26. What this fragment pins down now is the part that
+# is a property of the machine rather than of the service — which render node,
+# which group, where the models live.
+
+services:
+  asr:
+    image: estate-asr:dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    # renderD129 is the R9700; renderD128 is the CometLake iGPU. Confirmed
+    # through /sys/class/drm/*/device/uevent rather than assumed from the
+    # numbering, which reads the wrong way round on this box:
+    #   renderD128 -> i915   0000:00:02.0
+    #   renderD129 -> amdgpu 0000:03:00.0   <- Navi 48
+    #
+    # Passing only the R9700 means the iGPU is not in the container to be
+    # enumerated at all, so GGML_VK_VISIBLE_DEVICES below is a second belt
+    # rather than the only thing standing between this and a 20x slower device.
+    devices:
+      - /dev/dri/renderD129:/dev/dri/renderD129
+
+    # The render node is root:render 0660, so a non-root container needs the
+    # group. 993 is this host's render gid (getent group render) — it is a
+    # host fact, not a portable constant, and it is the first thing to check if
+    # the container reports no Vulkan device.
+    group_add:
+      - "993"
+
+    environment:
+      GGML_VK_VISIBLE_DEVICES: "0"
+
+    volumes:
+      # The model store. Point this at wherever the ggml-*.bin files live; the
+      # benchmark rig's copies are under ~/tools/whisper.cpp/models.
+      - ${ASR_MODELS_DIR:-~/tools/whisper.cpp/models}:/opt/whisper/models:ro

@@ -1,0 +1,5 @@
+model,backend,decode_ms,infer_ms,total_ms,realtime_x
+base.en,vulkan,158,810,968,62.0
+small.en,vulkan,158,1216,1374,43.7
+medium.en,vulkan,158,2220,2378,25.2
+large-v3,vulkan,158,4719,4877,12.3
