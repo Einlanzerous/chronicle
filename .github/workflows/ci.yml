@@ -49,6 +49,17 @@ jobs:
       # cannot read tier-2 credentials. Without this DSN it skips, which would
       # be a silent hole in the one check the doctrine rests on.
       CHRONICLE_TEST_TIER1_DATABASE_URL: postgres://chronicle_tier1:ci-not-a-secret@localhost:5432/chronicle_test?sslmode=disable
+      # The ASR service (CHRN-25) has its own database and its own role, so it
+      # has its own DSN. Without it the job tests skip -- including the kill -9
+      # lease test, which is the Done-when that cannot be checked by reading.
+      #
+      # ASSEMBLED IN A STEP rather than written out here, from the same PGPW the
+      # provisioning step uses. The two DSNs above predate this and are left
+      # alone, but a fourth literal `role:password@host` in this file is a
+      # fourth thing for a secret scanner to flag and a fourth place the CI
+      # password is spelled -- and the scanner cannot tell an ephemeral
+      # container's password from a real one. verify.sh already builds its DSNs
+      # from a password variable for the same reason.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -58,15 +69,26 @@ jobs:
 
       # The migrations grant to chronicle_tier1, and the tier-isolation test
       # asserts against it, so both roles have to exist before anything runs.
-      - name: Provision roles and test database
+      #
+      # asr_test is a SEPARATE DATABASE with a SEPARATE ROLE, mirroring the
+      # deployment. Putting the ASR tables in chronicle_test would be cheaper
+      # and would quietly make the test suite prove the opposite of what the
+      # separate store exists for.
+      - name: Provision roles and test databases
         run: |
           docker run --rm --network host -i "$PG_IMAGE" \
             psql "postgres://postgres:${PGPW}@localhost:5432/postgres?sslmode=disable" \
             -v ON_ERROR_STOP=1 <<SQL
           CREATE ROLE chronicle LOGIN PASSWORD '${PGPW}';
           CREATE ROLE chronicle_tier1 LOGIN PASSWORD '${PGPW}';
+          CREATE ROLE asr LOGIN PASSWORD '${PGPW}';
           CREATE DATABASE chronicle_test OWNER chronicle;
+          CREATE DATABASE asr_test OWNER asr;
           SQL
+
+      - name: Assemble the ASR test DSN
+        run: |
+          echo "ASR_TEST_DATABASE_URL=postgres://asr:${PGPW}@localhost:5432/asr_test?sslmode=disable" >> "$GITHUB_ENV"
 
       - name: gofmt
         run: |
@@ -78,6 +100,24 @@ jobs:
 
       - name: Vet
         run: go vet ./...
+
+      # internal/asrclient is generated from deploy/asr/openapi.yaml by a
+      # generator pinned through go.mod's `tool` directive. Regenerated to a
+      # temp file and byte-compared, so the check never rewrites what it is
+      # checking. Same guard as the schema job below, for the same reason: a
+      # generated artefact with no guard is one somebody hand-edits -- and this
+      # one has a second client, in another language, generating from the same
+      # file.
+      - name: ASR client staleness guard
+        run: |
+          tmp="$(mktemp -t asrclient.XXXXXX.go)"
+          GEN_ASRCLIENT_OUT="$tmp" scripts/gen-asrclient.sh
+          if ! diff -u internal/asrclient/client.gen.go "$tmp"; then
+            echo "::error file=internal/asrclient/client.gen.go::the generated client does not match deploy/asr/openapi.yaml."
+            echo "Run scripts/gen-asrclient.sh and commit the result."
+            exit 1
+          fi
+          echo "internal/asrclient matches the contract."
 
       - name: Test
         run: go test -race ./... -count=1

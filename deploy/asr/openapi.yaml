@@ -1,0 +1,545 @@
+# The transcription job contract — CHRN-25.
+#
+# THIS FILE IS THE SOURCE. Chronicle's Go client is generated from it into
+# internal/asrclient (scripts/gen-asrclient.sh), and CI fails when the two
+# disagree; Catenary generates its own, which is the entire point of writing a
+# spec for a service with two clients in two languages.
+#
+# The decision behind every shape here is docs/decisions/chrn-25-job-contract.md.
+# Read it before changing anything: the idempotency key (§3) and the durable-
+# transcript predicate (§5) are the two that cost the most to get wrong, and §5
+# is the predicate CHRN-22's retention pruner turns on.
+#
+# 3.0.3 rather than 3.1: oapi-codegen's 3.1 support is partial, and a spec the
+# generator half-understands is a generated client that silently omits a field.
+openapi: 3.0.3
+
+info:
+  title: Estate ASR
+  version: "1.0.0"
+  description: |
+    Transcription as a shared estate service. A client submits audio inline with
+    a model and an `Idempotency-Key` it minted and persisted before the request
+    went out; polls status; fetches the result separately; and may cancel.
+
+    Nothing this service holds is irreplaceable. Every row and every byte can be
+    recomputed from audio the client still has, which is what makes the whole
+    store safe to drop.
+
+servers:
+  - url: http://asr:4011
+    description: construct_net, container-to-container
+
+security:
+  - clientToken: []
+
+tags:
+  - name: jobs
+  - name: meta
+
+paths:
+  /healthz:
+    get:
+      tags: [meta]
+      summary: Liveness. No dependencies, no credential.
+      description: |
+        Answers if the process is running. Deliberately free of dependencies:
+        a database that is down is not a reason to restart the binary.
+      security: []
+      responses:
+        "200":
+          description: alive
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+
+  /readyz:
+    get:
+      tags: [meta]
+      summary: Readiness. Pings the database and reports queue depth.
+      security: []
+      responses:
+        "200":
+          description: ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+        "503":
+          description: not ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+
+  /v1/models:
+    get:
+      tags: [meta]
+      summary: What this deployment can run, and what audio it accepts.
+      description: |
+        So a client discovers rather than hardcodes. The accepted media types
+        live here rather than only in this document because a 415 a client
+        cannot enumerate its way out of is a 415 someone debugs by guessing.
+      operationId: listModels
+      responses:
+        "200":
+          description: the deployment's capabilities
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Capabilities"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/jobs:
+    post:
+      tags: [jobs]
+      summary: Submit audio for transcription.
+      description: |
+        `multipart/form-data` with two parts: `spec` (`application/json`) and
+        `audio`. Not a JSON body with the audio base64-encoded inside it — that
+        costs a third of the bytes and forces both ends to hold the whole thing
+        in memory to parse one field.
+
+        `Idempotency-Key` is REQUIRED. It is minted per transcription attempt
+        and persisted by the client BEFORE the request is sent, so that an HTTP
+        retry of one attempt is a replay rather than a second job. Scoped to the
+        calling client, never expires.
+
+        A replay — same key, same spec, same audio hash — answers 200 with the
+        existing job. A mismatch — same key, different audio hash or model —
+        answers 409, and the client mints a fresh key.
+      operationId: submitJob
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [spec, audio]
+              properties:
+                spec:
+                  $ref: "#/components/schemas/JobSpec"
+                audio:
+                  type: string
+                  format: binary
+                  description: |
+                    The recording, in one of the accepted media types. The part
+                    declares its own `Content-Type`; anything outside the
+                    advertised set is 415.
+            encoding:
+              spec:
+                contentType: application/json
+              audio:
+                contentType: audio/ogg, audio/webm, audio/mpeg, audio/mp4, audio/wav
+      responses:
+        "201":
+          description: a new job was created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "200":
+          description: |
+            a replay of an existing job — same key, same spec, same audio.
+            The same job id and its current status; not a new job, not an error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: |
+            this `Idempotency-Key` was used for a different spec or different
+            audio. Mint a fresh key and retry; the result is a second job,
+            which is correct, because a different thing was asked for.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "415":
+          description: |
+            the audio part's media type is not one this deployment accepts.
+            `GET /v1/models` lists the set.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          description: the audio part exceeds the deployment's size limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/jobs/{id}:
+    get:
+      tags: [jobs]
+      summary: Job status. Cheap, safe to poll.
+      description: |
+        Separate from the result so a 40-minute transcript is not re-sent every
+        two seconds. The response carries `retry_after_ms`: the SERVER sets poll
+        pressure, so a deep queue can back clients off without a contract change.
+
+        Another client's job answers 404, not 403 — CHRN-71's precedent. A 403
+        confirms the id exists.
+      operationId: getJob
+      parameters:
+        - $ref: "#/components/parameters/JobID"
+      responses:
+        "200":
+          description: the job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/jobs/{id}/result:
+    get:
+      tags: [jobs]
+      summary: Fetch the transcript.
+      description: |
+        Fetched once, separately, and still here after a client crashes and
+        comes back. The payload is purged after the deployment's result TTL —
+        the JOB ROW survives that purge, which is what lets this answer 410
+        rather than 404: a client that comes back late learns its result
+        expired, not that its job never existed.
+
+        "Result expired" is not "transcription failed". A client that gets a 410
+        re-submits with a fresh key.
+      operationId: getJobResult
+      parameters:
+        - $ref: "#/components/parameters/JobID"
+      responses:
+        "200":
+          description: the result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Result"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: the job has not reached a terminal state yet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "410":
+          description: |
+            the job is terminal but its result payload has been purged. The job
+            row is still here; this is not a 404.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/jobs/{id}/cancel:
+    post:
+      tags: [jobs]
+      summary: Ask for the job to stop. Idempotent.
+      description: |
+        POST and not DELETE because the job row SURVIVES cancellation — it is a
+        record that work was asked for and stopped, which DELETE would
+        misdescribe.
+
+        `queued` and `leased` cancel immediately. A `running` job is marked and
+        the worker observes it; on the wire that job then reads `cancelling`.
+        An already-terminal job is a no-op returning 200 and its terminal state
+        — never a 409, because a client that crashed after cancelling and
+        retries must not be told off for having succeeded.
+      operationId: cancelJob
+      parameters:
+        - $ref: "#/components/parameters/JobID"
+      responses:
+        "200":
+          description: the job's state after the request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+components:
+  securitySchemes:
+    clientToken:
+      type: http
+      scheme: bearer
+      description: |
+        A per-client bearer token issued out of Signet. `client_id` is DERIVED
+        FROM THE TOKEN and is never read from a body, header or query parameter
+        — CHRN-26 queues per client for fairness, so a client-asserted identity
+        would let either service submit as the other and jump its queue.
+
+  parameters:
+    JobID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Minted per transcription attempt and persisted before the request is
+        sent. Stable across HTTP retries of one attempt; fresh for a deliberate
+        re-transcription. Same name and same meaning as Chronicle's own ingest
+        key (CHRN-18) — one header, one meaning, across the estate.
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 200
+
+  responses:
+    BadRequest:
+      description: the request was malformed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: no credential, or one this deployment does not know
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: |
+        no such job for this client. Another client's job answers this too.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          example: ok
+        version:
+          type: string
+        commit:
+          type: string
+
+    Readiness:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ready, unready]
+        check:
+          type: string
+          description: which dependency failed, when unready
+        queue_depth:
+          type: integer
+          format: int64
+          description: jobs not yet in a terminal state
+
+    Capabilities:
+      type: object
+      required: [default_model, models, accepted_media_types]
+      properties:
+        default_model:
+          type: string
+          example: small.en
+        models:
+          type: array
+          items:
+            type: string
+          description: models this deployment has on disk and will run
+        accepted_media_types:
+          type: array
+          items:
+            type: string
+          example: [audio/ogg, audio/webm, audio/mpeg, audio/mp4, audio/wav]
+
+    JobSpec:
+      type: object
+      required: [audio_sha256]
+      properties:
+        model:
+          type: string
+          description: |
+            omitted takes the deployment default. A model this deployment does
+            not have is 400 rather than a job that fails later.
+        audio_sha256:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+          description: |
+            SHA-256 of the audio part, lowercase hex. Carried in the spec so the
+            idempotency mismatch check does not depend on having buffered the
+            body. A client that lies about it gets a job that transcribes bytes
+            the contract believes are something else — a client bug this service
+            cannot and should not defend against.
+        language:
+          type: string
+          description: BCP-47 hint; omitted lets the model decide.
+
+    Job:
+      type: object
+      required: [id, status, model, attempts, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/JobStatus"
+        model:
+          type: string
+        attempts:
+          type: integer
+          description: |
+            how many times this job has been claimed. Incremented by the reaper
+            when a lease expires. The CEILING and the backoff are CHRN-28's
+            policy; the counter lives here because the reaper moves it.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        retry_after_ms:
+          type: integer
+          description: |
+            how long the client should wait before polling again. Absent on a
+            terminal job. Server-set, so a deep queue can back clients off
+            without a contract change.
+
+    JobStatus:
+      type: string
+      description: |
+        Five stored states plus one derived. `leased` is separate from `running`
+        because they answer different questions: a worker has claimed the job,
+        versus inference has actually started — and a worker that dies between
+        the two needs different `attempts` accounting from one that died
+        mid-inference.
+
+        `cancelling` is DERIVED — a `running` job whose cancellation has been
+        requested. It is in this enum despite not being a stored state because
+        it is observable by two codebases, and a status a client can see but
+        cannot find in the schema is a status one of them will fail to handle.
+      enum:
+        - queued
+        - leased
+        - running
+        - cancelling
+        - succeeded
+        - failed
+        - cancelled
+
+    Result:
+      type: object
+      # text and segments are REQUIRED, and that is a deliberate reading of §5.
+      # An optional `text` generates a nullable field in every language, and the
+      # first thing a client writes against a nullable transcript is a nil check
+      # that skips the row — which is exactly the `if text == "" { return }`
+      # §5 names as the line that silently inverts the empty-transcript ruling.
+      # Always present, empty when there was no speech, so there is nothing to
+      # skip on.
+      required: [job_id, status, partial, text, segments, model, backend]
+      properties:
+        job_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [succeeded, failed, cancelled]
+        partial:
+          type: boolean
+          description: |
+            A FACT THE SERVICE RECORDS about whether its own run completed. It
+            is never inferred by a client from `covered_ms < audio_duration_ms`
+            — whisper emits segments only where there is speech, so a memo with
+            five seconds of trailing silence has `covered_ms` short of the
+            duration on a perfectly complete run.
+
+            A transcript is DURABLE iff its job reached `succeeded` and `partial`
+            is false. That predicate is what CHRN-22's retention pruner gates
+            audio deletion on, read from Chronicle's own transcript row rather
+            than from here.
+        text:
+          type: string
+          description: |
+            the transcript, timestamps stripped. EMPTY IS A VALID RESULT: a memo
+            that is forty seconds of silence has a true and complete answer, and
+            the answer is "no speech".
+        segments:
+          type: array
+          items:
+            $ref: "#/components/schemas/Segment"
+        model:
+          type: string
+          example: whisper.cpp/small.en
+        backend:
+          type: string
+          example: vulkan
+          description: |
+            with `model`, stored alongside the transcript by the client — a
+            corpus transcribed by two different models over time is one whose
+            quality varies invisibly.
+        audio_duration_ms:
+          type: integer
+          format: int64
+          description: as decoded
+        covered_ms:
+          type: integer
+          format: int64
+          description: |
+            end of the last segment. EVIDENCE, NOT A PREDICATE. Useful when a
+            transcript looks short; never the gate. See `partial`.
+        failure:
+          $ref: "#/components/schemas/Failure"
+
+    Segment:
+      type: object
+      required: [start_ms, end_ms, text]
+      properties:
+        start_ms:
+          type: integer
+          format: int64
+        end_ms:
+          type: integer
+          format: int64
+        text:
+          type: string
+
+    Failure:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          example: decode_failed
+        message:
+          type: string
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
