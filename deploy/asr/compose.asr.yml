@@ -1,16 +1,48 @@
-# Shared estate ASR runner — compose fragment. CHRN-24.
+# Shared estate ASR service — compose fragment. CHRN-24 (the runner) and
+# CHRN-25 (the job contract over it).
 #
-# Not a service definition yet: the HTTP job contract is CHRN-25 and the
-# resident worker is CHRN-26. What this fragment pins down now is the part that
-# is a property of the machine rather than of the service — which render node,
-# which group, where the models live.
+# NOT a standalone stack: this is the block to paste into
+# ~/construct-server/docker-compose.yml, which owns the shared networks and
+# Postgres. Kept here so the deploy shape is reviewable in this repo.
+#
+# Prerequisites, in order:
+#   1. deploy/asr/provision-db.sh has run (database `asr` + role `asr` exist)
+#   2. ASR_DB_PASSWORD and ASR_CLIENT_TOKENS reach .env out of Signet:
+#        signet target add-key --project construct-server \
+#          --path /opt/construct-server/.env --name ASR_DB_PASSWORD
+#        signet target add-key --project construct-server \
+#          --path /opt/construct-server/.env --name ASR_CLIENT_TOKENS
+#        signet sync
+#   3. The models are on disk somewhere ASR_MODELS_DIR points at.
+#
+# Half of this fragment is a property of the MACHINE rather than of the service
+# — which render node, which group, where the models live — and that half was
+# settled by CHRN-24 and is unchanged.
 
 services:
   asr:
     image: estate-asr:dev
+    container_name: asr
+    restart: unless-stopped
     build:
-      context: .
-      dockerfile: Dockerfile
+      # The repository ROOT, not deploy/asr: the image now builds asrd, which
+      # is a Go binary in this repository, and a context that cannot see go.mod
+      # cannot build it.
+      context: ../..
+      dockerfile: deploy/asr/Dockerfile
+
+    # The image's ENTRYPOINT is whisper-cli, so that CHRN-12's benchmark
+    # harness runs through it unmodified and the reference numbers keep
+    # comparing to something. The service overrides it here, visibly, in one
+    # line rather than by changing what the image is.
+    entrypoint: ["/usr/local/bin/asrd"]
+    command: ["serve"]
+
+    # No `ports:` on purpose. This is reached container-to-container on
+    # construct_net by Chronicle, and later by Catenary. Publishing a port would
+    # put a transcription queue on the host for anything that can reach it.
+    expose:
+      - "4011"
 
     # renderD129 is the R9700; renderD128 is the CometLake iGPU. Confirmed
     # through /sys/class/drm/*/device/uevent rather than assumed from the
@@ -34,7 +66,49 @@ services:
     environment:
       GGML_VK_VISIBLE_DEVICES: "0"
 
+      ASR_PORT: "4011"
+      ASR_DATABASE_URL: postgres://asr:${ASR_DB_PASSWORD}@postgres:5432/asr?sslmode=disable
+
+      # `name:token` pairs, out of Signet, never written here. Empty is a BOOT
+      # ERROR rather than an open service: client_id is derived from the token
+      # and nothing else, because CHRN-26 queues per client for fairness and a
+      # client-asserted identity would let either service jump the other's
+      # queue.
+      ASR_CLIENT_TOKENS: ${ASR_CLIENT_TOKENS}
+
+      ASR_DEFAULT_MODEL: ${ASR_DEFAULT_MODEL:-small.en}
+      ASR_LOG_LEVEL: ${ASR_LOG_LEVEL:-info}
+      ASR_LOG_FORMAT: ${ASR_LOG_FORMAT:-json}
+
+      # Recorded on every result, alongside the model, because a corpus
+      # transcribed by two different backends over time is one whose quality
+      # varies invisibly.
+      ASR_BACKEND: vulkan
+
+    healthcheck:
+      # /healthz and not /readyz: an unready service (Postgres restarting) must
+      # not be restarted, it must be taken out of rotation. Liveness is the only
+      # question a restart is the answer to.
+      test: ["CMD", "/usr/local/bin/asrd", "version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+    depends_on:
+      - postgres
+
+    networks:
+      - construct_net
+
     volumes:
       # The model store. Point this at wherever the ggml-*.bin files live; the
       # benchmark rig's copies are under ~/tools/whisper.cpp/models.
+      #
+      # READ-ONLY, and the service says so at boot if it finds nothing here:
+      # with no models every submit is a 400 naming a model the deployment does
+      # not have, and nothing in that 400 points at an unmounted volume.
       - ${ASR_MODELS_DIR:-~/tools/whisper.cpp/models}:/opt/whisper/models:ro
+
+networks:
+  construct_net:
+    external: true

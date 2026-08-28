@@ -18,11 +18,15 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/Einlanzerous/chronicle/internal/api"
+	"github.com/Einlanzerous/chronicle/internal/asrclient"
 	"github.com/Einlanzerous/chronicle/internal/audio"
 	"github.com/Einlanzerous/chronicle/internal/config"
 	"github.com/Einlanzerous/chronicle/internal/invite"
 	"github.com/Einlanzerous/chronicle/internal/store"
+	"github.com/Einlanzerous/chronicle/internal/transcribe"
 	"github.com/Einlanzerous/chronicle/internal/upload"
 	"github.com/Einlanzerous/chronicle/internal/watch"
 )
@@ -72,6 +76,8 @@ func run(args []string) error {
 		return runMigrate(args[1:])
 	case "mint-invite":
 		return runMintInvite(args[1:])
+	case "retranscribe":
+		return runRetranscribe(args[1:])
 	case "-h", "--help", "help":
 		usage()
 		return nil
@@ -88,10 +94,13 @@ usage:
   chronicle serve                      run the HTTP service
   chronicle migrate [up|down] [-n N]   apply or roll back migrations
   chronicle mint-invite [--email E]    issue a one-time sign-in invite
+  chronicle retranscribe [--memo ID]   release held memos back to the queue
   chronicle version                    print the build version
 
 migrate defaults to "up". "down" without -n rolls everything back.
 mint-invite defaults to the owner. The invite is shown once and expires.
+retranscribe with no --memo releases every held memo. GET /admin/transcription
+lists them and why each stopped.
 `)
 }
 
@@ -177,6 +186,7 @@ func runServe(args []string) error {
 
 	var watcher *watch.Watcher
 	var uploads *upload.Service
+	var transcriber *transcribe.Service
 	deps := api.Deps{
 		DB:            st,
 		Accounts:      st,
@@ -186,6 +196,7 @@ func runServe(args []string) error {
 		MobileBaseURL: cfg.MobileBaseURL,
 		SecureCookies: cfg.SecureCookies,
 		ProxySecret:   cfg.ProxySecret,
+		Transcription: st,
 	}
 	if cfg.AudioDir != "" {
 		audioStore, err := audio.New(cfg.AudioDir)
@@ -226,6 +237,33 @@ func runServe(args []string) error {
 			return err
 		}
 		deps.Uploads = uploads
+
+		// Transcription (CHRN-27). Wired inside this block because it reads
+		// recordings off disk: a pump with no audio store would find memos to
+		// submit and have no bytes to send for any of them.
+		if cfg.TranscriptionEnabled() {
+			asr, err := asrclient.NewClientWithResponses(cfg.ASRBaseURL,
+				asrclient.WithRequestEditorFn(transcribe.BearerAuth(cfg.ASRToken)))
+			if err != nil {
+				return fmt.Errorf("CHRONICLE_ASR_URL %s: %w", cfg.ASRBaseURL, err)
+			}
+			transcriber, err = transcribe.New(transcribe.Options{
+				Store:    st,
+				Audio:    audioStore,
+				ASR:      asr,
+				Logger:   logger,
+				Model:    cfg.ASRModel,
+				Interval: cfg.TranscribeInterval,
+			})
+			if err != nil {
+				return err
+			}
+			deps.Transcribing = true
+			// The URL, never the token. A credential in a log line is a
+			// credential in every aggregator the estate has.
+			logger.Info("transcription enabled", "asr", cfg.ASRBaseURL,
+				"model", firstNonEmptyString(cfg.ASRModel, "the service default"))
+		}
 
 		// The Copyparty seam (CHRN-19). It needs the audio store, so it is
 		// wired inside this block: an inbox with nowhere to copy files TO
@@ -276,6 +314,24 @@ func runServe(args []string) error {
 		logger.Info("no inbox watcher: CHRONICLE_INBOX_DIR is unset, so the Copyparty path is off",
 			"ingest", "upload only")
 	}
+	if !cfg.TranscriptionEnabled() {
+		// Said out loud, and at WARN rather than INFO. Without this, memos are
+		// ingested, filed, and never transcribed -- and the system looks
+		// entirely healthy right up until somebody goes looking for a
+		// transcript and finds eight hundred memos in `captured`. REVIEW.md
+		// section 8: the estate's cautionary tale is an integration that was a
+		// silent no-op and looked like a working feature.
+		logger.Warn("transcription is OFF: memos will be ingested and never transcribed",
+			"remedy", "set CHRONICLE_ASR_URL and CHRONICLE_ASR_TOKEN (deploy/asr/)",
+			"visible_at", "GET /admin/transcription")
+	} else if cfg.AudioDir == "" {
+		// Configured and unusable. Refused rather than warned, for the reason
+		// the watcher pair below is: a pump that can read no recordings would
+		// hold every memo it sees with an audio_missing reason, which reads as
+		// a corpus problem rather than a configuration one.
+		return fmt.Errorf("CHRONICLE_ASR_URL is set but CHRONICLE_AUDIO_DIR is not: " +
+			"there are no recordings to submit for transcription")
+	}
 	if cfg.InboxDir != "" && cfg.AudioDir == "" {
 		// Refused rather than warned. Watching with no audio store would read
 		// every file, copy it nowhere, and record memos whose audio is
@@ -322,6 +378,20 @@ func runServe(args []string) error {
 			defer watching.Done()
 			if err := uploads.Run(ctx); err != nil {
 				logger.Error("the upload sweeper stopped", "error", err)
+			}
+		}()
+	}
+	// The transcription pump (CHRN-27). Shares the server's context, so
+	// SIGTERM stops it, and is waited on rather than abandoned: a sweep is
+	// often mid-submit, and exiting under one would leave an attempt row with
+	// no job id -- recoverable, because the key is persisted and the next boot
+	// re-sends it, but worth not manufacturing on every redeploy.
+	if transcriber != nil {
+		watching.Add(1)
+		go func() {
+			defer watching.Done()
+			if err := transcriber.Run(ctx); err != nil {
+				logger.Error("the transcription pump stopped", "error", err)
 			}
 		}()
 	}
@@ -494,3 +564,146 @@ func runMintInvite(args []string) error {
 	fmt.Printf("  expires: %s from now, single use, not shown again\n", store.InviteTTL)
 	return nil
 }
+
+// firstNonEmptyString is the log-line helper for a value with a documented
+// fallback, so a line never reads `model=""`.
+func firstNonEmptyString(v, fallback string) string {
+	if v == "" {
+		return fallback
+	}
+	return v
+}
+
+// runRetranscribe releases held memos back into the queue.
+//
+// This is the second half of CHRN-27's Done-when: *"a transcription failure
+// leaves the memo in a state a human can see and retry."* GET
+// /admin/transcription is the seeing; this is the retry.
+//
+// On the HOST rather than behind an HTTP verb, deliberately. Re-running
+// transcription costs GPU time on a device Chronicle shares with Ollama and
+// with Catenary, and an unmetered endpoint that queues work onto it is not
+// something to ship before CHRN-26 has put a lease on that device.
+func runRetranscribe(args []string) error {
+	fs := flag.NewFlagSet("retranscribe", flag.ContinueOnError)
+	memoID := fs.String("memo", "", "the memo to retry (default: every held memo)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	pool, err := store.ConnectWithRetry(ctx, cfg.DatabaseURL, 30*time.Second)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	st := store.New(pool)
+
+	var targets []store.HeldMemo
+	var truncated bool
+	if *memoID != "" {
+		id, err := uuid.Parse(*memoID)
+		if err != nil {
+			return fmt.Errorf("retranscribe: %q is not a memo id", *memoID)
+		}
+		m, err := st.GetMemo(ctx, id)
+		if errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("retranscribe: no memo %s", id)
+		}
+		if err != nil {
+			return err
+		}
+		if m.State != store.StateHeld {
+			// Named rather than shrugged at: releasing a memo that is already
+			// transcribing would be a second attempt on the same recording.
+			return fmt.Errorf("retranscribe: memo %s is in state %q, not held", id, m.State)
+		}
+		reason := ""
+		if m.StateReason != nil {
+			reason = *m.StateReason
+		}
+		targets = []store.HeldMemo{{ID: m.ID, AuthorID: m.AuthorID, CapturedAt: m.CapturedAt, Reason: reason}}
+	} else {
+		// A cap, AND IT SAYS SO WHEN IT HITS ONE. The comment here used to
+		// argue against a limit that hides work and then pass 10000, which is
+		// a limit that hides work with a comment claiming otherwise.
+		//
+		// Fetched one over the cap so truncation is detectable rather than
+		// inferred from a round number.
+		targets, err = st.HeldMemos(ctx, retranscribeCap+1)
+		if err != nil {
+			return err
+		}
+		if len(targets) > retranscribeCap {
+			targets = targets[:retranscribeCap]
+			truncated = true
+		}
+	}
+
+	if len(targets) == 0 {
+		fmt.Println("no held memos")
+		return nil
+	}
+
+	released := 0
+	skipped := 0
+	for _, h := range targets {
+		// NEVER RELEASE A MEMO WHOSE AUDIO IS GONE. Nothing sets
+		// audio_pruned_at until CHRN-22, so this cannot fire today — and the
+		// day it can, releasing one would put it in `queued`, where
+		// MemosAwaitingTranscription (which excludes pruned memos) never
+		// returns it, no report lists it as stuck, and it counts in `pending`
+		// forever. A silent permanent limbo is worse than a refusal that says
+		// why.
+		if m, err := st.GetMemo(ctx, h.ID); err == nil && m.AudioPruned() {
+			fmt.Printf("  %s  NOT released: its audio was pruned, so there is nothing to transcribe\n", h.ID)
+			skipped++
+			continue
+		}
+		// SUPERSEDE FIRST, and this order is the whole of the command working.
+		//
+		// The pump's attempt ceiling counts attempt rows. Releasing the memo
+		// without declaring those attempts spent means the next sweep counts
+		// the same rows and holds it straight back -- so the command prints
+		// "released", the operator believes it, and the memo is untranscribable
+		// by any path this service or this CLI offers.
+		spent, err := st.SupersedeMemoJobs(ctx, h.ID)
+		if err != nil {
+			fmt.Printf("  %s  NOT released: %v\n", h.ID, err)
+			continue
+		}
+		if _, err := st.AdvanceMemoState(ctx, h.ID, store.StateHeld, store.StateQueued, ""); err != nil {
+			fmt.Printf("  %s  NOT released: %v\n", h.ID, err)
+			continue
+		}
+		fmt.Printf("  %s  released, %d previous attempt(s) cleared (was: %s)\n",
+			h.ID, spent, firstNonEmptyString(h.Reason, "no reason recorded"))
+		released++
+	}
+
+	fmt.Printf("released %d of %d held memo(s)\n", released, len(targets))
+	if skipped > 0 {
+		fmt.Printf("%d skipped because their audio is gone; a transcript is the only record now\n", skipped)
+	}
+	if truncated {
+		fmt.Printf("MORE THAN %d held memos exist. Only the %d most recently updated were "+
+			"considered; run this again to continue.\n", retranscribeCap, retranscribeCap)
+	}
+	if released > 0 {
+		fmt.Println("the running server picks these up on its next sweep; nothing else to do")
+	}
+	return nil
+}
+
+// retranscribeCap bounds one run of `chronicle retranscribe`. It exists so the
+// command cannot build an unbounded slice on a corpus that has gone badly
+// wrong; when it binds, the command says so rather than reporting a total that
+// silently means "the first ten thousand".
+const retranscribeCap = 10000

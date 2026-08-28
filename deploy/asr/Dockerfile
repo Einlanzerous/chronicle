@@ -3,7 +3,12 @@
 # Shared estate ASR runner — whisper.cpp on the R9700 (gfx1201, RDNA4), Vulkan/RADV.
 # CHRN-24. Chronicle is client one; Catenary is client two (CHRN-29).
 #
-#   docker build -f deploy/asr/Dockerfile -t estate-asr:dev deploy/asr
+#   docker build -f deploy/asr/Dockerfile -t estate-asr:dev .
+#
+# FROM THE REPOSITORY ROOT, not from deploy/asr. It was the latter until
+# CHRN-25, which added the job service to this image: asrd is a Go binary in
+# this repository, and a build context that cannot see go.mod cannot build it.
+# The whisper.cpp stages read nothing from the context either way.
 #
 # Everything that enters a published number is pinned, and the pins are the
 # deliverable rather than housekeeping. IDEA-26 could not promise that a later
@@ -114,6 +119,35 @@ RUN cmake -S /src/whisper.cpp -B /src/whisper.cpp/build-vk \
 
 
 # ---------------------------------------------------------------------------
+# 2b) asrd — the job service (CHRN-25).
+# ---------------------------------------------------------------------------
+#
+# It lives in this image because it SHELLS OUT TO ffmpeg AND whisper-cli as
+# siblings. The alternative — a separate container that runs `docker run`
+# against this one — needs the daemon socket mounted, which hands a network
+# service the ability to start anything on the host. The image is the unit of
+# deployment; the service runs inside it.
+#
+# Pure Go (pgx, net/http), so CGO is off and the binary is static.
+FROM golang:1.26-bookworm AS asrd
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+
+# Build identity, defaulting to EMPTY rather than a placeholder for the reason
+# deploy/Dockerfile gives: an image built outside the publish workflow must not
+# be able to claim a release version.
+ARG VERSION=
+ARG GIT_SHA=
+RUN CGO_ENABLED=0 go build -trimpath \
+    -ldflags "-s -w \
+      -X main.version=${VERSION} \
+      -X main.commit=${GIT_SHA}" \
+    -o /out/asrd ./cmd/asrd
+
+
+# ---------------------------------------------------------------------------
 # 3) Runtime.
 # ---------------------------------------------------------------------------
 FROM ubuntu:${UBUNTU} AS runtime
@@ -171,4 +205,18 @@ ENV WHISPER=/opt/whisper \
 VOLUME ["/opt/whisper/models"]
 
 RUN ln -s /opt/whisper/build-vk/bin/whisper-cli /usr/local/bin/whisper-cli
+
+# The job service. CHRN-25's contract over CHRN-24's runner, with its own
+# database and its own role.
+COPY --from=asrd /out/asrd /usr/local/bin/asrd
+EXPOSE 4011
+
+# THE ENTRYPOINT IS STILL whisper-cli, deliberately, even though the usual
+# thing this image does now is serve. deploy/asr/bench-in-container.sh runs the
+# CHRN-12 harness through it unmodified, and that harness is what produced the
+# reference numbers in README.md — changing the entrypoint would mean rewriting
+# the measurement path in the same commit that adds a service to the image,
+# which is how a benchmark stops comparing to anything.
+#
+# compose.asr.yml overrides it for the service, in one visible line.
 ENTRYPOINT ["/usr/local/bin/whisper-cli"]

@@ -6,6 +6,7 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -90,7 +91,32 @@ type Config struct {
 	// without a rebuild.
 	WatchInterval time.Duration
 	WatchSettle   time.Duration
+
+	// CHRN-27 — the estate ASR service Chronicle submits memos to. Empty
+	// disables transcription entirely, and boot says so: an ingest path that
+	// files memos nobody ever transcribes looks exactly like a working system
+	// until somebody goes looking for a transcript.
+	ASRBaseURL string
+
+	// ASRToken is the bearer credential the ASR service issues per client.
+	// Required whenever ASRBaseURL is set -- there is no anonymous mode on the
+	// other end, and half-configuring it would fail every submission with a
+	// 401 that reads like the token was wrong rather than absent.
+	ASRToken string
+
+	// ASRModel is the model to ask for. Empty takes the service's own default,
+	// which is the right behaviour: the deployment knows what it has on disk
+	// and Chronicle does not.
+	ASRModel string
+
+	// TranscribeInterval is how often the pump sweeps. Default in
+	// internal/transcribe.
+	TranscribeInterval time.Duration
 }
+
+// TranscriptionEnabled reports whether Chronicle will submit memos for
+// transcription.
+func (c Config) TranscriptionEnabled() bool { return c.ASRBaseURL != "" }
 
 // SSOEnabled reports whether Cloudflare Access sign-in is configured.
 func (c Config) SSOEnabled() bool {
@@ -172,6 +198,36 @@ func Load() (Config, error) {
 		return c, err
 	}
 	c.WatchSettle, err = optionalDuration("CHRONICLE_WATCH_SETTLE")
+	if err != nil {
+		return c, err
+	}
+
+	// Both or neither, and the reason is the same one the Cloudflare pair
+	// gives: a half-configured client fails every submission with a message
+	// that says the credential was rejected rather than that it was never set.
+	c.ASRBaseURL = strings.TrimRight(strings.TrimSpace(os.Getenv("CHRONICLE_ASR_URL")), "/")
+	c.ASRToken = strings.TrimSpace(os.Getenv("CHRONICLE_ASR_TOKEN"))
+	if (c.ASRBaseURL == "") != (c.ASRToken == "") {
+		return c, fmt.Errorf("config: CHRONICLE_ASR_URL and CHRONICLE_ASR_TOKEN must be set together (got one of the two)")
+	}
+	if c.ASRBaseURL != "" {
+		// Parsed here rather than left to the generated client, which only
+		// string-concatenates and does its url.Parse per request. Unparsed, a
+		// typo boots cleanly, logs "transcription enabled", and then fails
+		// every submission with a warn line -- the "configured and unusable"
+		// shape runServe refuses outright three lines away when the audio
+		// directory is missing.
+		u, err := url.Parse(c.ASRBaseURL)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return c, fmt.Errorf("config: CHRONICLE_ASR_URL %q is not an absolute http(s) URL", c.ASRBaseURL)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return c, fmt.Errorf("config: CHRONICLE_ASR_URL %q must be http or https, got scheme %q", c.ASRBaseURL, u.Scheme)
+		}
+	}
+	c.ASRModel = strings.TrimSpace(os.Getenv("CHRONICLE_ASR_MODEL"))
+
+	c.TranscribeInterval, err = optionalDuration("CHRONICLE_TRANSCRIBE_INTERVAL")
 	if err != nil {
 		return c, err
 	}

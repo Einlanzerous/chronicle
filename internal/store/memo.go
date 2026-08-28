@@ -543,3 +543,94 @@ func (s *Store) SetMemoAudioInfo(ctx context.Context, id uuid.UUID, in AudioInfo
 	}
 	return m, nil
 }
+
+// MemosAwaitingTranscription returns memos that still need a transcript,
+// oldest capture first.
+//
+// `captured` and `queued` both count: `queued` is where a memo sits if the
+// process died between marking intent and submitting, and a sweep that only
+// looked at `captured` would leave those stranded forever in a state that
+// looks like progress.
+//
+// Memos whose audio has already been pruned are excluded. There is nothing to
+// send — and a memo in that position with no transcript is a data-loss
+// incident that CHRN-22's gate is supposed to make impossible, not something
+// for this sweep to paper over by failing quietly every minute.
+func (s *Store) MemosAwaitingTranscription(ctx context.Context, limit int) ([]Memo, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+memoColumns+` FROM tier2.memos
+		 WHERE state IN ('captured', 'queued')
+		   AND audio_pruned_at IS NULL
+		 ORDER BY captured_at
+		 LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: memos awaiting transcription: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Memo
+	for rows.Next() {
+		m, err := scanMemo(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// TranscriptionStates counts memos by state, for the operator report. A memo
+// held after a failed transcription is one somebody has to notice, and a count
+// nobody can see is not a way of noticing.
+func (s *Store) TranscriptionStates(ctx context.Context) (map[string]int64, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT state, count(*) FROM tier2.memos GROUP BY state`)
+	if err != nil {
+		return nil, fmt.Errorf("store: transcription states: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]int64)
+	for rows.Next() {
+		var state string
+		var n int64
+		if err := rows.Scan(&state, &n); err != nil {
+			return nil, err
+		}
+		out[state] = n
+	}
+	return out, rows.Err()
+}
+
+// HeldMemo is one memo a human needs to look at: what it is, and why it
+// stopped.
+type HeldMemo struct {
+	ID         uuid.UUID
+	AuthorID   uuid.UUID
+	CapturedAt time.Time
+	Reason     string
+}
+
+// HeldMemos lists memos stuck in `held`, newest first.
+func (s *Store) HeldMemos(ctx context.Context, limit int) ([]HeldMemo, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, author_id, captured_at, coalesce(state_reason, '')
+		  FROM tier2.memos
+		 WHERE state = 'held'
+		 ORDER BY updated_at DESC
+		 LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: held memos: %w", err)
+	}
+	defer rows.Close()
+
+	var out []HeldMemo
+	for rows.Next() {
+		var h HeldMemo
+		if err := rows.Scan(&h.ID, &h.AuthorID, &h.CapturedAt, &h.Reason); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}

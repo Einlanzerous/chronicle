@@ -11,6 +11,12 @@
 # and both test DSNs are assembled below, or export them yourself. The tier-1
 # DSN is what the isolation test (CHRN-71's sixth Done-when, CHRN-52's subject)
 # connects as; without it that test skips rather than passing vacuously.
+#
+# The ASR service (CHRN-25) has its OWN database and its own role, so it has its
+# own test DSN — ASR_TEST_DATABASE_URL, assembled from ASR_DB_PASSWORD the same
+# way. It is deliberately not Chronicle's: a test suite that reached Chronicle's
+# database to exercise the ASR service would prove the opposite of what the
+# separate store is for.
 set -uo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -21,6 +27,9 @@ if [ -z "${CHRONICLE_TEST_DATABASE_URL:-}" ] && [ -n "${CHRONICLE_DB_PASSWORD:-}
 fi
 if [ -z "${CHRONICLE_TEST_TIER1_DATABASE_URL:-}" ] && [ -n "${CHRONICLE_TIER1_DB_PASSWORD:-}" ]; then
   export CHRONICLE_TEST_TIER1_DATABASE_URL="postgres://chronicle_tier1:${CHRONICLE_TIER1_DB_PASSWORD}@${host}/chronicle_test?sslmode=disable"
+fi
+if [ -z "${ASR_TEST_DATABASE_URL:-}" ] && [ -n "${ASR_DB_PASSWORD:-}" ]; then
+  export ASR_TEST_DATABASE_URL="postgres://asr:${ASR_DB_PASSWORD}@${host}/asr_test?sslmode=disable"
 fi
 
 fail=0
@@ -41,16 +50,59 @@ gofmt_check() {
   [ -z "$out" ] || { echo "unformatted:"; echo "$out"; return 1; }
 }
 
-step "gofmt"   gofmt_check
-step "go vet"  go vet ./...
-step "build"   go build ./...
-step "test"    go test ./... -count=1
+# internal/asrclient is GENERATED from deploy/asr/openapi.yaml. A generated
+# artefact with no guard is a generated artefact somebody hand-edits -- the
+# same sentence CLAUDE.md applies to the schema, and the same remedy.
+#
+# Regenerated to a TEMPORARY FILE and byte-compared, so a check never rewrites
+# the thing it is checking. The generator is pinned by the `tool` directive in
+# go.mod; an unpinned one would make this a coin flip.
+#
+# This is the half of CHRN-25's first Done-when that does not need hardware,
+# which is why it belongs here and not only in CI. The contract has two clients
+# in two languages, and the failure it prevents is the second one being
+# generated against a spec the first has already drifted from.
+asrclient_check() {
+  local tmp
+  tmp="$(mktemp -t asrclient.XXXXXX.go)"
+  # shellcheck disable=SC2064
+  trap "rm -f '$tmp'" RETURN
+  GEN_ASRCLIENT_OUT="$tmp" scripts/gen-asrclient.sh >/dev/null || return 1
+  if ! diff -q "$tmp" internal/asrclient/client.gen.go >/dev/null; then
+    echo "internal/asrclient/client.gen.go does not match deploy/asr/openapi.yaml."
+    echo "Run scripts/gen-asrclient.sh and commit the result."
+    diff -u internal/asrclient/client.gen.go "$tmp" | head -40
+    return 1
+  fi
+}
+
+step "gofmt"        gofmt_check
+step "go vet"       go vet ./...
+step "build"        go build ./...
+step "asr client"   asrclient_check
+# -p 1: ONE TEST BINARY AT A TIME.
+#
+# `go test ./...` runs packages in parallel by default, and more than one
+# package now resets the shared test database -- internal/store and
+# internal/transcribe both roll the migrations down and back up to start from
+# empty. Overlapped, they drop tables out from under each other and produce
+# failures that read as migration bugs ("relation tier2.users does not exist")
+# and are not.
+#
+# The alternative, an advisory lock in each harness, is more precise and has to
+# be remembered by whoever adds the third database-backed package. This cannot
+# be forgotten. The suite is seconds long; serialising it costs nothing worth
+# having.
+step "test"         go test ./... -count=1 -p 1
 
 if [ -z "${CHRONICLE_TEST_DATABASE_URL:-}" ]; then
   printf '\nNOTE: CHRONICLE_TEST_DATABASE_URL unset — database tests were skipped.\n'
 fi
 if [ -z "${CHRONICLE_TEST_TIER1_DATABASE_URL:-}" ]; then
   printf 'NOTE: CHRONICLE_TEST_TIER1_DATABASE_URL unset — the tier-isolation test was skipped.\n'
+fi
+if [ -z "${ASR_TEST_DATABASE_URL:-}" ]; then
+  printf 'NOTE: ASR_TEST_DATABASE_URL unset — the ASR job tests were skipped, including the kill -9 lease test.\n'
 fi
 
 printf '\n'

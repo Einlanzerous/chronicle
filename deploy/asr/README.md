@@ -1,13 +1,18 @@
-# Shared estate ASR runner — whisper.cpp on the R9700
+# Shared estate ASR — whisper.cpp on the R9700, and the service over it
 
-**CHRN-24 · E3.** One whisper.cpp build, on one GPU, behind one image. Chronicle
-is client one; Catenary is client two and its handoff is CHRN-29.
+**CHRN-24 + CHRN-25 · E3.** One whisper.cpp build, on one GPU, behind one image.
+Chronicle is client one; Catenary is client two and its handoff is CHRN-29.
 
-This directory is the *runner*: a pinned, reproducible container that transcribes
-a file on the R9700 and hits a known number. It is deliberately not a service —
-the HTTP job contract is CHRN-25 and the resident worker with its GPU lease is
-CHRN-26. What is settled here is everything that is a property of the machine and
-the build rather than of the service.
+Two things live here, and it is worth keeping them apart:
+
+- **The runner (CHRN-24)** — a pinned, reproducible container that transcribes a
+  file on the R9700 and hits a known number. Everything from here to *Measured,
+  in this container* is about that, and about why each pin is load-bearing.
+- **The service (CHRN-25)** — `asrd`, the job contract over it: submit, poll,
+  fetch, cancel, with a job table and a lease. See **The service** below.
+
+The resident worker with its real GPU lease is still CHRN-26; what ships here is
+a per-invocation placeholder, and it says so.
 
 ---
 
@@ -95,8 +100,13 @@ the only thing between this and a far slower device.
 ## Build
 
 ```bash
-docker build -f deploy/asr/Dockerfile -t estate-asr:dev deploy/asr
+docker build -f deploy/asr/Dockerfile -t estate-asr:dev .
 ```
+
+**From the repository root**, not from `deploy/asr` — it was the latter until
+CHRN-25 put `asrd` in this image. `asrd` is a Go binary in this repository, and
+a build context that cannot see `go.mod` cannot build it. The whisper.cpp
+stages read nothing from the context either way.
 
 Models are **not** baked in. `large-v3` alone is 2.9 GB and the four together are
 5.0 GB, against a 466 MB default — and a model is data the service is pointed at,
@@ -213,12 +223,99 @@ reference, not a verdict on one.
 
 ---
 
+## The service — `asrd` (CHRN-25)
+
+The image carries a second binary: `asrd`, the transcription job service. The
+contract it implements is `deploy/asr/openapi.yaml`, and the argument behind
+every shape in it is `docs/decisions/chrn-25-job-contract.md`.
+
+It is **in this image** because it shells out to `ffmpeg` and `whisper-cli` as
+siblings. The alternative — a separate container running `docker run` against
+this one — needs the daemon socket mounted, which hands a network service the
+ability to start anything on the host.
+
+```
+POST /v1/jobs                submit audio inline, multipart, Idempotency-Key required
+GET  /v1/jobs/{id}           status, cheap, safe to poll; carries retry_after_ms
+GET  /v1/jobs/{id}/result    the transcript, fetched once; 410 once the payload ages out
+POST /v1/jobs/{id}/cancel    idempotent
+GET  /v1/models              what this deployment runs, and the audio it accepts
+GET  /healthz  /readyz       open; /readyz pings the database and reports queue depth
+```
+
+Its own database and its own role, provisioned separately:
+
+```bash
+signet exec --secret construct-server/ASR_DB_PASSWORD -- deploy/asr/provision-db.sh
+```
+
+Not a schema inside Chronicle's, and this is the call worth understanding rather
+than copying: the moment Catenary submits a job it would need a credential on
+**Chronicle's** database, and the reason E3 is an estate service rather than a
+Chronicle package collapses into Catenary depending on Chronicle's schema. It is
+also **not** a tier-1/tier-2 question — those govern Chronicle's two stores, and
+job rows are a third thing.
+
+**Nothing this service holds is irreplaceable.** The audio still exists on the
+client side, so every row and every byte can be recomputed: drop the `asr`
+database and the estate loses queue position and nothing else. The corollary a
+reviewer should check on any change here is that nothing in it has become the
+only copy of anything.
+
+### The worker in this ticket is a placeholder
+
+`asrd serve` runs the reaper and a **per-invocation** worker: claim a job,
+decode, run `whisper-cli`, write the result, one job at a time. It is
+deliberately the shape the benchmark measured as the slow one — 43.2× rather
+than 59.6×, because the model is loaded per job — and CHRN-26 replaces it with
+the resident worker, the real GPU lease and per-client fairness.
+
+It exists because the ticket asks for job state to survive `kill -9` of the
+worker, and there has to be a worker to kill. **The lease is the mechanism, not
+a shutdown hook** — a hook does not run on `kill -9`, which is the case being
+tested. The worker renews `lease_expires_at` while it works; the reaper returns
+any job whose lease has passed, with `attempts` incremented — or, if the job was
+cancelled, sends it to `cancelled` and never back to the queue.
+
+### Configuration
+
+| variable | | |
+|---|---|---|
+| `ASR_DATABASE_URL` | required | boot fails if unset |
+| `ASR_CLIENT_TOKENS` | required | `name:token` pairs out of Signet. Empty is a **boot error**, never "open" |
+| `ASR_DEFAULT_MODEL` | `small.en` | CHRN-12's default, and its reasoning |
+| `ASR_RESULT_TTL` | 7 days | matches `upload.DefaultTTL`; the **payload** ages out, the job row does not |
+| `ASR_LEASE_TTL` | 30s | CHRN-26's to tune against the real worker |
+| `ASR_MODEL_DIR` | `/opt/whisper/models` | absolute; the mount above |
+| `ASR_BACKEND` | `vulkan` | recorded on every result, so a corpus does not vary invisibly |
+| `ASR_WORKER` | true | off runs the HTTP surface with no worker, which is what CHRN-26 will want |
+
+`client_id` comes from the **token** and from nothing else. It is never read
+from a body, header or query parameter: CHRN-26 queues per client for fairness,
+so a client-asserted identity would let either service submit as the other and
+jump its queue.
+
+---
+
 ## What is deliberately not here
 
-- **No HTTP surface, no job table, no queue.** CHRN-25.
-- **No resident worker and no GPU lease.** CHRN-26. The image runs `whisper-cli`
-  once per invocation, which is why CHRN-24's gate is the per-invocation column.
-- **No GHCR publish.** The image name and its release workflow belong with the
-  service, and that is CHRN-25/CHRN-29 territory.
+- **No resident worker and no GPU lease.** CHRN-26. The worker above loads the
+  model per job, which is why CHRN-24's gate is the per-invocation column.
+- **No retry ceiling, no backoff, no dead-lettering.** CHRN-28. `attempts`
+  exists and the reaper moves it; the ceiling is a policy, not a counter.
+- **No fairness policy between clients.** CHRN-26.
+- **No callback or webhook.** Deliberately not now: it needs the service to hold
+  its clients' credentials, which is the same objection that ruled out
+  pull-by-URL for the audio.
+- **No GHCR publish.** CHRN-29, which is also the last cheap moment to decide
+  whether this service moves to a repository of its own — once Catenary
+  generates a client against a spec living in Chronicle's repo, moving it is a
+  coordinated change across two services.
 - **No HIP build.** IDEA-26 measured it slower in every cell, and a second
   backend in the image is a second thing that can be selected by accident.
+- **No generated `schema.sql` for the `asr` database.** Chronicle has one
+  because the guard's whole point is that a generated artefact with no guard is
+  one somebody hand-edits — and here there is no artefact to hand-edit. One
+  table, one migration, and the migration is the shorter and more authoritative
+  statement of it. Recorded so the absence reads as a decision rather than an
+  omission.

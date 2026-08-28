@@ -86,6 +86,16 @@ type Deps struct {
 	// Corpus is the database side of that report.
 	Corpus Corpus
 
+	// Transcription backs GET /admin/transcription (CHRN-27). Nil answers 503
+	// rather than reporting an empty corpus, for the reason Audio does.
+	Transcription Transcription
+
+	// Transcribing reports whether a transcription pump is actually running.
+	// It is on the report because an operator reading a large `pending` count
+	// otherwise cannot tell a backlog from a Chronicle that was never pointed
+	// at an ASR service -- and those want completely different remedies.
+	Transcribing bool
+
 	// Uploads is the direct ingest path (CHRN-20). Nil when there is no audio
 	// store, in which case the four /memos/uploads routes answer 503 naming
 	// CHRONICLE_AUDIO_DIR -- the same shape the storage report uses, and for
@@ -109,6 +119,8 @@ type api struct {
 	audio         *audio.Store
 	corpus        Corpus
 	uploads       *upload.Service
+	transcription Transcription
+	transcribing  bool
 }
 
 // NewRouter builds the HTTP handler.
@@ -142,6 +154,8 @@ func NewRouter(d Deps) http.Handler {
 		audio:         d.Audio,
 		corpus:        d.Corpus,
 		uploads:       d.Uploads,
+		transcription: d.Transcription,
+		transcribing:  d.Transcribing,
 	}
 
 	mux := http.NewServeMux()
@@ -215,6 +229,12 @@ func NewRouter(d Deps) http.Handler {
 	// What the corpus costs, and whether the disk agrees with the database
 	// (CHRN-23). A read: it reports orphans, it never deletes one.
 	mux.HandleFunc("GET /admin/storage", a.requireOwner(a.handleAdminStorage))
+
+	// How transcription is going, and which memos are stuck (CHRN-27). Also a
+	// read -- the retry is `chronicle retranscribe`, on the host, because
+	// re-running transcription costs GPU time on a device three services share
+	// and that is not an unmetered HTTP verb until CHRN-26 has leased it.
+	mux.HandleFunc("GET /admin/transcription", a.requireOwner(a.handleAdminTranscription))
 
 	return requestLogger(d.Logger, mux)
 }
