@@ -645,11 +645,24 @@ func runRetranscribe(args []string) error {
 
 	released := 0
 	for _, h := range targets {
+		// SUPERSEDE FIRST, and this order is the whole of the command working.
+		//
+		// The pump's attempt ceiling counts attempt rows. Releasing the memo
+		// without declaring those attempts spent means the next sweep counts
+		// the same rows and holds it straight back -- so the command prints
+		// "released", the operator believes it, and the memo is untranscribable
+		// by any path this service or this CLI offers.
+		spent, err := st.SupersedeMemoJobs(ctx, h.ID)
+		if err != nil {
+			fmt.Printf("  %s  NOT released: %v\n", h.ID, err)
+			continue
+		}
 		if _, err := st.AdvanceMemoState(ctx, h.ID, store.StateHeld, store.StateQueued, ""); err != nil {
 			fmt.Printf("  %s  NOT released: %v\n", h.ID, err)
 			continue
 		}
-		fmt.Printf("  %s  released (was: %s)\n", h.ID, firstNonEmptyString(h.Reason, "no reason recorded"))
+		fmt.Printf("  %s  released, %d previous attempt(s) cleared (was: %s)\n",
+			h.ID, spent, firstNonEmptyString(h.Reason, "no reason recorded"))
 		released++
 	}
 

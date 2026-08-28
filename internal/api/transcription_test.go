@@ -16,8 +16,9 @@ import (
 // fakeTranscription stands in for the database half of the report, so the case
 // that matters — a held memo carrying a reason — is testable without Postgres.
 type fakeTranscription struct {
-	states map[string]int64
-	held   []store.HeldMemo
+	states  map[string]int64
+	held    []store.HeldMemo
+	partial []store.PartialMemo
 }
 
 func (f *fakeTranscription) TranscriptionStates(context.Context) (map[string]int64, error) {
@@ -26,6 +27,10 @@ func (f *fakeTranscription) TranscriptionStates(context.Context) (map[string]int
 
 func (f *fakeTranscription) HeldMemos(context.Context, int) ([]store.HeldMemo, error) {
 	return f.held, nil
+}
+
+func (f *fakeTranscription) PartialTranscripts(context.Context, int) (int64, []store.PartialMemo, error) {
+	return int64(len(f.partial)), f.partial, nil
 }
 
 func transcriptionRouter(t *testing.T, tr Transcription, enabled bool) http.Handler {
@@ -127,5 +132,35 @@ func TestTranscriptionReportNeedsTheOwner(t *testing.T) {
 	h := transcriptionRouter(t, &fakeTranscription{states: map[string]int64{}}, true)
 	if rec := getTranscription(t, h, ""); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d without a session, want 401", rec.Code)
+	}
+}
+
+// A PARTIAL MEMO IS OTHERWISE INVISIBLE, and the report is where it stops
+// being. It is `transcribed`, so nothing sweeps it; it is not `held`, so
+// `chronicle retranscribe` will not release it; and its audio correctly does
+// not prune. Each of those is right on its own, and together they make a
+// partial memo read as a healthy one.
+func TestTranscriptionReportSurfacesPartialTranscripts(t *testing.T) {
+	id := uuid.New()
+	h := transcriptionRouter(t, &fakeTranscription{
+		states:  map[string]int64{store.StateTranscribed: 40},
+		partial: []store.PartialMemo{{MemoID: id, Model: "small.en", TranscribedAt: time.Now()}},
+	}, true)
+
+	var got transcriptionReport
+	rec := getTranscription(t, h, "chr_owner")
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Partial != 1 || len(got.PartialSample) != 1 {
+		t.Fatalf("partial = %d sample = %d; a memo with only a partial transcript has to be "+
+			"findable, or CHRN-28 has nothing to act on", got.Partial, len(got.PartialSample))
+	}
+	if got.PartialSample[0].MemoID != id {
+		t.Fatalf("memo id = %s, want %s", got.PartialSample[0].MemoID, id)
+	}
+	// And it is NOT counted as pending: it is not waiting on anything.
+	if got.Pending != 0 {
+		t.Fatalf("pending = %d; a partial memo is transcribed, not pending", got.Pending)
 	}
 }

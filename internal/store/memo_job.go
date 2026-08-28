@@ -48,6 +48,10 @@ type MemoJob struct {
 	FailureCode    *string
 	FailureMessage *string
 
+	// SupersededAt is set when a deliberate retry declares this attempt spent.
+	// See SupersedeMemoJobs.
+	SupersededAt *time.Time
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -57,13 +61,13 @@ func (j MemoJob) Settled() bool { return j.CollectedAt != nil || j.FailureCode !
 
 const memoJobColumns = `id, memo_id, idempotency_key, model, audio_sha256,
 	job_id, submitted_at, collected_at, failure_code, failure_message,
-	created_at, updated_at`
+	superseded_at, created_at, updated_at`
 
 func scanMemoJob(row pgx.Row) (MemoJob, error) {
 	var j MemoJob
 	err := row.Scan(&j.ID, &j.MemoID, &j.IdempotencyKey, &j.Model, &j.AudioSHA256,
 		&j.JobID, &j.SubmittedAt, &j.CollectedAt, &j.FailureCode,
-		&j.FailureMessage, &j.CreatedAt, &j.UpdatedAt)
+		&j.FailureMessage, &j.SupersededAt, &j.CreatedAt, &j.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return MemoJob{}, ErrNotFound
 	}
@@ -200,18 +204,50 @@ func (s *Store) memoJobs(ctx context.Context, query string, args ...any) ([]Memo
 	return out, rows.Err()
 }
 
-// CountMemoJobs reports how many attempts a memo has had, settled or not.
+// CountMemoJobs reports how many attempts a memo has had that a deliberate
+// retry has not declared spent.
 //
 // Read by the pump's crude attempt ceiling. The real retry policy — how many,
 // with what backoff, what to do about a partial — is CHRN-28's; this exists so
 // that until then a service which keeps losing jobs cannot put one memo through
 // an unmetered loop of GPU runs.
+//
+// THE `superseded_at IS NULL` IS LOAD-BEARING and is not a filter for
+// tidiness. Counting every row ever would make `chronicle retranscribe` a
+// command that reports success and achieves nothing: the operator releases a
+// memo from `held`, the next sweep counts the same rows, and the ceiling holds
+// it again — leaving the memo untranscribable by any path the service or the
+// CLI offers.
 func (s *Store) CountMemoJobs(ctx context.Context, memoID uuid.UUID) (int, error) {
 	var n int
 	err := s.pool.QueryRow(ctx,
-		`SELECT count(*) FROM tier1.memo_jobs WHERE memo_id = $1`, memoID).Scan(&n)
+		`SELECT count(*) FROM tier1.memo_jobs
+		  WHERE memo_id = $1 AND superseded_at IS NULL`, memoID).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("store: count memo jobs: %w", err)
 	}
 	return n, nil
+}
+
+// SupersedeMemoJobs declares a memo's settled attempts spent, so the ceiling
+// starts again. This is what makes a deliberate retry actually retry.
+//
+// SETTLED ONLY. An attempt still in flight is not superseded, because the
+// partial unique index that keeps one attempt per memo would then admit a
+// second while the first is still running — a second GPU run over the same
+// audio, which is the failure the whole idempotency arrangement exists to
+// prevent.
+//
+// The rows are kept, not deleted. They are the record of what was tried.
+func (s *Store) SupersedeMemoJobs(ctx context.Context, memoID uuid.UUID) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE tier1.memo_jobs
+		   SET superseded_at = now(), updated_at = now()
+		 WHERE memo_id = $1
+		   AND superseded_at IS NULL
+		   AND (collected_at IS NOT NULL OR failure_code IS NOT NULL)`, memoID)
+	if err != nil {
+		return 0, fmt.Errorf("store: supersede memo jobs: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
