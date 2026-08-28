@@ -6,6 +6,7 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -208,6 +209,21 @@ func Load() (Config, error) {
 	c.ASRToken = strings.TrimSpace(os.Getenv("CHRONICLE_ASR_TOKEN"))
 	if (c.ASRBaseURL == "") != (c.ASRToken == "") {
 		return c, fmt.Errorf("config: CHRONICLE_ASR_URL and CHRONICLE_ASR_TOKEN must be set together (got one of the two)")
+	}
+	if c.ASRBaseURL != "" {
+		// Parsed here rather than left to the generated client, which only
+		// string-concatenates and does its url.Parse per request. Unparsed, a
+		// typo boots cleanly, logs "transcription enabled", and then fails
+		// every submission with a warn line -- the "configured and unusable"
+		// shape runServe refuses outright three lines away when the audio
+		// directory is missing.
+		u, err := url.Parse(c.ASRBaseURL)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return c, fmt.Errorf("config: CHRONICLE_ASR_URL %q is not an absolute http(s) URL", c.ASRBaseURL)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return c, fmt.Errorf("config: CHRONICLE_ASR_URL %q must be http or https, got scheme %q", c.ASRBaseURL, u.Scheme)
+		}
 	}
 	c.ASRModel = strings.TrimSpace(os.Getenv("CHRONICLE_ASR_MODEL"))
 

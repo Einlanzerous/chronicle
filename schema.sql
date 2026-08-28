@@ -173,6 +173,7 @@ CREATE TABLE tier1.memo_jobs (
     collected_at timestamp with time zone,
     failure_code text,
     failure_message text,
+    superseded_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT memo_jobs_audio_sha256_check CHECK ((audio_sha256 ~ '^[0-9a-f]{64}$'::text)),

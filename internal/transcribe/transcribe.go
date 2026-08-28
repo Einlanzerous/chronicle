@@ -205,6 +205,21 @@ func (s *Service) resume(ctx context.Context) {
 				"the memo this attempt belongs to no longer exists")
 			continue
 		}
+		// The same skip submit() makes, and it belongs on BOTH paths that
+		// reach send(): a stale attempt row beside a transcript that arrived
+		// some other way would otherwise be re-sent, and the check that exists
+		// to stop a wasted GPU run would be on one of the two ways in.
+		durable, err := s.store.HasDurableTranscript(ctx, memo.ID)
+		if err != nil {
+			s.logError(ctx, "could not check for an existing transcript", err, "memo", memo.ID)
+			continue
+		}
+		if durable {
+			_ = s.store.RecordJobFailure(ctx, job.ID, "already_transcribed",
+				"a durable transcript already existed; the attempt was not sent")
+			s.settle(ctx, memo)
+			continue
+		}
 		s.send(ctx, job, memo)
 	}
 }

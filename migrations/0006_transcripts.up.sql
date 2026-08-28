@@ -203,6 +203,21 @@ CREATE TABLE IF NOT EXISTS tier1.memo_jobs (
     failure_code      TEXT,
     failure_message   TEXT,
 
+    -- Set when a DELIBERATE RETRY declares this attempt spent, which today
+    -- means `chronicle retranscribe`.
+    --
+    -- It exists because the pump's attempt ceiling counts rows here, and
+    -- without it the ceiling and the retry command contradict each other: a
+    -- memo at the ceiling is held, an operator releases it, the next sweep
+    -- counts the same five rows and holds it again -- and the command reports
+    -- success while achieving nothing. The memo is then untranscribable by any
+    -- path the service or the CLI offers.
+    --
+    -- The rows are kept rather than deleted. They are the record of what was
+    -- tried, and losing that is exactly what makes the second attempt at
+    -- diagnosis start from nothing.
+    superseded_at     TIMESTAMPTZ,
+
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -217,6 +232,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS memo_jobs_key
 -- tick submit the same memo twice, which is a second GPU run and two results
 -- for one memo -- the exact failure the key prevents ACROSS a retry and this
 -- prevents WITHIN one process.
+--
+-- superseded_at is deliberately NOT in this predicate. Only SETTLED attempts
+-- are ever superseded (see store.SupersedeMemoJobs), so a superseded row is by
+-- construction not in flight, and putting the column here would offer a way to
+-- start a second attempt while the first is still running.
 CREATE UNIQUE INDEX IF NOT EXISTS memo_jobs_in_flight
     ON tier1.memo_jobs (memo_id)
     WHERE collected_at IS NULL AND failure_code IS NULL;

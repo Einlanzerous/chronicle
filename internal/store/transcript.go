@@ -225,6 +225,62 @@ func (s *Store) HasDurableTranscript(ctx context.Context, memoID uuid.UUID) (boo
 	return ok, nil
 }
 
+// PartialMemo is one memo whose only transcript is incomplete.
+type PartialMemo struct {
+	MemoID        uuid.UUID
+	Model         string
+	TranscribedAt time.Time
+}
+
+// PartialTranscripts lists memos whose best transcript is partial, newest
+// first, with a total.
+//
+// They are otherwise INVISIBLE, and that is the reason this exists. A memo with
+// a partial transcript is `transcribed`, so MemosAwaitingTranscription does not
+// return it; it is not `held`, so `chronicle retranscribe` will not release it;
+// and its audio correctly does not prune, because HasDurableTranscript says no.
+// Every one of those behaviours is right, and together they make a partial memo
+// read as a healthy one.
+//
+// CHRN-28 owns the retry POLICY. What it will need first is a way to find
+// these, and a count nobody can see is not one.
+func (s *Store) PartialTranscripts(ctx context.Context, limit int) (int64, []PartialMemo, error) {
+	var total int64
+	if err := s.pool.QueryRow(ctx, `
+		SELECT count(DISTINCT memo_id) FROM tier2.transcripts t
+		 WHERE t.partial
+		   AND NOT EXISTS (SELECT 1 FROM tier2.transcripts d
+		                    WHERE d.memo_id = t.memo_id AND NOT d.partial)`).Scan(&total); err != nil {
+		return 0, nil, fmt.Errorf("store: count partial transcripts: %w", err)
+	}
+	if total == 0 {
+		return 0, nil, nil
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT DISTINCT ON (t.memo_id) t.memo_id, t.model, t.transcribed_at
+		  FROM tier2.transcripts t
+		 WHERE t.partial
+		   AND NOT EXISTS (SELECT 1 FROM tier2.transcripts d
+		                    WHERE d.memo_id = t.memo_id AND NOT d.partial)
+		 ORDER BY t.memo_id, t.transcribed_at DESC
+		 LIMIT $1`, limit)
+	if err != nil {
+		return 0, nil, fmt.Errorf("store: list partial transcripts: %w", err)
+	}
+	defer rows.Close()
+
+	var out []PartialMemo
+	for rows.Next() {
+		var p PartialMemo
+		if err := rows.Scan(&p.MemoID, &p.Model, &p.TranscribedAt); err != nil {
+			return 0, nil, err
+		}
+		out = append(out, p)
+	}
+	return total, out, rows.Err()
+}
+
 // GetTranscript returns a memo's best transcript: a complete one if there is
 // one, otherwise the most recent partial. ErrNotFound when there is none.
 func (s *Store) GetTranscript(ctx context.Context, memoID uuid.UUID) (Transcript, error) {

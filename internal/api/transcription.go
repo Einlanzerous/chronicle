@@ -14,6 +14,7 @@ import (
 type Transcription interface {
 	TranscriptionStates(ctx context.Context) (map[string]int64, error)
 	HeldMemos(ctx context.Context, limit int) ([]store.HeldMemo, error)
+	PartialTranscripts(ctx context.Context, limit int) (int64, []store.PartialMemo, error)
 }
 
 // GET /admin/transcription answers the half of CHRN-27's Done-when that a test
@@ -45,10 +46,27 @@ type transcriptionReport struct {
 	Held       int64        `json:"held"`
 	HeldSample []heldReport `json:"held_sample,omitempty"`
 
+	// Partial counts memos whose only transcript is incomplete.
+	//
+	// They are reported because they are otherwise INVISIBLE: a partial memo
+	// is `transcribed`, so nothing sweeps it; it is not `held`, so
+	// `chronicle retranscribe` will not release it; and its audio correctly
+	// does not prune. Every one of those is right, and together they make a
+	// partial memo read as a healthy one. CHRN-28 owns what to do about them;
+	// this is what lets anyone find them.
+	Partial       int64           `json:"partial"`
+	PartialSample []partialReport `json:"partial_sample,omitempty"`
+
 	// Enabled reports whether a pump is configured at all. Without it, an
 	// operator reading `pending: 812` has no way to tell a backlog from a
 	// service that was never pointed at an ASR endpoint.
 	Enabled bool `json:"enabled"`
+}
+
+type partialReport struct {
+	MemoID        uuid.UUID `json:"memo_id"`
+	Model         string    `json:"model"`
+	TranscribedAt time.Time `json:"transcribed_at"`
 }
 
 type heldReport struct {
@@ -84,12 +102,23 @@ func (a *api) handleAdminTranscription(w http.ResponseWriter, r *http.Request) {
 		a.serverError(w, r, "held memos", err)
 		return
 	}
+	partialCount, partial, err := a.transcription.PartialTranscripts(ctx, listSample)
+	if err != nil {
+		a.serverError(w, r, "partial transcripts", err)
+		return
+	}
 
 	report := transcriptionReport{
 		States:  states,
 		Enabled: a.transcribing,
 		Pending: states[store.StateCaptured] + states[store.StateQueued] + states[store.StateTranscribing],
 		Held:    states[store.StateHeld],
+		Partial: partialCount,
+	}
+	for _, p := range partial {
+		report.PartialSample = append(report.PartialSample, partialReport{
+			MemoID: p.MemoID, Model: p.Model, TranscribedAt: p.TranscribedAt,
+		})
 	}
 	for _, h := range held {
 		report.HeldSample = append(report.HeldSample, heldReport{
