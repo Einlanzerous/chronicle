@@ -52,7 +52,14 @@ jobs:
       # The ASR service (CHRN-25) has its own database and its own role, so it
       # has its own DSN. Without it the job tests skip -- including the kill -9
       # lease test, which is the Done-when that cannot be checked by reading.
-      ASR_TEST_DATABASE_URL: postgres://asr:ci-not-a-secret@localhost:5432/asr_test?sslmode=disable
+      #
+      # ASSEMBLED IN A STEP rather than written out here, from the same PGPW the
+      # provisioning step uses. The two DSNs above predate this and are left
+      # alone, but a fourth literal `role:password@host` in this file is a
+      # fourth thing for a secret scanner to flag and a fourth place the CI
+      # password is spelled -- and the scanner cannot tell an ephemeral
+      # container's password from a real one. verify.sh already builds its DSNs
+      # from a password variable for the same reason.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -78,6 +85,10 @@ jobs:
           CREATE DATABASE chronicle_test OWNER chronicle;
           CREATE DATABASE asr_test OWNER asr;
           SQL
+
+      - name: Assemble the ASR test DSN
+        run: |
+          echo "ASR_TEST_DATABASE_URL=postgres://asr:${PGPW}@localhost:5432/asr_test?sslmode=disable" >> "$GITHUB_ENV"
 
       - name: gofmt
         run: |

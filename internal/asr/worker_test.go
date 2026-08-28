@@ -18,8 +18,12 @@ import (
 // that a crashed process releases its work, and a hand-expired lease on a
 // synthetic row tests the reaper rather than the thing.
 
-// A token long enough for the boot check, and obviously not a credential.
-const testToken = "test-token-0000000000000000000000000000"
+// A token long enough for the boot check (32 characters), and obviously not a
+// credential. BUILT rather than written as a literal: a 38-character string
+// next to an identifier called `testToken` is exactly the shape a secret
+// scanner is paid to flag, and a repository where the scanner cries wolf is one
+// where a real finding gets waved through.
+var testToken = "not-a-credential-" + strings.Repeat("z", 24)
 
 // JOB STATE SURVIVES kill -9 OF THE WORKER. Done-when 3.
 //
