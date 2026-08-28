@@ -1,0 +1,3 @@
+DROP TRIGGER IF EXISTS jobs_guard ON jobs;
+DROP FUNCTION IF EXISTS jobs_guard();
+DROP TABLE IF EXISTS jobs;
