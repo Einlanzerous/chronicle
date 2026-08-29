@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.2.0](https://github.com/Einlanzerous/chronicle/compare/v1.1.0...v1.2.0) (2026-08-29)
+
+
+### Features
+
+* **asr:** pinned whisper.cpp Vulkan image for the R9700 (CHRN-24) ([138af36](https://github.com/Einlanzerous/chronicle/commit/138af36348a6b96f93d200be23067e58a6a38fbb))
+* **asr:** pinned whisper.cpp Vulkan image for the R9700 (CHRN-24) ([a4df9bc](https://github.com/Einlanzerous/chronicle/commit/a4df9bcb3de1625e6e3935ae1cf43f5233d612f0))
+* **asr:** the index the round-robin claim reads (CHRN-26) ([c6e6010](https://github.com/Einlanzerous/chronicle/commit/c6e6010f76338b9c39b9364aaef66f85ce521e69))
+* **asr:** the job table, the lease, and the reaper (CHRN-25) ([44b77b2](https://github.com/Einlanzerous/chronicle/commit/44b77b20375242b71d4e18c6212c217768de238d))
+* **asr:** the resident worker and the single-flight GPU lease (CHRN-26) ([3a15894](https://github.com/Einlanzerous/chronicle/commit/3a15894b6669c6bcc16d23be25b90a47e92548ba))
+* **asr:** the resident worker, the device lock and the GPU semaphore (CHRN-26) ([99af3b3](https://github.com/Einlanzerous/chronicle/commit/99af3b3c7c9e1273ee88b529139adac3fa0d719d))
+* **asr:** the transcription job contract and its service (CHRN-25) ([59282e4](https://github.com/Einlanzerous/chronicle/commit/59282e4d1047aadfd7d938c1c9678a8f11070349))
+* **asr:** the transcription job contract, generated and guarded (CHRN-25) ([0ce22cc](https://github.com/Einlanzerous/chronicle/commit/0ce22cc2f13e53f645b1aaa17c14810831cc1885))
+* **transcribe:** a memo becomes a transcript, asynchronously (CHRN-27) ([6f25d48](https://github.com/Einlanzerous/chronicle/commit/6f25d48452038d176a6931fe612912eed977c381))
+* **transcribe:** a memo becomes a transcript, asynchronously (CHRN-27) — replayed onto main ([e371182](https://github.com/Einlanzerous/chronicle/commit/e37118296192954928b0e6b0b8ad137adfe879ed))
+
+
+### Bug Fixes
+
+* **asr:** an absent model is rechecked, not remembered as unloadable (CHRN-26) ([cc5c3a5](https://github.com/Einlanzerous/chronicle/commit/cc5c3a520dcc92e8472a0b98e52ed05255afadc9))
+* **asr:** the four nits from the reviewer's read of PR [#17](https://github.com/Einlanzerous/chronicle/issues/17) (CHRN-24) ([8a61132](https://github.com/Einlanzerous/chronicle/commit/8a61132b97b2348fe5f9fe6b51551e17f6ebbfe9))
+* **asr:** three findings from the review of cc5c3a5 (CHRN-26) ([138c5c9](https://github.com/Einlanzerous/chronicle/commit/138c5c980d1d7ac6298dc827ac626fb180f1bc12))
+* **asr:** three test defects the first CI run and five reruns found (CHRN-26) ([ff708ff](https://github.com/Einlanzerous/chronicle/commit/ff708ff20d9633b153d421b68c5b75544b26d2a3))
+* **ci:** stop writing credential-shaped strings the scanner has to judge (CHRN-25) ([26b26af](https://github.com/Einlanzerous/chronicle/commit/26b26af03b3789d89087bf685ed399c7c763bf26))
+* **transcribe:** four nits, two of which were comments promising more than the code did (CHRN-27) ([06584fb](https://github.com/Einlanzerous/chronicle/commit/06584fbfe0ffa130acbaa8f64cb796795f43a84e))
+* **transcribe:** make retranscribe actually retry, and three nits (CHRN-27) ([2d06ac7](https://github.com/Einlanzerous/chronicle/commit/2d06ac727c0765846cc4b88b36243826897a1cf4))
+
 ## [1.1.0](https://github.com/Einlanzerous/chronicle/compare/v1.0.0...v1.1.0) (2026-08-27)
 
 
