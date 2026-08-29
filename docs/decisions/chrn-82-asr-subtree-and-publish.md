@@ -1,8 +1,9 @@
 # CHRN-82 — Where `asrd` lives, and how its image publishes (decision)
 
-Status: **proposed 2026-08-29.** Three rulings at the end, each with a
-recommendation. The two PRs that follow this document are mechanical: the
-first is a rename, the second is a workflow.
+Status: **accepted 2026-08-29 by magos, at the recommendations on all three
+rulings.** The settlement is recorded under *The rulings*. The two PRs that
+follow this document are mechanical: the first is a rename, the second is a
+workflow.
 Ticket: CHRN-82 (Phase P2, standalone — E3 is closed and this is the half of
 it that was never anyone's). Tier `opus`, so Mode B: this document is the
 review artefact.
@@ -311,7 +312,11 @@ half.
   repository, and this document's layout is the repository it moves into.
 - **A second worker on a second device.** CHRN-80. It goes under `asr/`.
 
-## The rulings
+## The rulings, settled 2026-08-29
+
+All three at the recommendation, by magos, on the same day the document was
+written. Recorded here so the PRs that follow can cite a settled section
+rather than a proposal.
 
 **1 · Starting version.** *Recommendation: `asr-v0.1.0`*, and `1.0.0` is cut
 when the service has transcribed a memo unattended in production — E3's exit
