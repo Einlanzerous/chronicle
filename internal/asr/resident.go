@@ -65,6 +65,10 @@ type Resident struct {
 	MinDeadline    time.Duration
 	LoadDeadline   time.Duration
 
+	// DecodeDeadline bounds ffmpeg. Fixed rather than derived, because the
+	// duration it would be derived from is what the decode produces.
+	DecodeDeadline time.Duration
+
 	// StartTimeout bounds how long the supervisor waits for /health after
 	// spawning, and how long a claimed job waits for a child that is not up.
 	StartTimeout time.Duration
@@ -93,6 +97,11 @@ type Resident struct {
 	unloadable         map[string]string
 	inferenceStart     time.Time
 	lastContentionWarn time.Time
+
+	// stoppedBy is why WE stopped the child, read once by the supervisor when
+	// it wakes. Empty means it went on its own, which is the only case that
+	// should be priced as a fault.
+	stoppedBy string
 }
 
 // ResidentState is what /readyz reports about the device. A service whose GPU
@@ -187,18 +196,36 @@ func (r *Resident) Run(ctx context.Context) error {
 
 		model := r.startModel()
 		started := time.Now()
-		err := r.runOnce(ctx, model)
+		stopped, err := r.runOnce(ctx, model)
 		if ctx.Err() != nil {
 			return nil
 		}
-		if time.Since(started) >= healthyRun {
-			// It ran long enough to have been working. A later crash is a new
-			// fault, not a continuing one, so it does not inherit the backoff.
+		ran := time.Since(started).Round(time.Millisecond)
+
+		if stopped != "" {
+			// WE STOPPED IT, so this is not a fault and must not be priced as
+			// one. Cancelling a running job kills the child by design (§8), and
+			// against a growing backoff five cancellations inside a minute
+			// would leave the sixth restart sleeping sixteen seconds with an
+			// idle GPU and a full queue — a user action charged as a crash
+			// loop, logged at warn as a fault. Each of these cases is paced by
+			// the thing that caused it: a deadline takes at least its own
+			// length, a cancellation takes a person, the device lock takes a
+			// poll interval.
 			backoff = minBackoff
+			r.Logger.Info("the resident process was stopped and is being restarted",
+				"why", stopped, "model", model, "ran_for", ran.String())
+		} else {
+			if time.Since(started) >= healthyRun {
+				// It ran long enough to have been working. A later crash is a
+				// new fault, not a continuing one, so it does not inherit the
+				// backoff.
+				backoff = minBackoff
+			}
+			r.Logger.Warn("the resident process exited; restarting",
+				"model", model, "ran_for", ran.String(),
+				"backoff", backoff.String(), "error", errText(err))
 		}
-		r.Logger.Warn("the resident process exited; restarting",
-			"model", model, "ran_for", time.Since(started).Round(time.Millisecond).String(),
-			"backoff", backoff.String(), "error", errText(err))
 		if !sleep(ctx, backoff) {
 			return nil
 		}
@@ -228,14 +255,15 @@ func (r *Resident) startModel() string {
 // runOnce spawns the child, waits for it to be ready, and blocks until it exits
 // — or until the device lock is lost and the GPU is idle, at which point a
 // standby has no business holding a model.
-func (r *Resident) runOnce(ctx context.Context, model string) error {
+func (r *Resident) runOnce(ctx context.Context, model string) (string, error) {
+	r.stopReason() // forget any reason left over from the last child
 	path := modelPath(r.ModelDir, model)
 	if _, err := os.Stat(path); err != nil {
-		return fmt.Errorf("model %q is not at %s: %w", model, path, err)
+		return "", fmt.Errorf("model %q is not at %s: %w", model, path, err)
 	}
 	host, port, err := net.SplitHostPort(r.Addr)
 	if err != nil {
-		return fmt.Errorf("addr %q: %w", r.Addr, err)
+		return "", fmt.Errorf("addr %q: %w", r.Addr, err)
 	}
 
 	// THE DECODE PARAMETERS ARE PINNED, and this is the third unmatched knob
@@ -261,14 +289,14 @@ func (r *Resident) runOnce(ctx context.Context, model string) error {
 	out := &childOutput{logger: r.Logger}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return err
+		return "", err
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return err
+		return "", err
 	}
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start %s: %w", r.Bin, err)
+		return "", fmt.Errorf("start %s: %w", r.Bin, err)
 	}
 	r.Logger.Info("resident process started", "pid", cmd.Process.Pid, "model", model, "args", args)
 
@@ -294,9 +322,11 @@ func (r *Resident) runOnce(ctx context.Context, model string) error {
 	}()
 
 	if err := r.waitHealthy(ctx, waitCh); err != nil {
-		r.killProcess()
+		// Killed with NO reason recorded, deliberately: a child that never
+		// became healthy is a fault, and the caller should price it as one.
+		r.killProcess("")
 		<-waitCh
-		return err
+		return "", err
 	}
 
 	// Said at every start rather than once per process: a restart that lands
@@ -313,11 +343,13 @@ func (r *Resident) runOnce(ctx context.Context, model string) error {
 	for {
 		select {
 		case err := <-waitCh:
-			return err
+			// The reason is empty unless something in this process killed it,
+			// which is what tells a crash from a cancellation.
+			return r.stopReason(), err
 		case <-ctx.Done():
-			r.killProcess()
+			r.killProcess("asrd is shutting down")
 			<-waitCh
-			return nil
+			return r.stopReason(), nil
 		case <-gate.C:
 			if r.Gate != nil && !r.Gate() && r.idle() {
 				// Demoted: another process holds the device now. The
@@ -325,9 +357,9 @@ func (r *Resident) runOnce(ctx context.Context, model string) error {
 				// time-based and survives), but an idle standby holding 3 GB
 				// of VRAM is not a standby.
 				r.Logger.Warn("lost the device lock; stopping the resident process")
-				r.killProcess()
+				r.killProcess("the device lock was lost")
 				<-waitCh
-				return nil
+				return r.stopReason(), nil
 			}
 		}
 	}
@@ -396,11 +428,13 @@ func (r *Resident) Transcribe(ctx context.Context, req TranscribeRequest) (Trans
 
 	dir, err := os.MkdirTemp("", "asr-job-*")
 	if err != nil {
-		return Transcript{}, fmt.Errorf("asr: temp dir: %w", err)
+		// This service's disk, not the job's fault. See the ReleaseError on
+		// the staging write for why that distinction is load-bearing here.
+		return Transcript{}, &ReleaseError{Reason: "worker_io", Detail: err.Error()}
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 
-	wav, durationMs, err := decodeToWAV(ctx, r.FFmpegBin, dir, req.Audio, req.MediaType)
+	wav, durationMs, err := r.decode(ctx, dir, req)
 	if err != nil {
 		return Transcript{}, err
 	}
@@ -424,6 +458,44 @@ func (r *Resident) Transcribe(ctx context.Context, req TranscribeRequest) (Trans
 		}
 	}
 	return r.inference(ctx, wav, durationMs, req)
+}
+
+// decode turns the submitted audio into a WAV under a wall clock.
+//
+// THE DEADLINE IS §7'S ARGUMENT APPLIED TO THE THIRD BLOCKING CALL, and the
+// decision applied it to only two — /inference, then /load. ffmpeg had neither,
+// and an ffmpeg that does not exit reproduces exactly the state §7 was written
+// to prevent, one step earlier and more quietly: the renewal goroutine ticks,
+// the job lease never expires, the reaper never fires, and the single worker
+// goroutine is blocked so nothing else is claimed either — while the child is
+// up and holding its model, so /readyz still answers ready with a resident
+// model. Only queue_depth climbing would say anything at all, and nothing would
+// say why.
+//
+// The bound is fixed and deliberately enormous. The decode runs at roughly 390x
+// realtime in this image (154 ms for the 60 s clip, deploy/asr/README.md), so a
+// forty-minute memo — the longest recording this system is designed around —
+// takes about six seconds. Five minutes is fifty times that. It is not a
+// performance budget; it is the difference between a hang and forever.
+func (r *Resident) decode(ctx context.Context, dir string, req TranscribeRequest) (string, int64, error) {
+	deadline := r.DecodeDeadline
+	if deadline <= 0 {
+		deadline = DefaultDecodeDeadline
+	}
+	decodeCtx, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
+
+	wav, durationMs, err := decodeToWAV(decodeCtx, r.FFmpegBin, dir, req.Audio, req.MediaType)
+	if err != nil && ctx.Err() == nil && errors.Is(decodeCtx.Err(), context.DeadlineExceeded) {
+		r.Logger.Error("DECODE DEADLINE BREACHED: ffmpeg is wedged, not slow. "+
+			"Nothing downstream can see this — the resident process is healthy and idle",
+			"model", req.Model, "bytes", len(req.Audio), "deadline", deadline.String())
+		return "", 0, &ReleaseError{
+			Reason: "decode_deadline",
+			Detail: "ffmpeg did not finish within " + deadline.String(),
+		}
+	}
+	return wav, durationMs, err
 }
 
 // waitUp gives a claimed job a short grace for a child that is restarting,
@@ -517,7 +589,7 @@ func (r *Resident) ensureModel(ctx context.Context, model string) error {
 		// lease healthy, nothing moving. From outside, a load that hangs and a
 		// load that exits are the same fault, so they get the same answer.
 		r.markUnloadable(model, "the load did not return within "+loadDeadline.String())
-		r.killProcess()
+		r.killProcess("a model load wedged")
 		return &FailureError{Code: "model_load_timeout", Message: model + ": the resident process wedged loading it"}
 
 	case status == http.StatusBadRequest:
@@ -534,7 +606,7 @@ func (r *Resident) ensureModel(ctx context.Context, model string) error {
 		// the same answer as the stat, reached through a race.
 		r.Logger.Warn("the resident process could not find a model this service can see; restarting it",
 			"model", model, "path", path)
-		r.killProcess()
+		r.killProcess("the resident process could not find a model")
 		return &FailureError{Code: "model_not_installed", Message: model + " is not on the resident process's filesystem"}
 
 	default:
@@ -631,7 +703,7 @@ func (r *Resident) inference(ctx context.Context, wav string, durationMs int64, 
 		// it is the only thing that actually stops the work.
 		r.Logger.Info("stopping the resident process to abandon an inference",
 			"elapsed", elapsed.Round(time.Millisecond).String(), "cause", ctx.Err())
-		r.killProcess()
+		r.killProcess("a job was cancelled mid-inference")
 		return Transcript{}, ctx.Err()
 
 	case errors.Is(inferCtx.Err(), context.DeadlineExceeded):
@@ -640,7 +712,7 @@ func (r *Resident) inference(ctx context.Context, wav string, durationMs int64, 
 			"model", req.Model, "audio_ms", durationMs,
 			"expected", expected.Round(time.Millisecond).String(),
 			"deadline", deadline.Round(time.Millisecond).String())
-		r.killProcess()
+		r.killProcess("an inference deadline was breached")
 		return Transcript{}, &ReleaseError{
 			Reason: "inference_deadline",
 			Detail: fmt.Sprintf("no answer within %s for %d ms of audio", deadline, durationMs),
@@ -650,6 +722,12 @@ func (r *Resident) inference(ctx context.Context, wav string, durationMs int64, 
 		var fe *FailureError
 		if errors.As(err, &fe) {
 			return Transcript{}, fe
+		}
+		var re *ReleaseError
+		if errors.As(err, &re) {
+			// Already classified — reading our own decoded file failed, say —
+			// and its reason is more precise than the one below.
+			return Transcript{}, re
 		}
 		// A transport error to a child on loopback that this process
 		// supervises is the child dying, and never the audio's fault. Failing
@@ -671,12 +749,12 @@ func (r *Resident) infer(ctx context.Context, wav, language string) (Transcript,
 
 	f, err := os.Open(wav)
 	if err != nil {
-		return Transcript{}, fmt.Errorf("asr: open decoded wav: %w", err)
+		return Transcript{}, &ReleaseError{Reason: "worker_io", Detail: err.Error()}
 	}
 	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
-		return Transcript{}, fmt.Errorf("asr: stat decoded wav: %w", err)
+		return Transcript{}, &ReleaseError{Reason: "worker_io", Detail: err.Error()}
 	}
 
 	head, tail, contentType, err := multipartAround("file", "audio.wav", fields)
@@ -843,15 +921,26 @@ func (r *Resident) markUnloadable(model, why string) {
 // cases that reach here are a wedged child and a cancellation, and asking a
 // hung process to exit politely is asking the thing that is not responding to
 // respond.
-func (r *Resident) killProcess() {
+func (r *Resident) killProcess(why string) {
 	r.mu.Lock()
 	proc := r.proc
 	r.up = false
+	r.stoppedBy = why
 	r.mu.Unlock()
 	if proc == nil {
 		return
 	}
 	_ = proc.Kill()
+}
+
+// stopReason reports why the child stopped and forgets it. Empty means it
+// exited on its own.
+func (r *Resident) stopReason() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	why := r.stoppedBy
+	r.stoppedBy = ""
+	return why
 }
 
 func (r *Resident) idle() bool {

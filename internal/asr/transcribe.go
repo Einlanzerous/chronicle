@@ -143,7 +143,12 @@ func modelPath(dir, model string) string {
 func decodeToWAV(ctx context.Context, ffmpegBin, dir string, audio []byte, mediaType string) (string, int64, error) {
 	src := filepath.Join(dir, "in"+extensionFor(mediaType))
 	if err := os.WriteFile(src, audio, 0o600); err != nil {
-		return "", 0, fmt.Errorf("asr: stage audio: %w", err)
+		// A RELEASE, NOT A FAILURE. Staging the bytes is this service's own
+		// filesystem work — a full disk, a read-only mount — and none of it is
+		// anything the audio did. Failing here would drain the whole queue
+		// into `failed` in the time it takes to claim it, and `failed` is
+		// terminal: the memos would not come back when the disk did.
+		return "", 0, &ReleaseError{Reason: "worker_io", Detail: err.Error()}
 	}
 
 	wav := filepath.Join(dir, "in.wav")
@@ -164,7 +169,12 @@ func decodeToWAV(ctx context.Context, ffmpegBin, dir string, audio []byte, media
 
 	durationMs, err := wavDurationMs(wav)
 	if err != nil {
-		return "", 0, err
+		// ffmpeg exited 0 and what it wrote is unreadable, or unreadable BY
+		// US. That is this service's own output on this service's own disk, so
+		// it releases for the same reason the staging write above does. The
+		// audio's own faults are the branch above this one, where ffmpeg said
+		// so itself.
+		return "", 0, &ReleaseError{Reason: "worker_io", Detail: err.Error()}
 	}
 	return wav, durationMs, nil
 }

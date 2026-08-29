@@ -329,6 +329,13 @@ crashed one: a `whisper-server` that stops answering without exiting leaves
 every lease reporting healthy while nothing moves, forever. On breach the child
 is killed and the job released.
 
+**Each of the three blocking calls on the job path has a wall clock**, for the
+same reason: the inference above, a fixed 60 s on a model load, and a fixed
+5 minutes on the decode — the last of which is fifty times what a forty-minute
+memo takes. None of them is a performance budget. They are the difference
+between a hang and forever, and a wedged ffmpeg is the quietest of the three
+because the resident process stays up and healthy throughout it.
+
 **A dying child releases its job rather than failing it.** One crash must not
 permanently fail a memo that nothing was wrong with, so `attempts` goes up and
 the job returns to the queue — which is why CHRN-28's retry ceiling is

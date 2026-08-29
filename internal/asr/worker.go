@@ -80,8 +80,18 @@ func (w *Worker) Run(ctx context.Context) error {
 				}
 				w.Logger.Error("could not claim a job", "error", err)
 			default:
-				w.processOne(ctx, job)
-				continue // straight back for the next one; no sleep between jobs
+				if !w.processOne(ctx, job) {
+					continue // straight back for the next one; no sleep between jobs
+				}
+				// A RELEASED job pauses. It is going straight back into the
+				// queue and this worker is about to claim it again, so a fault
+				// that is not going away — a full disk, a child that will not
+				// start — would otherwise spin claim/release as fast as the
+				// database can answer. One idle interval is nothing against a
+				// real job and is the difference between a stalled queue and a
+				// hot loop against Postgres. CHRN-28's ceiling is what
+				// eventually stops such a job for good; this is what keeps the
+				// service civil until it exists.
 			}
 		}
 
@@ -116,7 +126,10 @@ func (w *Worker) resident() string {
 //     have FAILED the memo permanently on one child crash.
 //   - FAILED. The audio, or the model, was the problem. That is a real answer
 //     and the client gets a code.
-func (w *Worker) processOne(ctx context.Context, job Job) {
+//
+// It reports whether the job was RELEASED rather than finished, which is the
+// one outcome the caller paces itself against.
+func (w *Worker) processOne(ctx context.Context, job Job) (released bool) {
 	log := w.Logger.With("job", job.ID, "worker", w.ID, "model", job.Model)
 
 	audio, err := w.Store.Audio(ctx, job.ID, w.ID)
@@ -124,7 +137,7 @@ func (w *Worker) processOne(ctx context.Context, job Job) {
 		// The lease was lost between the claim and this read. Say nothing to
 		// the job: whoever holds it now is entitled to finish it.
 		log.Warn("claimed job has no audio to read; releasing", "error", err)
-		return
+		return false
 	}
 
 	// The renewal goroutine holds the lease open and watches for cancellation.
@@ -175,7 +188,7 @@ func (w *Worker) processOne(ctx context.Context, job Job) {
 		// job, and it moves it to `cancelled` — see Reap. Writing `failed`
 		// here would be a lie about why the job stopped.
 		log.Info("job cancelled while running; leaving it for the reaper")
-		return
+		return false
 	default:
 	}
 	if ctx.Err() != nil {
@@ -183,7 +196,7 @@ func (w *Worker) processOne(ctx context.Context, job Job) {
 		// let the lease expire and the job come back. A shutdown hook that
 		// tried to tidy up here would be the mechanism kill -9 does not run.
 		log.Info("shutting down mid-job; releasing the lease")
-		return
+		return false
 	}
 
 	// Deliberately context.WithoutCancel on every write below: the work is
@@ -196,7 +209,7 @@ func (w *Worker) processOne(ctx context.Context, job Job) {
 	var release *ReleaseError
 	if errors.As(transcribeErr, &release) {
 		w.release(writeCtx, job, release, time.Since(started), log)
-		return
+		return true
 	}
 
 	res := asrclient.Result{
@@ -239,6 +252,7 @@ func (w *Worker) processOne(ctx context.Context, job Job) {
 		// wasted; the job is not lost, which is the property that matters.
 		log.Warn("could not record the result; the lease was lost", "error", err)
 	}
+	return false
 }
 
 // release hands a job back because the WORKER failed, not the job.

@@ -409,3 +409,108 @@ func TestAnAbsentModelIsRecheckedRatherThanRemembered(t *testing.T) {
 		t.Fatalf("resident model %q after a switch to large-v3", got)
 	}
 }
+
+// A SERVICE-SIDE FAULT ON THE PRE-GPU PATH RELEASES, IT DOES NOT FAIL.
+//
+// The rule is stated on ReleaseError and it applies before the device is
+// reached, not only after: staging the audio, reading back what ffmpeg wrote,
+// making the temp directory at all. A full disk that failed these instead would
+// drain the whole queue into `failed` in the time it takes to claim it — and
+// `failed` is terminal, so nothing comes back when the disk does.
+func TestAServiceSideIOFaultReleasesRatherThanFailing(t *testing.T) {
+	f := newFakeRunner(t)
+	f.setMode(t, fakeOK)
+	r := f.resident(t, discardLogger())
+	startResident(t, r)
+
+	f.breakDecode(t)
+
+	_, err := r.Transcribe(context.Background(), testJob("small.en"))
+	var release *ReleaseError
+	if !errors.As(err, &release) {
+		t.Fatalf("got %v (%T); reading back our own output is not the memo's fault", err, err)
+	}
+	if release.Reason != "worker_io" {
+		t.Fatalf("reason %q, want worker_io", release.Reason)
+	}
+	// And nothing reached the device, which is the point of doing this before
+	// the semaphore.
+	if n := f.countEvents(t, "infer"); n != 0 {
+		t.Fatalf("%d inferences ran for a job that never decoded", n)
+	}
+}
+
+// A WEDGED DECODE IS KILLED, TOO. §7's argument is that a wall clock is the
+// only thing that tells a long job from a stuck one, and ffmpeg is the third
+// blocking call on the job path — the one the decision did not give a deadline.
+//
+// It is the quietest version of that failure: the resident process is up and
+// healthy the whole time, so /readyz answers ready with a model, and only
+// queue_depth climbing says anything at all.
+func TestAWedgedDecodeIsKilledAndTheJobReleased(t *testing.T) {
+	f := newFakeRunner(t)
+	f.setMode(t, fakeOK)
+	r := f.resident(t, discardLogger())
+	r.DecodeDeadline = 2 * time.Second
+	startResident(t, r)
+
+	f.hangDecode(t)
+
+	start := time.Now()
+	_, err := r.Transcribe(context.Background(), testJob("small.en"))
+	elapsed := time.Since(start)
+
+	var release *ReleaseError
+	if !errors.As(err, &release) {
+		t.Fatalf("got %v (%T); want a ReleaseError", err, err)
+	}
+	if release.Reason != "decode_deadline" {
+		t.Fatalf("reason %q, want decode_deadline", release.Reason)
+	}
+	if elapsed > 30*time.Second {
+		t.Fatalf("the decode was not bounded: %s", elapsed)
+	}
+	// The resident process never noticed, which is exactly why nothing else
+	// could have caught this.
+	if !r.State().Up {
+		t.Fatal("the resident process was restarted for a fault that was not its")
+	}
+}
+
+// A CANCELLATION IS NOT A CRASH, and the restart backoff must not price it as
+// one. Cancelling kills the child by design; against a growing backoff a
+// handful of cancellations would leave the next restart sleeping sixteen
+// seconds with an idle GPU and a full queue, logged at warn as a fault.
+func TestACancellationIsNotPricedAsACrash(t *testing.T) {
+	f := newFakeRunner(t)
+	f.setMode(t, fakeGate) // never released, so every job has to be cancelled
+	var log syncBuffer
+	r := f.resident(t, slog.New(slog.NewTextHandler(&log, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	startResident(t, r)
+
+	for i := 0; i < 3; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_, _ = r.Transcribe(ctx, testJob("small.en"))
+		}()
+		waitFor(t, "the inference to reach the device", 30*time.Second, func() bool {
+			return f.countEvents(t, "infer ") >= i+1
+		})
+		cancel()
+		<-done
+		waitFor(t, "the resident process to come back", 30*time.Second, func() bool {
+			return r.State().Up
+		})
+	}
+
+	out := log.String()
+	if strings.Contains(out, "the resident process exited; restarting") {
+		t.Fatalf("a cancellation was logged as an unexplained exit, and so charged to the "+
+			"backoff:\n%s", out)
+	}
+	if !strings.Contains(out, "a job was cancelled mid-inference") {
+		t.Fatalf("the restart does not say why it happened:\n%s", out)
+	}
+}

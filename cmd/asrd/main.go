@@ -140,6 +140,7 @@ func runServe(args []string) error {
 		DeadlineFactor: cfg.InferenceDeadlineFactor,
 		MinDeadline:    cfg.MinInferenceDeadline,
 		LoadDeadline:   asr.DefaultLoadDeadline,
+		DecodeDeadline: asr.DefaultDecodeDeadline,
 		StartTimeout:   2 * time.Minute,
 		Gate:           deviceLock.Held,
 	}

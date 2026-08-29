@@ -275,6 +275,25 @@ cp "`+wav+`" "$out"
 	return f
 }
 
+// breakDecode makes the fake ffmpeg produce something that is not a WAV, while
+// still exiting 0 — which is what a truncated write on a full disk looks like
+// from the outside, and is the only way to reach the header reader's error path
+// without a real filesystem fault.
+func (f *fakeRunner) breakDecode(t *testing.T) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(f.Dir, "decoded.wav"), []byte("not a RIFF file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// hangDecode makes the fake ffmpeg never return. §7's case, one step earlier
+// than the resident process and much quieter: the child is up and holding its
+// model the whole time.
+func (f *fakeRunner) hangDecode(t *testing.T) {
+	t.Helper()
+	write(t, f.FFmpeg, "#!/bin/sh\nwhile true; do sleep 1; done\n")
+}
+
 // setMode changes what the fake resident does next. Read per request, so it
 // takes effect on the next one rather than the next process.
 func (f *fakeRunner) setMode(t *testing.T, mode string) {

@@ -637,6 +637,23 @@ the per-job inference wall-clock it requires **is the same number ruling 2 wants
 for contention detection**, so the two findings cost one measurement between
 them.
 
+**[impl] The rule wanted a third application, and the review of the code found
+it.** This section bounded `/inference`, and [rev 3] bounded `/load`. **The
+decode had neither.** An ffmpeg that does not exit reproduces this section's own
+failure one step earlier and more quietly than either: the renewal goroutine
+ticks, the job lease never expires, the reaper never fires, and the one worker
+goroutine is blocked so nothing else is claimed — while the resident process is
+up and holding its model, so `/readyz` answers **ready, with a model**. Only
+`queue_depth` climbing says anything at all, and nothing says why.
+
+So the decode gets a wall clock too: **a fixed 5 minutes**, not derived, because
+the duration it would be derived from is the thing the decode produces. The
+decode runs at roughly 390x realtime in this image (154 ms for the 60 s clip),
+so a forty-minute memo takes about six seconds and this is fifty times that. It
+is not a performance budget. A breach releases the job with reason
+`decode_deadline`, which is a fourth thing **CHRN-28** can price separately —
+and it should, because unlike the other three it costs no GPU at all.
+
 **[rev 2] `expected_rate(model)` is the WORKER's rate, not the table's.**
 CHRN-24's numbers describe the R9700. A worker on another device (§3 [rev 2])
 has its own, and a deadline computed from somebody else's GPU is either a false

@@ -68,6 +68,13 @@ const (
 	// hung child one step earlier, with every lease reporting healthy.
 	DefaultLoadDeadline = 60 * time.Second
 
+	// DefaultDecodeDeadline bounds ffmpeg, which is the third blocking call on
+	// the job path and the one the decision did not give a wall clock. The
+	// decode runs at roughly 390x realtime in this image, so a forty-minute
+	// memo takes about six seconds; this is fifty times that. Not a
+	// performance budget — the difference between a hang and forever.
+	DefaultDecodeDeadline = 5 * time.Minute
+
 	// UnknownModelRate is the realtime multiple assumed for a model this
 	// worker has no measurement for: the SLOWEST CHRN-24 measured, so an
 	// unknown model errs wide rather than killing a healthy job.
