@@ -11,6 +11,9 @@ Three things live here, and it is worth keeping them apart:
   in this container* is about that, and about why each pin is load-bearing.
 - **The service (CHRN-25)** — `asrd`, the job contract over it: submit, poll,
   fetch, cancel, with a job table and a lease. See **The service** below.
+  **Writing a client? Read `CLIENT.md`**, which is the same service from the
+  outside: the numbers, what the queue does when two clients are busy, and the
+  three things that surprise people.
 - **The resident worker (CHRN-26)** — one `whisper-server` process holding the
   model, a single-flight GPU lease, and round-robin fairness between clients.
   See **The resident worker** below.
