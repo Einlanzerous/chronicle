@@ -9,7 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/Einlanzerous/chronicle/internal/asrclient"
+	"github.com/Einlanzerous/chronicle/asr/internal/wire"
 )
 
 // A replayed key returns the ORIGINAL job. Done-when 4, first half.
@@ -219,9 +219,9 @@ func TestEmptyTranscriptIsSucceededAndNotPartial(t *testing.T) {
 	if _, err := s.Start(ctx, claimed.ID, "worker-1", testLease); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Finish(ctx, job.ID, "worker-1", asrclient.Result{
-		JobId: job.ID, Status: asrclient.ResultStatusSucceeded, Partial: false,
-		Text: "", Segments: []asrclient.Segment{}, Model: "whisper.cpp/small.en", Backend: "test-backend",
+	if _, err := s.Finish(ctx, job.ID, "worker-1", wire.Result{
+		JobId: job.ID, Status: wire.ResultStatusSucceeded, Partial: false,
+		Text: "", Segments: []wire.Segment{}, Model: "whisper.cpp/small.en", Backend: "test-backend",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +315,7 @@ func TestCancellingIsDerivedNotStored(t *testing.T) {
 	if after.Status != StatusRunning {
 		t.Fatalf("stored status is %q; cancellation must not be a stored state", after.Status)
 	}
-	if after.WireStatus() != asrclient.JobStatusCancelling {
+	if after.WireStatus() != wire.JobStatusCancelling {
 		t.Fatalf("wire status is %q, want cancelling", after.WireStatus())
 	}
 
@@ -404,9 +404,9 @@ func runToSuccess(t *testing.T, s *Store, key, seed string) Job {
 	if _, err := s.Start(ctx, job.ID, "worker-1", testLease); err != nil {
 		t.Fatal(err)
 	}
-	done, err := s.Finish(ctx, job.ID, "worker-1", asrclient.Result{
-		JobId: job.ID, Status: asrclient.ResultStatusSucceeded, Partial: false,
-		Text: "hello there", Segments: []asrclient.Segment{{StartMs: 0, EndMs: 1500, Text: "hello there"}},
+	done, err := s.Finish(ctx, job.ID, "worker-1", wire.Result{
+		JobId: job.ID, Status: wire.ResultStatusSucceeded, Partial: false,
+		Text: "hello there", Segments: []wire.Segment{{StartMs: 0, EndMs: 1500, Text: "hello there"}},
 		Model: "whisper.cpp/small.en", Backend: "test-backend",
 	})
 	if err != nil {

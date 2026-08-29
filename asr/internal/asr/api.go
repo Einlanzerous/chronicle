@@ -17,13 +17,15 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/Einlanzerous/chronicle/internal/asrclient"
+	"github.com/Einlanzerous/chronicle/asr/internal/wire"
 )
 
-// The HTTP surface. deploy/asr/openapi.yaml is the contract and this
-// implements it; the types on the wire are the GENERATED ones from
-// internal/asrclient, so a spec change the handlers have not caught up with is
-// a compile error rather than a field that quietly stops being sent.
+// The HTTP surface. asr/openapi.yaml is the contract and this implements it;
+// the types on the wire are the GENERATED ones in asr/internal/wire, so a spec
+// change the handlers have not caught up with is a compile error rather than a
+// field that quietly stops being sent. Chronicle's client generates its own
+// copy from the same file (internal/asrclient); the service does not import it,
+// because nothing under asr/ imports anything outside it (CHRN-82 §2).
 
 // clientIDKey carries the authenticated client through the request context.
 type clientIDKey struct{}
@@ -92,7 +94,7 @@ func NewRouter(d Deps) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		body := asrclient.Health{Status: "ok"}
+		body := wire.Health{Status: "ok"}
 		if d.Version != "" {
 			body.Version = &d.Version
 		}
@@ -109,10 +111,10 @@ func NewRouter(d Deps) http.Handler {
 			a.logger.WarnContext(ctx, "readiness probe failed", "check", "database", "error", err)
 			check := "database"
 			writeJSON(w, http.StatusServiceUnavailable,
-				asrclient.Readiness{Status: asrclient.Unready, Check: &check})
+				wire.Readiness{Status: wire.Unready, Check: &check})
 			return
 		}
-		body := asrclient.Readiness{Status: asrclient.Ready}
+		body := wire.Readiness{Status: wire.Ready}
 		if depth, err := a.store.QueueDepth(ctx); err == nil {
 			body.QueueDepth = &depth
 		}
@@ -139,7 +141,7 @@ func NewRouter(d Deps) http.Handler {
 			}
 			if check != "" {
 				a.logger.WarnContext(ctx, "readiness probe failed", "check", check)
-				body.Status = asrclient.Unready
+				body.Status = wire.Unready
 				body.Check = &check
 				writeJSON(w, http.StatusServiceUnavailable, body)
 				return
@@ -197,7 +199,7 @@ func (a *api) handleModels(w http.ResponseWriter, r *http.Request) {
 	if models == nil {
 		models = []string{}
 	}
-	writeJSON(w, http.StatusOK, asrclient.Capabilities{
+	writeJSON(w, http.StatusOK, wire.Capabilities{
 		DefaultModel:       a.defaultModel,
 		Models:             models,
 		AcceptedMediaTypes: AcceptedMediaTypes,
@@ -333,8 +335,8 @@ func (a *api) handleCancel(w http.ResponseWriter, r *http.Request) {
 
 // wireJob renders a job for a client, including the derived `cancelling`
 // status and the server-set poll pressure.
-func (a *api) wireJob(j Job) asrclient.Job {
-	out := asrclient.Job{
+func (a *api) wireJob(j Job) wire.Job {
+	out := wire.Job{
 		Id:        j.ID,
 		Status:    j.WireStatus(),
 		Model:     j.Model,
@@ -401,7 +403,7 @@ var errUnsupportedMedia = errors.New("asr: unsupported audio media type")
 // The parts may arrive in either order. The spec documents `spec` first, and a
 // contract that only works when a client happens to order its fields the way
 // the example did is a contract with an undocumented rule in it.
-func readSubmission(r *http.Request) (spec asrclient.JobSpec, audio []byte, mediaType string, err error) {
+func readSubmission(r *http.Request) (spec wire.JobSpec, audio []byte, mediaType string, err error) {
 	mr, err := r.MultipartReader()
 	if err != nil {
 		return spec, nil, "", fmt.Errorf("expected multipart/form-data with a spec part and an audio part: %w", err)
@@ -488,7 +490,7 @@ func writeJSON(w http.ResponseWriter, code int, body any) {
 }
 
 func writeError(w http.ResponseWriter, code int, kind, message string) {
-	writeJSON(w, code, asrclient.Error{Code: kind, Message: message})
+	writeJSON(w, code, wire.Error{Code: kind, Message: message})
 }
 
 // statusRecorder captures the status code for the access log.

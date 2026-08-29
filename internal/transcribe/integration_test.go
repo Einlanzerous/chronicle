@@ -6,14 +6,13 @@ import (
 	"encoding/hex"
 	"io"
 	"log/slog"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/Einlanzerous/chronicle/internal/asr"
+	"github.com/Einlanzerous/chronicle/asr/asrtest"
 	"github.com/Einlanzerous/chronicle/internal/asrclient"
 	"github.com/Einlanzerous/chronicle/internal/audio"
 	"github.com/Einlanzerous/chronicle/internal/store"
@@ -24,40 +23,41 @@ import (
 //
 // This is what a generated client is supposed to buy and what nothing else in
 // either package tests: transcribe_test.go asserts the pump's branches against
-// a hand-written fake, and internal/asr asserts the service against its own
-// expectations, and BOTH could be self-consistently wrong about the contract
-// between them. Here the service is internal/asr.NewRouter, the client is the
-// generated one, and the only thing standing between them is
-// deploy/asr/openapi.yaml.
+// a hand-written fake, and asr/internal/asr asserts the service against its
+// own expectations, and BOTH could be self-consistently wrong about the
+// contract between them. Here the service is the real router and worker, run
+// through asr/asrtest — the one exported doorway into the subtree — the client
+// is the generated one, and the only thing standing between them is
+// asr/openapi.yaml.
 //
 // It needs both databases, because the two services have two — which is
 // itself the arrangement under test.
 
 // stubTranscriber stands in for the GPU. It is a Go type rather than a fake
 // binary because what is being tested here is the CONTRACT, not the runner;
-// internal/asr's own tests exercise ffmpeg and a real child process through the
+// asr/internal/asr's own tests exercise ffmpeg and a real child process through the
 // real Resident.
 type stubTranscriber struct{ text string }
 
 func (s stubTranscriber) Models() []string { return []string{"small.en"} }
 
-func (s stubTranscriber) Transcribe(ctx context.Context, req asr.TranscribeRequest) (asr.Transcript, error) {
+func (s stubTranscriber) Transcribe(ctx context.Context, req asrtest.TranscribeRequest) (asrtest.Transcript, error) {
 	const durationMs = 60000
 	// The worker moves the job leased -> running here, which is the edge
 	// CHRN-26 made visible: `leased` while it decodes and waits for the
 	// device, `running` only once inference has actually started.
 	if req.OnInference != nil {
 		if err := req.OnInference(durationMs); err != nil {
-			return asr.Transcript{}, err
+			return asrtest.Transcript{}, err
 		}
 	}
-	segs := []asrclient.Segment{}
+	segs := []asrtest.Segment{}
 	covered := int64(0)
 	if s.text != "" {
-		segs = append(segs, asrclient.Segment{StartMs: 0, EndMs: 1800, Text: s.text})
+		segs = append(segs, asrtest.Segment{StartMs: 0, EndMs: 1800, Text: s.text})
 		covered = 1800
 	}
-	return asr.Transcript{
+	return asrtest.Transcript{
 		Text: s.text, Segments: segs,
 		AudioDurationMs: durationMs, CoveredMs: covered,
 	}, nil
@@ -75,38 +75,12 @@ func TestChronicleTranscribesThroughTheRealService(t *testing.T) {
 	quiet := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	// --- the ASR service, for real -----------------------------------------
-	asrPool, err := asr.Connect(ctx, asrDSN)
-	if err != nil {
-		t.Fatalf("asr connect: %v", err)
-	}
-	defer asrPool.Close()
-	if err := asr.Migrate(ctx, asrPool); err != nil {
-		t.Fatalf("asr migrate: %v", err)
-	}
-	if _, err := asrPool.Exec(ctx, `TRUNCATE jobs`); err != nil {
-		t.Fatalf("asr truncate: %v", err)
-	}
-	asrStore := asr.New(asrPool, "vulkan", time.Hour)
-
 	const token = "integration-token-aaaaaaaaaaaaaaaaaa"
 	stub := stubTranscriber{text: "the whole thought, spoken once"}
-	srv := httptest.NewServer(asr.NewRouter(asr.Deps{
-		Store:         asrStore,
-		Transcriber:   stub,
-		Logger:        quiet,
-		Tokens:        map[string]string{token: "chronicle"},
-		DefaultModel:  "small.en",
-		MaxAudioBytes: 1 << 20,
-	}))
-	defer srv.Close()
-
-	worker := &asr.Worker{
-		Store: asrStore, Transcriber: stub, Logger: quiet,
-		ID: "integration", LeaseTTL: 30 * time.Second, Idle: 50 * time.Millisecond,
-	}
-	workerCtx, stopWorker := context.WithCancel(ctx)
-	defer stopWorker()
-	go func() { _ = worker.Run(workerCtx) }()
+	svc := asrtest.Start(t, ctx, asrtest.Options{
+		DSN: asrDSN, Transcriber: stub, Logger: quiet,
+		Tokens: map[string]string{token: "chronicle"},
+	})
 
 	// --- Chronicle ---------------------------------------------------------
 	chrPool, err := store.Connect(ctx, chronicleDSN)
@@ -152,7 +126,7 @@ func TestChronicleTranscribesThroughTheRealService(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	client, err := asrclient.NewClientWithResponses(srv.URL,
+	client, err := asrclient.NewClientWithResponses(svc.URL,
 		asrclient.WithRequestEditorFn(transcribe.BearerAuth(token)))
 	if err != nil {
 		t.Fatal(err)
@@ -218,7 +192,7 @@ func TestChronicleTranscribesThroughTheRealService(t *testing.T) {
 	// is why the test carries it here rather than in a store unit test.
 	//
 	// The floor reads `whisper.cpp/small.en`, and the `whisper.cpp/` half is a
-	// string built by the ASR WORKER (internal/asr, another binary's code) and
+	// string built by the ASR WORKER (asr/internal/asr, another binary's code) and
 	// carried across the HTTP contract. A literal fixture in a store test
 	// cannot prove the two agree: if asrd ever renamed the runner, the pruner
 	// would silently stop firing and every hand-written `whisper.cpp/small.en`
@@ -240,7 +214,7 @@ func TestChronicleTranscribesThroughTheRealService(t *testing.T) {
 	// may become the only copy of anything, and a terminal job holding bytes
 	// is the first step towards it.
 	var held []byte
-	if err := asrPool.QueryRow(ctx,
+	if err := svc.Pool.QueryRow(ctx,
 		`SELECT audio FROM jobs WHERE audio IS NOT NULL`).Scan(&held); err == nil {
 		t.Fatal("the ASR service is still holding submitted audio for a finished job")
 	}
@@ -260,35 +234,12 @@ func TestSilenceSurvivesTheWireFormat(t *testing.T) {
 	defer cancel()
 	quiet := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
 
-	asrPool, err := asr.Connect(ctx, asrDSN)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer asrPool.Close()
-	if err := asr.Migrate(ctx, asrPool); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := asrPool.Exec(ctx, `TRUNCATE jobs`); err != nil {
-		t.Fatal(err)
-	}
-	asrStore := asr.New(asrPool, "vulkan", time.Hour)
-
 	const token = "integration-token-bbbbbbbbbbbbbbbbbb"
 	stub := stubTranscriber{text: ""} // forty seconds of traffic noise
-	srv := httptest.NewServer(asr.NewRouter(asr.Deps{
-		Store: asrStore, Transcriber: stub, Logger: quiet,
-		Tokens: map[string]string{token: "chronicle"}, DefaultModel: "small.en",
-		MaxAudioBytes: 1 << 20,
-	}))
-	defer srv.Close()
-
-	worker := &asr.Worker{
-		Store: asrStore, Transcriber: stub, Logger: quiet,
-		ID: "integration", LeaseTTL: 30 * time.Second, Idle: 50 * time.Millisecond,
-	}
-	workerCtx, stopWorker := context.WithCancel(ctx)
-	defer stopWorker()
-	go func() { _ = worker.Run(workerCtx) }()
+	svc := asrtest.Start(t, ctx, asrtest.Options{
+		DSN: asrDSN, Transcriber: stub, Logger: quiet,
+		Tokens: map[string]string{token: "chronicle"},
+	})
 
 	chrPool, err := store.Connect(ctx, chronicleDSN)
 	if err != nil {
@@ -329,7 +280,7 @@ func TestSilenceSurvivesTheWireFormat(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	client, err := asrclient.NewClientWithResponses(srv.URL,
+	client, err := asrclient.NewClientWithResponses(svc.URL,
 		asrclient.WithRequestEditorFn(transcribe.BearerAuth(token)))
 	if err != nil {
 		t.Fatal(err)

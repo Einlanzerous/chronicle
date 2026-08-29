@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Einlanzerous/chronicle/internal/asrclient"
+	"github.com/Einlanzerous/chronicle/asr/internal/wire"
 )
 
 // Resident is the worker CHRN-26 is about: one `whisper-server` process holding
@@ -473,7 +473,7 @@ func (r *Resident) Transcribe(ctx context.Context, req TranscribeRequest) (Trans
 // say why.
 //
 // The bound is fixed and deliberately enormous. The decode runs at roughly 390x
-// realtime in this image (154 ms for the 60 s clip, deploy/asr/README.md), so a
+// realtime in this image (154 ms for the 60 s clip, asr/README.md), so a
 // forty-minute memo — the longest recording this system is designed around —
 // takes about six seconds. Five minutes is fifty times that. It is not a
 // performance budget; it is the difference between a hang and forever.
@@ -823,10 +823,10 @@ func parseVerboseJSON(raw []byte) (Transcript, error) {
 	// Segments and Text are always non-nil, even for a recording with no
 	// speech in it. EMPTY IS A VALID RESULT — a memo that is forty seconds of
 	// silence has a true and complete answer, and the answer is "no speech".
-	tr := Transcript{Segments: []asrclient.Segment{}}
+	tr := Transcript{Segments: []wire.Segment{}}
 	var text strings.Builder
 	for _, seg := range out.Segments {
-		s := asrclient.Segment{Text: strings.TrimSpace(seg.Text)}
+		s := wire.Segment{Text: strings.TrimSpace(seg.Text)}
 		if seg.Start != nil {
 			s.StartMs = int64(math.Round(*seg.Start * 1000))
 		}

@@ -1,0 +1,18 @@
+# oapi-codegen configuration for the SERVICE's wire types. Run through
+# scripts/gen-asrclient.sh, never by hand — the flags are the artefact.
+#
+# Models only, no client: this is the service's own copy of the shapes in
+# asr/openapi.yaml, so that a spec change the handlers have not caught up with
+# is a compile error rather than a field that quietly stops being sent. It used
+# to import internal/asrclient for the same types; CHRN-82 §2 moved the copy to
+# this side of the subtree boundary, generated from the same file by the same
+# pinned generator under the same staleness guard, so that nothing under asr/
+# imports anything outside it. Chronicle's client is internal/asrclient and is
+# generated alongside.
+package: wire
+generate:
+  models: true
+
+# No `output:` here on purpose, for the reason internal/asrclient's config
+# gives: the staleness check regenerates to a TEMPORARY FILE and compares, and
+# an `output:` in this file silently wins over -o.

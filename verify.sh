@@ -50,28 +50,63 @@ gofmt_check() {
   [ -z "$out" ] || { echo "unformatted:"; echo "$out"; return 1; }
 }
 
-# internal/asrclient is GENERATED from deploy/asr/openapi.yaml. A generated
-# artefact with no guard is a generated artefact somebody hand-edits -- the
-# same sentence CLAUDE.md applies to the schema, and the same remedy.
+# internal/asrclient AND asr/internal/wire are GENERATED from asr/openapi.yaml.
+# A generated artefact with no guard is a generated artefact somebody hand-edits
+# -- the same sentence CLAUDE.md applies to the schema, and the same remedy.
 #
-# Regenerated to a TEMPORARY FILE and byte-compared, so a check never rewrites
+# Regenerated to TEMPORARY FILES and byte-compared, so a check never rewrites
 # the thing it is checking. The generator is pinned by the `tool` directive in
 # go.mod; an unpinned one would make this a coin flip.
 #
 # This is the half of CHRN-25's first Done-when that does not need hardware,
 # which is why it belongs here and not only in CI. The contract has two clients
 # in two languages, and the failure it prevents is the second one being
-# generated against a spec the first has already drifted from.
+# generated against a spec the first has already drifted from. The wire copy
+# is CHRN-82's: the service holds its own types so the subtree imports nothing
+# outside itself, and the guard is what keeps two copies one definition.
 asrclient_check() {
-  local tmp
-  tmp="$(mktemp -t asrclient.XXXXXX.go)"
+  local ctmp wtmp rc=0
+  ctmp="$(mktemp -t asrclient.XXXXXX.go)"
+  wtmp="$(mktemp -t asrwire.XXXXXX.go)"
   # shellcheck disable=SC2064
-  trap "rm -f '$tmp'" RETURN
-  GEN_ASRCLIENT_OUT="$tmp" scripts/gen-asrclient.sh >/dev/null || return 1
-  if ! diff -q "$tmp" internal/asrclient/client.gen.go >/dev/null; then
-    echo "internal/asrclient/client.gen.go does not match deploy/asr/openapi.yaml."
-    echo "Run scripts/gen-asrclient.sh and commit the result."
-    diff -u internal/asrclient/client.gen.go "$tmp" | head -40
+  trap "rm -f '$ctmp' '$wtmp'" RETURN
+  GEN_ASRCLIENT_OUT="$ctmp" GEN_ASRWIRE_OUT="$wtmp" scripts/gen-asrclient.sh >/dev/null || return 1
+  if ! diff -q "$ctmp" internal/asrclient/client.gen.go >/dev/null; then
+    echo "internal/asrclient/client.gen.go does not match asr/openapi.yaml."
+    diff -u internal/asrclient/client.gen.go "$ctmp" | head -40
+    rc=1
+  fi
+  if ! diff -q "$wtmp" asr/internal/wire/wire.gen.go >/dev/null; then
+    echo "asr/internal/wire/wire.gen.go does not match asr/openapi.yaml."
+    diff -u asr/internal/wire/wire.gen.go "$wtmp" | head -40
+    rc=1
+  fi
+  [ "$rc" -eq 0 ] || echo "Run scripts/gen-asrclient.sh and commit the result."
+  return "$rc"
+}
+
+# asr/ is a SUBTREE with a sealed boundary (docs/decisions/chrn-82-asr-subtree-
+# and-publish.md, section 2): nothing under it imports anything else in this
+# module, so that `git filter-repo --subdirectory-filter asr` yields a
+# repository that builds. asr/Dockerfile enforces the outward half for free by
+# copying only go.mod, go.sum and asr/ into the asrd stage; this is the same
+# check without Docker, tests included, plus the inward half -- the only package
+# outside the subtree may import from it is asr/asrtest, the harness Chronicle's
+# integration test runs the service through. A boundary with no guard is a
+# directory.
+asr_boundary_check() {
+  local mod out
+  mod="$(go list -m)"
+  out="$(go list -deps -test ./asr/... | grep "^$mod/" | grep -v "^$mod/asr/" || true)"
+  if [ -n "$out" ]; then
+    echo "asr/ imports outside the subtree:"
+    echo "$out"
+    return 1
+  fi
+  out="$(grep -rn --include='*.go' --exclude-dir=asr "\"$mod/asr/" . | grep -v "\"$mod/asr/asrtest\"" || true)"
+  if [ -n "$out" ]; then
+    echo "something outside asr/ imports the subtree through a door other than asr/asrtest:"
+    echo "$out"
     return 1
   fi
 }
@@ -80,6 +115,7 @@ step "gofmt"        gofmt_check
 step "go vet"       go vet ./...
 step "build"        go build ./...
 step "asr client"   asrclient_check
+step "asr boundary" asr_boundary_check
 # -p 1: ONE TEST BINARY AT A TIME.
 #
 # `go test ./...` runs packages in parallel by default, and more than one

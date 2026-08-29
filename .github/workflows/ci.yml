@@ -101,23 +101,52 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      # internal/asrclient is generated from deploy/asr/openapi.yaml by a
-      # generator pinned through go.mod's `tool` directive. Regenerated to a
-      # temp file and byte-compared, so the check never rewrites what it is
-      # checking. Same guard as the schema job below, for the same reason: a
-      # generated artefact with no guard is one somebody hand-edits -- and this
-      # one has a second client, in another language, generating from the same
-      # file.
+      # internal/asrclient and asr/internal/wire are generated from
+      # asr/openapi.yaml by a generator pinned through go.mod's `tool`
+      # directive. Regenerated to temp files and byte-compared, so the check
+      # never rewrites what it is checking. Same guard as the schema job below,
+      # for the same reason: a generated artefact with no guard is one somebody
+      # hand-edits -- and this one has a second client, in another language,
+      # generating from the same file. Two Go copies (CHRN-82: the service's
+      # types live inside the subtree) is what makes this guard load-bearing
+      # rather than tidy -- it is the only thing keeping them one definition.
       - name: ASR client staleness guard
         run: |
-          tmp="$(mktemp -t asrclient.XXXXXX.go)"
-          GEN_ASRCLIENT_OUT="$tmp" scripts/gen-asrclient.sh
-          if ! diff -u internal/asrclient/client.gen.go "$tmp"; then
-            echo "::error file=internal/asrclient/client.gen.go::the generated client does not match deploy/asr/openapi.yaml."
+          ctmp="$(mktemp -t asrclient.XXXXXX.go)"
+          wtmp="$(mktemp -t asrwire.XXXXXX.go)"
+          GEN_ASRCLIENT_OUT="$ctmp" GEN_ASRWIRE_OUT="$wtmp" scripts/gen-asrclient.sh
+          rc=0
+          if ! diff -u internal/asrclient/client.gen.go "$ctmp"; then
+            echo "::error file=internal/asrclient/client.gen.go::the generated client does not match asr/openapi.yaml."
+            rc=1
+          fi
+          if ! diff -u asr/internal/wire/wire.gen.go "$wtmp"; then
+            echo "::error file=asr/internal/wire/wire.gen.go::the generated wire types do not match asr/openapi.yaml."
+            rc=1
+          fi
+          if [ "$rc" -ne 0 ]; then
             echo "Run scripts/gen-asrclient.sh and commit the result."
             exit 1
           fi
-          echo "internal/asrclient matches the contract."
+          echo "internal/asrclient and asr/internal/wire match the contract."
+
+      # asr/ is a subtree with a sealed boundary (CHRN-82 section 2): nothing
+      # under it imports anything else in this module, and nothing outside it
+      # imports it except through asr/asrtest. asr/Dockerfile enforces the
+      # outward half by construction; this is the same check without Docker,
+      # tests included, plus the inward half. Mirrors verify.sh's step.
+      - name: ASR subtree boundary
+        run: |
+          mod="$(go list -m)"
+          out="$(go list -deps -test ./asr/... | grep "^$mod/" | grep -v "^$mod/asr/" || true)"
+          if [ -n "$out" ]; then
+            echo "::error::asr/ imports outside the subtree:"; echo "$out"; exit 1
+          fi
+          out="$(grep -rn --include='*.go' --exclude-dir=asr "\"$mod/asr/" . | grep -v "\"$mod/asr/asrtest\"" || true)"
+          if [ -n "$out" ]; then
+            echo "::error::something outside asr/ imports the subtree through a door other than asr/asrtest:"; echo "$out"; exit 1
+          fi
+          echo "asr/ boundary holds in both directions."
 
       # -p 1 for the reason verify.sh gives at length: more than one package
       # resets the shared test database, and overlapped they drop tables out

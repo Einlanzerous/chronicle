@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/Einlanzerous/chronicle/internal/asrclient"
+	"github.com/Einlanzerous/chronicle/asr/internal/wire"
 )
 
 // The five STORED statuses. `cancelling` is not here because it is not stored:
@@ -72,11 +72,11 @@ func (j Job) Terminal() bool {
 // from: a running job whose cancellation has been requested. The derivation
 // lives in one function so the two codebases that consume this enum cannot
 // disagree about when it applies.
-func (j Job) WireStatus() asrclient.JobStatus {
+func (j Job) WireStatus() wire.JobStatus {
 	if j.Status == StatusRunning && j.CancelRequestedAt != nil {
-		return asrclient.JobStatusCancelling
+		return wire.JobStatusCancelling
 	}
-	return asrclient.JobStatus(j.Status)
+	return wire.JobStatus(j.Status)
 }
 
 // jobColumns is the projection every scanJob call expects, in order. One
@@ -220,7 +220,7 @@ func (s *Store) QueueDepth(ctx context.Context) (int64, error) {
 // its own status: not this client's job (404), not finished yet (409), and
 // finished but purged (410). Collapsing the last two would tell a client that
 // waited too long that its transcription failed.
-func (s *Store) Result(ctx context.Context, clientID string, id uuid.UUID) (asrclient.Result, error) {
+func (s *Store) Result(ctx context.Context, clientID string, id uuid.UUID) (wire.Result, error) {
 	var raw []byte
 	var status string
 	var purgeAt *time.Time
@@ -228,20 +228,20 @@ func (s *Store) Result(ctx context.Context, clientID string, id uuid.UUID) (asrc
 		`SELECT result, status, result_purge_at FROM jobs WHERE id = $1 AND client_id = $2`,
 		id, clientID).Scan(&raw, &status, &purgeAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return asrclient.Result{}, ErrNotFound
+		return wire.Result{}, ErrNotFound
 	}
 	if err != nil {
-		return asrclient.Result{}, err
+		return wire.Result{}, err
 	}
 	if !(Job{Status: status}).Terminal() {
-		return asrclient.Result{}, ErrNotTerminal
+		return wire.Result{}, ErrNotTerminal
 	}
 	if raw == nil {
-		return asrclient.Result{}, ErrResultPurged
+		return wire.Result{}, ErrResultPurged
 	}
-	var out asrclient.Result
+	var out wire.Result
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return asrclient.Result{}, fmt.Errorf("asr: decode stored result: %w", err)
+		return wire.Result{}, fmt.Errorf("asr: decode stored result: %w", err)
 	}
 	return out, nil
 }
@@ -282,7 +282,7 @@ func (s *Store) Cancel(ctx context.Context, clientID string, id uuid.UUID) (Job,
 		// that succeeded.
 	case status == StatusQueued || status == StatusLeased:
 		var payload []byte
-		payload, err = s.terminalResult(id, model, asrclient.ResultStatusCancelled, nil)
+		payload, err = s.terminalResult(id, model, wire.ResultStatusCancelled, nil)
 		if err != nil {
 			return Job{}, err
 		}

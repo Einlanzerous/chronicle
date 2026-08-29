@@ -15,6 +15,13 @@ the two namespaces would collide.
 
 - `cmd/chronicle/` — entrypoint + subcommands (`serve`, `migrate`, `version`).
   Composition root: `setup()` wires store + services + router.
+- `asr/` — the shared estate ASR service: the pinned whisper.cpp image, the
+  job contract (`asr/openapi.yaml`) and `asrd` over it. A **sealed subtree**
+  with its own database, role, migrator and release (`asr-v*` tags): nothing
+  under it imports anything outside it, so it can become its own repository by
+  `git filter-repo` if that is ever wanted. `asr/asrtest` is the one exported
+  doorway in, for Chronicle's integration test. Decided in
+  `docs/decisions/chrn-82-asr-subtree-and-publish.md`.
 - `internal/config/` — env-only config, `CHRONICLE_`-prefixed.
 - `internal/store/` — pgx pool, embedded migrator, repo queries, and the
   domain types themselves. Types sit beside the queries that return them

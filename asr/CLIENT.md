@@ -4,7 +4,7 @@
 is already on this service; if you are writing Catenary's transcription, this is
 what you build against instead of a second whisper queue.
 
-The machine-readable contract is `deploy/asr/openapi.yaml` and it is the source
+The machine-readable contract is `asr/openapi.yaml` and it is the source
 of truth — generate from it rather than hand-writing a client. What is here is
 everything the spec cannot tell you: the numbers, what the queue does when both
 clients are busy, and the three things that will surprise you.
@@ -65,7 +65,7 @@ broken".
 ## The numbers, and what they were measured with
 
 All on the R9700, in-container, on a 60-second voice note with the Opus decode
-counted. `deploy/asr/README.md` carries the full tables and the pins.
+counted. `asr/README.md` carries the full tables and the pins.
 
 | model | resident, in container |
 |---|---|

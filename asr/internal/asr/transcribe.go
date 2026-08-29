@@ -12,7 +12,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/Einlanzerous/chronicle/internal/asrclient"
+	"github.com/Einlanzerous/chronicle/asr/internal/wire"
 )
 
 // The decode, and the seam the worker talks to. The resident implementation is
@@ -25,7 +25,7 @@ import (
 // worker knows and the transcriber does not.
 type Transcript struct {
 	Text            string
-	Segments        []asrclient.Segment
+	Segments        []wire.Segment
 	AudioDurationMs int64
 
 	// CoveredMs is the end of the last segment. EVIDENCE, NOT A PREDICATE — see
@@ -126,7 +126,7 @@ func modelPath(dir, model string) string {
 // reports the duration it read from the result's own header.
 //
 // THE INVOCATION IS BYTE-FOR-BYTE THE BENCHMARK HARNESS'S, and that is not
-// tidiness: every reference number in deploy/asr/README.md counts this decode,
+// tidiness: every reference number in asr/README.md counts this decode,
 // so a flag that moved here would move a published figure with nothing in the
 // output to say so.
 //
@@ -263,7 +263,7 @@ func announceGGMLBackend(logger *slog.Logger, stderr string) {
 	switch {
 	case device == "":
 		logger.Warn("whisper-server named no Vulkan device; this may be running on the CPU",
-			"remedy", "check the render node is passed through (deploy/asr/compose.asr.yml)")
+			"remedy", "check the render node is passed through (asr/deploy/compose.asr.yml)")
 	case strings.Contains(device, "Device type is CPU") || strings.Contains(device, "(llvmpipe)"):
 		logger.Warn("THE GPU IS NOT BEING USED: ggml selected a software rasteriser. "+
 			"Transcription will be correct and roughly twenty times slower",

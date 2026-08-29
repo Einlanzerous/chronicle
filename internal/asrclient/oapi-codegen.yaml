@@ -1,10 +1,12 @@
 # oapi-codegen configuration for the ASR client. Run through
 # scripts/gen-asrclient.sh, never by hand — the flags are the artefact.
 #
-# Types AND client, in one package, and the SERVICE imports these types too.
-# That is deliberate: one definition of the wire format, held by both ends, so a
-# change to deploy/asr/openapi.yaml that the service has not caught up with is a
-# compile error rather than a field that quietly stops being sent.
+# Types AND client, in one package: Chronicle's side of the wire. The SERVICE
+# holds its own generated copy of the same types, asr/internal/wire, from the
+# same file in the same generator run — so a change to asr/openapi.yaml that
+# either end has not caught up with is a compile error rather than a field that
+# quietly stops being sent. Two copies rather than one shared package because
+# nothing under asr/ imports anything outside it (CHRN-82 §2).
 package: asrclient
 generate:
   models: true

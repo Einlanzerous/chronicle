@@ -345,7 +345,7 @@ func runServe(args []string) error {
 		// section 8: the estate's cautionary tale is an integration that was a
 		// silent no-op and looked like a working feature.
 		logger.Warn("transcription is OFF: memos will be ingested and never transcribed",
-			"remedy", "set CHRONICLE_ASR_URL and CHRONICLE_ASR_TOKEN (deploy/asr/)",
+			"remedy", "set CHRONICLE_ASR_URL and CHRONICLE_ASR_TOKEN (asr/)",
 			"visible_at", "GET /admin/transcription")
 	} else if cfg.AudioDir == "" {
 		// Configured and unusable. Refused rather than warned, for the reason

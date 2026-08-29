@@ -9,7 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/Einlanzerous/chronicle/internal/asr/migrations"
+	"github.com/Einlanzerous/chronicle/asr/internal/asr/migrations"
 )
 
 // This migrator is a deliberate second copy of the one in internal/store, and
@@ -37,7 +37,7 @@ type migration struct {
 }
 
 // Migrate applies all pending up migrations embedded under
-// internal/asr/migrations, in ascending version order. Each runs in its own
+// asr/internal/asr/migrations, in ascending version order. Each runs in its own
 // transaction and is recorded in schema_migrations. Idempotent, so it is safe
 // to call on every boot.
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
