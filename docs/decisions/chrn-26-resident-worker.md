@@ -1,7 +1,17 @@
 # CHRN-26 — The resident worker and the GPU lease (decision)
 
-Status: **proposed 2026-08-28, revised the same day after review.** Three
-rulings at the end still need magos before any code is written.
+Status: **proposed 2026-08-28, revised the same day after review, and revised
+again after magos raised a second device.** Three rulings at the end still need
+magos before any code is written.
+
+**Second revision, marked [rev 2].** magos asked what §3 means for a second
+worker — the desktop, and possibly a machine outside the estate — and for a
+transcript produced on the phone. Neither is built here, and both got a ticket
+(**CHRN-80**, standalone; **CHRN-81**, under E9). What changed in this document
+is that three choices which would have hardcoded *one worker* are now made the
+other way, at no cost: the lock is keyed per device, fairness lives in the
+query, and the deadline uses the worker's own rate. See §3, §5, §7 and *What
+this does not decide*.
 
 **Revised after review.** Seven findings, all accepted, and **four of them are
 decisions this document left open that an implementer would have closed
@@ -271,6 +281,18 @@ a distinguishing knob buys nothing; and two deployments genuinely sharing one
 GPU would need a *shared* lock, which separate databases cannot give them. A
 knob that cannot do either job is a knob somebody will one day set.
 
+**[rev 2] What the lock names is a device, and that is a knob with a reason.**
+magos raised a second worker — the desktop first, later possibly a machine
+outside the estate (CHRN-80) — and a single key per database means **one worker
+per Postgres, full stop**: the standby above would be the desktop, forever. So
+the key is `hash(ASR_DEVICE_ID)`. One R9700 today; a second device is a second
+key rather than a redesign, and two `asrd` processes naming the *same* device
+still exclude each other, which is the redeploy case this lock exists for. That
+is the rationale the first draft's knob should have had — per **device**, never
+per deployment — and it is why it comes back under a name that says what it
+locks. `ASR_DEVICE_ID` also lands in `leased_by`, so `GET /admin/transcription`
+can say which device transcribed what once there is more than one.
+
 It is deliberately **not** the job lease from CHRN-25. Those are different
 things: the job lease says *this worker owns this job*, and the GPU lease says
 *this process may run inference now*. A worker holds a job lease for the whole
@@ -432,7 +454,11 @@ The claim order, stated so it cannot be composed two ways:
    `ASR_MODEL_SWITCH_MAX_WAIT`** → switch to its model and take it. Starvation
    beats residency; it is the only rule with an unbounded downside.
 2. **Otherwise, round-robin among jobs for the RESIDENT model.** This is the
-   common case and the one the benchmark describes.
+   common case and the one the benchmark describes. **[rev 2]** *Resident* is
+   per worker: the claim takes the caller's resident model as a parameter, so
+   two workers holding different models drain different halves of a mixed
+   queue without either switching — which is half of what a second device
+   would be for.
 3. **Otherwise** — nothing queued for the resident model — round-robin among
    everything and switch to whatever wins.
 
@@ -442,9 +468,16 @@ would stop an implementer adding the index this ordering needs — a
 `MAX(started_at) GROUP BY client_id` over a table CHRN-25 calls "unbounded by
 design" is a sequential scan per claim. What §6 forbids is changing what the
 table *means*: its states, its columns' semantics, the idempotency uniqueness.
-**An index migration is fine. A new `Store` method is fine.** Finding 6's
-process-lifetime lock also makes the cheaper option safe — one owning process
-can hold last-served per client in memory, because there is exactly one.
+**An index migration is fine. A new `Store` method is fine.**
+
+**[rev 2] The bookkeeping lives in the query, not in memory — decided, not
+left open.** The first revision allowed either because exactly one process
+claims, and that stops being true the day a second device is added (§3
+[rev 2]). In-memory last-served is not round-robin at all with two workers:
+each alternates on its own view and the pair can serve one client twice in a
+row while the other waits. `MAX(started_at) GROUP BY client_id` is right for
+any number of workers, the index makes it cheap, and settling it now means the
+mechanical PR is not undone later.
 
 ## 6 · What happens to CHRN-25's placeholder
 
@@ -524,6 +557,16 @@ and `verbose_json` reports it too — so this needs nothing new to compute. And
 the per-job inference wall-clock it requires **is the same number ruling 2 wants
 for contention detection**, so the two findings cost one measurement between
 them.
+
+**[rev 2] `expected_rate(model)` is the WORKER's rate, not the table's.**
+CHRN-24's numbers describe the R9700. A worker on another device (§3 [rev 2])
+has its own, and a deadline computed from somebody else's GPU is either a false
+kill or no bound at all. So the rates are configuration per worker —
+`ASR_EXPECTED_RATES`, `model=realtime_x` pairs, defaulting on this deployment
+to CHRN-24's resident column — and **a model the worker does not name uses
+18.3×**, the slowest CHRN-24 measured, so an unknown model errs wide rather
+than killing a healthy job. The contention check in ruling 2 reads the same
+table, for the same reason.
 
 ## 8 · When the resident process is not there
 
@@ -615,12 +658,17 @@ or response shape is one that should be questioned.
 | `ASR_LEASE_TTL` | 30 s | unchanged from CHRN-25; §7 says why it holds |
 | `ASR_MODEL_SWITCH_MAX_WAIT` | ruling 1 | how long a job for a non-resident model waits before forcing a switch. **[rev]** Also the fairness bound under mixed models — §5 |
 | `ASR_INFERENCE_DEADLINE_FACTOR` | 5 | **[rev]** multiplier on expected inference time before a job is treated as wedged; floored at 30 s. §7 |
+| `ASR_DEVICE_ID` | `r9700` | **[rev 2]** what the advisory lock names and what `leased_by` records. A second device is a second value. §3 |
+| `ASR_EXPECTED_RATES` | CHRN-24's resident column | **[rev 2]** `model=realtime_x` pairs for THIS worker's device; unknown models use 18.3×. §7 |
 
-**[rev] `ASR_GPU_LOCK_KEY` is gone.** Its stated rationale — "so a second
-deployment on one Postgres can differ" — was backwards: advisory locks are
-database-scoped, so two deployments have two `asr` databases and cannot collide
-however they are keyed, while two sharing one GPU would need a lock separate
-databases cannot give them. §3 has the argument.
+**[rev] `ASR_GPU_LOCK_KEY` is gone, and [rev 2] `ASR_DEVICE_ID` is not it
+back.** The old knob's rationale — "so a second deployment on one Postgres can
+differ" — was backwards: advisory locks are database-scoped, so two deployments
+have two `asr` databases and cannot collide however they are keyed, while two
+sharing one GPU would need a lock separate databases cannot give them. The new
+one names a **device**, which is the thing the lock actually protects, and
+exists so a second worker on a second GPU is a value rather than a redesign.
+§3 has both arguments.
 
 ## What each ticket inherits
 
@@ -647,9 +695,26 @@ databases cannot give them. §3 has the argument.
 - **Batching several memos into one inference.** whisper.cpp accepts repeated
   `-f`, and CHRN-12's harness used it to amortise startup — which is exactly the
   cost residency already removes. Nothing left to buy.
-- **A second worker process or a second GPU.** The lease is built so that adding
-  one is a configuration change rather than a redesign, and there is no second
-  device to put it on.
+- **A second worker on a second device — CHRN-80.** Raised by magos on
+  2026-08-28 (the desktop, and possibly a machine outside the estate) and
+  deliberately kept open rather than built. §3, §5 and §7 now make the
+  single-worker assumption explicit and cheap to lift — per-device lock key,
+  fairness in the query, worker-local rates — and what remains is a
+  **worker-facing protocol**: claim, renew and result over HTTP, with a worker
+  credential distinct from `ASR_CLIENT_TOKENS`, so a machine that is not on
+  `construct_net` never holds the `asr` database credential. That changes
+  CHRN-25's contract, which this ticket promised not to touch, so it is a
+  standalone ticket outside the epic. The trust question it carries — audio is
+  tier-2 authored content, and a worker outside the estate sees every
+  recording it claims — is that ticket's to settle, not this one's.
+- **On-device transcription — CHRN-81, under E9.** A transcript produced on
+  the phone or in the browser does not pass through `asrd` at all: it arrives
+  *with* the memo and is written by Chronicle's upload path, so the surface is
+  Chronicle's. The ideal path is live text while recording, with the estate
+  service as the quality pass. The consequence that is **not** E9's: by the
+  letter of CHRN-25 §5 a phone-grade transcript is durable, so CHRN-22 would
+  prune audio on the strength of a `base` transcript. Recorded on CHRN-22 as a
+  model floor its predicate needs before any device transcript lands.
 - **CPU fallback.** CHRN-12 is clear that above `small.en` the CPU stops being a
   fallback (1.4× for `medium.en`, 0.6× for `large-v3`). A queue that waits is
   better than a queue that takes 101 seconds per minute of audio.
