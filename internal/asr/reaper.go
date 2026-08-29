@@ -35,6 +35,11 @@ type Reaper struct {
 
 	// PurgeInterval is how often expired result payloads are swept.
 	PurgeInterval time.Duration
+
+	// MaxAttempts is CHRN-28's ceiling for a lease that simply expired. The
+	// reaper never sees the expensive reasons — a deadline breach is released
+	// by the worker, which is alive — so it carries one number rather than two.
+	MaxAttempts int
 }
 
 // Run sweeps until ctx is cancelled.
@@ -70,7 +75,11 @@ func (r *Reaper) Run(ctx context.Context) error {
 }
 
 func (r *Reaper) reapOnce(ctx context.Context) {
-	reaped, err := r.Store.Reap(ctx)
+	max := r.MaxAttempts
+	if max < 1 {
+		max = DefaultMaxAttempts
+	}
+	reaped, err := r.Store.Reap(ctx, max)
 	if err != nil {
 		if ctx.Err() == nil {
 			r.Logger.Error("lease reap failed", "error", err)
@@ -78,6 +87,14 @@ func (r *Reaper) reapOnce(ctx context.Context) {
 		return
 	}
 	for _, j := range reaped {
+		if j.Status == StatusFailed {
+			// AT ERROR, because this is the end of the line for a memo. The
+			// retry ceiling has stopped it and nothing will pick it up again;
+			// a human is the only thing that moves it now.
+			r.Logger.Error("RETRY CEILING REACHED; job dead-lettered and will not be retried",
+				"job", j.ID, "attempts", j.Attempts, "code", ExhaustedCode)
+			continue
+		}
 		// At WARN, and one line per job. A reaped lease means a worker died or
 		// stalled, which is not routine, and a count alone would not say which
 		// job to go and look at.

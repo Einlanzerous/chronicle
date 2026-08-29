@@ -342,6 +342,27 @@ func TestASRCredentialsAreBothOrNeither(t *testing.T) {
 		}
 	})
 
+	// CHRN-28's ceiling. Zero is refused rather than read as "no ceiling":
+	// unbounded retries against a shared GPU are what it exists to close.
+	t.Run("the attempt ceiling refuses zero", func(t *testing.T) {
+		for _, v := range []string{"0", "-2", "lots"} {
+			_, err := loadErr(t, merge(base, map[string]string{"CHRONICLE_ASR_MAX_ATTEMPTS": v}))
+			if err == nil {
+				t.Fatalf("CHRONICLE_ASR_MAX_ATTEMPTS=%q booted", v)
+			}
+			if !strings.Contains(err.Error(), "CHRONICLE_ASR_MAX_ATTEMPTS") {
+				t.Fatalf("the error does not name the variable: %v", err)
+			}
+		}
+	})
+
+	t.Run("the attempt ceiling defaults", func(t *testing.T) {
+		c := loadWith(t, base)
+		if c.ASRMaxAttempts != DefaultASRMaxAttempts {
+			t.Fatalf("ceiling = %d, want %d", c.ASRMaxAttempts, DefaultASRMaxAttempts)
+		}
+	})
+
 	t.Run("both is fine", func(t *testing.T) {
 		c := loadWith(t, merge(base, map[string]string{
 			"CHRONICLE_ASR_URL":   "http://asr:4011/",
@@ -395,6 +416,15 @@ func loadWith(t *testing.T, env map[string]string) Config {
 		t.Fatalf("Load: %v", err)
 	}
 	return c
+}
+
+// loadErr is loadWith for the cases where the boot is expected to fail.
+func loadErr(t *testing.T, env map[string]string) (Config, error) {
+	t.Helper()
+	for k, v := range env {
+		t.Setenv(k, v)
+	}
+	return Load()
 }
 
 func merge(a, b map[string]string) map[string]string {

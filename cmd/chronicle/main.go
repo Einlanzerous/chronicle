@@ -248,12 +248,13 @@ func runServe(args []string) error {
 				return fmt.Errorf("CHRONICLE_ASR_URL %s: %w", cfg.ASRBaseURL, err)
 			}
 			transcriber, err = transcribe.New(transcribe.Options{
-				Store:    st,
-				Audio:    audioStore,
-				ASR:      asr,
-				Logger:   logger,
-				Model:    cfg.ASRModel,
-				Interval: cfg.TranscribeInterval,
+				Store:       st,
+				Audio:       audioStore,
+				ASR:         asr,
+				Logger:      logger,
+				Model:       cfg.ASRModel,
+				Interval:    cfg.TranscribeInterval,
+				MaxAttempts: cfg.ASRMaxAttempts,
 			})
 			if err != nil {
 				return err

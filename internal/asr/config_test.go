@@ -170,3 +170,38 @@ func TestCHRN26DefaultsAreTheSettledOnes(t *testing.T) {
 		t.Fatalf("the resident child is %q on %q", c.WhisperServerBin, c.WhisperServerAddr)
 	}
 }
+
+// The ceilings are refused at zero rather than read as "no ceiling". An
+// unbounded retry loop is the thing CHRN-28 exists to close, and it should not
+// be reachable by typing 0.
+func TestTheAttemptCeilingsRefuseZero(t *testing.T) {
+	for _, name := range []string{"ASR_MAX_ATTEMPTS", "ASR_MAX_ATTEMPTS_WEDGED"} {
+		for _, v := range []string{"0", "-1", "many"} {
+			t.Run(name+"="+v, func(t *testing.T) {
+				t.Setenv("ASR_DATABASE_URL", "postgres://x/y")
+				t.Setenv("ASR_CLIENT_TOKENS", "chronicle:"+strings.Repeat("a", 34))
+				t.Setenv(name, v)
+
+				if _, err := Load(); err == nil {
+					t.Fatalf("%s=%q booted; an unbounded retry loop is one typo away", name, v)
+				} else if !strings.Contains(err.Error(), name) {
+					t.Fatalf("the error does not name the variable: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestTheAttemptCeilingsDefaultToTheSettledNumbers(t *testing.T) {
+	t.Setenv("ASR_DATABASE_URL", "postgres://x/y")
+	t.Setenv("ASR_CLIENT_TOKENS", "chronicle:"+strings.Repeat("a", 34))
+
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.MaxAttempts != 5 || c.MaxAttemptsWedged != 2 {
+		t.Fatalf("ceilings are %d and %d; want 5 ordinary and 2 for a wedged run",
+			c.MaxAttempts, c.MaxAttemptsWedged)
+	}
+}

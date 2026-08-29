@@ -52,8 +52,10 @@ type transcriptionReport struct {
 	// is `transcribed`, so nothing sweeps it; it is not `held`, so
 	// `chronicle retranscribe` will not release it; and its audio correctly
 	// does not prune. Every one of those is right, and together they make a
-	// partial memo read as a healthy one. CHRN-28 owns what to do about them;
-	// this is what lets anyone find them.
+	// partial memo read as a healthy one, and this is what lets anyone find
+	// them. CHRN-28 settled the policy and it is the one already in force:
+	// partials are KEPT, marked partial, and never satisfy the durable gate —
+	// so a partial neither prunes its audio nor blocks a better attempt.
 	Partial       int64           `json:"partial"`
 	PartialSample []partialReport `json:"partial_sample,omitempty"`
 

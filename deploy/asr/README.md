@@ -338,9 +338,13 @@ because the resident process stays up and healthy throughout it.
 
 **A dying child releases its job rather than failing it.** One crash must not
 permanently fail a memo that nothing was wrong with, so `attempts` goes up and
-the job returns to the queue — which is why CHRN-28's retry ceiling is
-load-bearing rather than a nicety, and why `Release` logs whether it was a
-crash or a deadline breach. They cost differently by a factor of five.
+the job returns to the queue — bounded by CHRN-28's retry ceiling, which is
+load-bearing rather than a nicety: without it the requeue path is an unmetered
+loop. `Release` records **why** the job came back, and the ceiling prices the
+reasons apart — five ordinary attempts, two for a job killed by a deadline,
+because that one spent five times its expected run getting nowhere. At the
+ceiling the job is dead-lettered to `failed` with `retries_exhausted`, logged
+at ERROR, and nothing picks it up again.
 
 **Cancelling actually stops the work.** Dropping the HTTP request would not:
 `/inference` holds the server's mutex for the whole synchronous call, so it
@@ -395,6 +399,8 @@ pace with nothing in the output to say so.
 | `ASR_WHISPER_SERVER_ADDR` | `127.0.0.1:8081` | **loopback only.** It has no authentication of any kind; a listener on `construct_net` would make `ASR_CLIENT_TOKENS` decorative |
 | `ASR_MODEL_SWITCH_MAX_WAIT` | 60s | how long a job for a non-resident model waits before forcing a switch — **and the fairness bound under mixed models** |
 | `ASR_INFERENCE_DEADLINE_FACTOR` | 5 | multiplier on the expected inference time before a job is treated as wedged; floored at 30s |
+| `ASR_MAX_ATTEMPTS` | 5 | how many times a job may lose its claim before it is **dead-lettered** to `failed` with `retries_exhausted` rather than requeued. Zero is refused, not read as "no ceiling" |
+| `ASR_MAX_ATTEMPTS_WEDGED` | 2 | the lower ceiling for `inference_deadline` and `decode_deadline` — a job killed by a deadline spent five times its expected run getting nowhere, and the third attempt costs what the first two did |
 | `ASR_EXPECTED_RATES` | CHRN-24's resident column | `model=realtime_x` pairs for **this worker's device**. An unnamed model uses 18.3×, the slowest measured, so it errs wide |
 
 `client_id` comes from the **token** and from nothing else. It is never read
@@ -417,8 +423,6 @@ jump its queue.
   per-device already, so what is missing is a worker-facing protocol — and the
   trust question that comes with it, since audio is tier-2 authored content and
   a worker outside the estate sees every recording it claims.
-- **No retry ceiling, no backoff, no dead-lettering.** CHRN-28. `attempts`
-  exists and the reaper moves it; the ceiling is a policy, not a counter.
 - **No callback or webhook.** Deliberately not now: it needs the service to hold
   its clients' credentials, which is the same objection that ruled out
   pull-by-URL for the audio.

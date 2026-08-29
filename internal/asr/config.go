@@ -80,6 +80,21 @@ const (
 	// unknown model errs wide rather than killing a healthy job.
 	UnknownModelRate = 18.3
 
+	// DefaultMaxAttempts is CHRN-28's retry ceiling: how many times a job may
+	// lose its claim before it is dead-lettered rather than requeued.
+	//
+	// Five, because the loop it bounds is cheap and the thing it protects
+	// against is unbounded rather than frequent — CHRN-26 §8 establishes that a
+	// file which crashes the decoder loops until something stops it, and this
+	// is that something.
+	DefaultMaxAttempts = 5
+
+	// DefaultMaxAttemptsWedged is the lower ceiling for the two expensive
+	// reasons: a job killed by a deadline spent five times its expected run
+	// getting nowhere. Two attempts, because the third would cost the same
+	// stalled queue as the first two for the same reason.
+	DefaultMaxAttemptsWedged = 2
+
 	// DefaultDeviceID names the GPU this process claims. It is what the
 	// advisory lock hashes and what lands in leased_by — per DEVICE, never per
 	// deployment (CHRN-26 §3 [rev 2]).
@@ -168,6 +183,11 @@ type Config struct {
 	// into the wall clock after which a job is wedged rather than long.
 	InferenceDeadlineFactor float64
 	MinInferenceDeadline    time.Duration
+
+	// MaxAttempts and MaxAttemptsWedged are CHRN-28's ceilings — see
+	// CeilingFor for which reasons get which.
+	MaxAttempts       int
+	MaxAttemptsWedged int
 
 	// ExpectedRates is model -> realtime multiple FOR THIS WORKER'S DEVICE. It
 	// is read twice for two findings that cost one measurement between them:
@@ -296,6 +316,15 @@ func Load() (Config, error) {
 	if err != nil {
 		return c, err
 	}
+
+	c.MaxAttempts, err = positiveInt("ASR_MAX_ATTEMPTS", DefaultMaxAttempts)
+	if err != nil {
+		return c, err
+	}
+	c.MaxAttemptsWedged, err = positiveInt("ASR_MAX_ATTEMPTS_WEDGED", DefaultMaxAttemptsWedged)
+	if err != nil {
+		return c, err
+	}
 	c.Backend = firstNonEmpty(os.Getenv("ASR_BACKEND"), "vulkan")
 
 	c.Worker = true
@@ -342,6 +371,21 @@ func parseClientTokens(raw string) (map[string]string, error) {
 			"container on the network can queue work into")
 	}
 	return out, nil
+}
+
+// positiveInt reads an optional count. Zero and negative are refused rather
+// than treated as "no ceiling": a ceiling of nothing is the unbounded loop this
+// setting exists to close, and it should not be reachable by typing 0.
+func positiveInt(name string, def int) (int, error) {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 {
+		return 0, fmt.Errorf("config: %s %q is not a positive integer", name, v)
+	}
+	return n, nil
 }
 
 // parseExpectedRates reads `model=realtime_x` pairs, comma or whitespace

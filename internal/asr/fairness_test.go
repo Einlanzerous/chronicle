@@ -178,7 +178,7 @@ func TestReleaseRequeuesWithAttemptsIncremented(t *testing.T) {
 		t.Fatal("setup: the job was not claimed")
 	}
 
-	out, err := s.Release(ctx, job.ID, "worker-1", "worker_crash")
+	out, err := s.Release(ctx, job.ID, "worker-1", "worker_crash", DefaultMaxAttempts)
 	if err != nil {
 		t.Fatalf("release: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestReleaseOfACancelledJobEndsCancelled(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := s.Release(ctx, job.ID, "worker-1", "worker_crash")
+	out, err := s.Release(ctx, job.ID, "worker-1", "worker_crash", DefaultMaxAttempts)
 	if err != nil {
 		t.Fatalf("release: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestReleaseNeedsTheLease(t *testing.T) {
 		t.Fatal("setup: the job was not claimed")
 	}
 
-	if _, err := s.Release(ctx, job.ID, "worker-2", "worker_crash"); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Release(ctx, job.ID, "worker-2", "worker_crash", DefaultMaxAttempts); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("release by a worker that does not hold the lease returned %v", err)
 	}
 	after, err := s.Get(ctx, "chronicle", job.ID)

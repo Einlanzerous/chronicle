@@ -54,16 +54,73 @@ const (
 	// DefaultModel matches the ASR service's own default.
 	DefaultModel = "small.en"
 
-	// MaxAttempts is a PLACEHOLDER CEILING, and deliberately a crude one.
+	// DefaultMaxAttempts is CHRN-28's ceiling: how many attempts one memo gets
+	// before it is HELD for a human rather than tried again.
 	//
-	// The retry policy — how many, with what backoff, and what to do about a
-	// partial — is CHRN-28's, and this is not it. What this is: a bound, so
-	// that a service which keeps losing jobs cannot put one memo through an
-	// unmetered loop of GPU runs. Without it the requeue path below is an
-	// infinite loop that costs money and shows up as a busy GPU nobody
-	// ordered.
-	MaxAttempts = 5
+	// It bounds the loop CHRN-27 opened — a service that keeps losing jobs
+	// would otherwise put one memo through an unmetered sequence of GPU runs —
+	// and it is the Chronicle half of a pair. asrd has its own ceiling on the
+	// same memo's job rows (`ASR_MAX_ATTEMPTS`), and the two count different
+	// things: asrd counts claims lost inside one attempt, this counts attempts.
+	DefaultMaxAttempts = 5
+
+	// RetryBackoff is the delay before a memo's FIRST retry, doubling with each
+	// attempt to MaxRetryBackoff.
+	//
+	// THE BOUND WITHOUT THE DELAY IS NOT WHAT THE TICKET ASKED FOR. Its first
+	// line says "bounded retries with backoff", and a ceiling spent at the
+	// sweep interval spends itself in about a hundred seconds: a whisper
+	// process restarting, or a card saturated, answers non-200 for a couple of
+	// minutes, and every memo in flight would burn all five attempts inside
+	// that window and land in `held` — needing a person for a fault that had
+	// already cleared. Which is exactly the cost this ticket exists to remove,
+	// moved from attempt one to attempt five.
+	//
+	// Doubling from a minute puts the five attempts across about half an hour.
+	RetryBackoff = time.Minute
+
+	// MaxRetryBackoff caps it. A memo waiting an hour between attempts is a
+	// memo whose fault is not transient, and the ceiling should reach it.
+	MaxRetryBackoff = 15 * time.Minute
 )
+
+// retryDelay is how long a memo waits before its next attempt: RetryBackoff
+// doubled per attempt already made, capped. Zero for a memo that has not been
+// tried, which is the ordinary case and must never be delayed.
+func (s *Service) retryDelay(attempts int) time.Duration {
+	if attempts < 1 || s.retryBackoff < 0 {
+		return 0
+	}
+	d := s.retryBackoff << (attempts - 1)
+	if d > MaxRetryBackoff || d <= 0 {
+		return MaxRetryBackoff
+	}
+	return d
+}
+
+// failureTranscription is the code `failed` records, and the only one the retry
+// backoff waits on: it means the transcription itself failed, as opposed to the
+// service having lost an answer it once had.
+const failureTranscription = "transcription_failed"
+
+// permanentFailures are the ASR failure codes that will produce the same answer
+// on the next attempt, so a memo carrying one is held immediately rather than
+// spending the ceiling to arrive at the same place.
+//
+// EVERYTHING NOT LISTED IS RETRIED, deliberately. An unknown code is more
+// likely a transient fault than a permanent one, and the cost of guessing wrong
+// is bounded by the ceiling — while guessing the other way costs a person's
+// attention on the first blip.
+var permanentFailures = map[string]string{
+	"decode_failed":       "the audio could not be decoded; the same bytes will not decode next time either",
+	"unreadable_output":   "the transcriber's output did not parse; a retry produces the same output",
+	"model_not_installed": "the model is not on the ASR service; a human has to mount it",
+	"model_unloadable":    "the model will not initialise; a deployment fault, not a job to retry",
+	"model_load_timeout":  "the model load wedged; a deployment fault, not a job to retry",
+	// asrd's own ceiling already stopped this job. Starting another attempt
+	// would run the same file into the same wall with a fresh counter.
+	"retries_exhausted": "the ASR service exhausted its own retries for this attempt",
+}
 
 // Store is the slice of Chronicle's store this needs. An interface so the pump
 // can be tested against a fake, and so the surface it touches is written down
@@ -83,6 +140,7 @@ type Store interface {
 	UnsubmittedJobs(ctx context.Context, limit int) ([]store.MemoJob, error)
 	InFlightJobs(ctx context.Context, limit int) ([]store.MemoJob, error)
 	CountMemoJobs(ctx context.Context, memoID uuid.UUID) (int, error)
+	MemoAttempts(ctx context.Context, memoID uuid.UUID) (int, time.Time, string, error)
 }
 
 // ASR is the slice of the generated client this uses. An interface for the
@@ -104,17 +162,26 @@ type Options struct {
 	Model    string
 	Interval time.Duration
 	Batch    int
+	// MaxAttempts is CHRN-28's ceiling. Zero takes DefaultMaxAttempts.
+	MaxAttempts int
+
+	// RetryBackoff is the delay before the first retry, doubling per attempt.
+	// Zero takes the package default; NEGATIVE disables the wait, which is for
+	// tests that need to reach the ceiling without spending half an hour.
+	RetryBackoff time.Duration
 }
 
 // Service is the pump.
 type Service struct {
-	store    Store
-	audio    *audio.Store
-	asr      ASR
-	logger   *slog.Logger
-	model    string
-	interval time.Duration
-	batch    int
+	store        Store
+	audio        *audio.Store
+	asr          ASR
+	logger       *slog.Logger
+	model        string
+	interval     time.Duration
+	batch        int
+	maxAttempts  int
+	retryBackoff time.Duration
 }
 
 // New validates the options and builds the pump.
@@ -132,6 +199,13 @@ func New(o Options) (*Service, error) {
 	s := &Service{
 		store: o.Store, audio: o.Audio, asr: o.ASR, logger: o.Logger,
 		model: o.Model, interval: o.Interval, batch: o.Batch,
+		maxAttempts: o.MaxAttempts, retryBackoff: o.RetryBackoff,
+	}
+	if s.maxAttempts < 1 {
+		s.maxAttempts = DefaultMaxAttempts
+	}
+	if s.retryBackoff == 0 {
+		s.retryBackoff = RetryBackoff
 	}
 	if s.model == "" {
 		s.model = DefaultModel
@@ -276,15 +350,27 @@ func (s *Service) submit(ctx context.Context) {
 			memo = advanced
 		}
 
-		attempts, err := s.store.CountMemoJobs(ctx, memo.ID)
+		attempts, lastAttempt, lastFailure, err := s.store.MemoAttempts(ctx, memo.ID)
 		if err != nil {
 			s.logError(ctx, "could not count previous attempts", err, "memo", memo.ID)
 			continue
 		}
-		if attempts >= MaxAttempts {
-			// See MaxAttempts: a bound, not a policy. CHRN-28 replaces it.
+		// THE WAIT IS FOR A FAILED TRANSCRIPTION AND NOTHING ELSE. A memo
+		// requeued because the service lost the answer — an expired result, a
+		// job it no longer has, a rejected key — is not waiting for anything to
+		// clear, and delaying it would be a slow path for a memo nothing is
+		// wrong with.
+		if lastFailure == failureTranscription && attempts > 0 && attempts < s.maxAttempts {
+			if wait := s.retryDelay(attempts); time.Since(lastAttempt) < wait {
+				continue
+			}
+		}
+		if attempts >= s.maxAttempts {
 			s.hold(ctx, memo.ID, store.StateQueued, fmt.Sprintf(
-				"transcription failed %d times; held for review (retry policy is CHRN-28)", attempts))
+				"transcription was attempted %d times without a durable transcript; "+
+					"held for review — `chronicle retranscribe` is the retry", attempts))
+			s.logger.WarnContext(ctx, "retry ceiling reached; memo held",
+				"memo", memo.ID, "attempts", attempts, "ceiling", s.maxAttempts)
 			continue
 		}
 
@@ -464,7 +550,7 @@ func (s *Service) observe(ctx context.Context, job store.MemoJob, memo store.Mem
 		s.fetch(ctx, job, memo)
 
 	case asrclient.JobStatusFailed:
-		s.fail(ctx, job, memo, "transcription_failed", s.failureDetail(ctx, job))
+		s.failed(ctx, job, memo)
 
 	case asrclient.JobStatusCancelled:
 		// Nothing in Chronicle cancels a job today, so this means somebody or
@@ -552,12 +638,17 @@ func (s *Service) fetch(ctx context.Context, job store.MemoJob, memo store.Memo)
 
 // failureDetail reads the failure the service recorded, so the memo's
 // state_reason says what went wrong rather than that something did.
-func (s *Service) failureDetail(ctx context.Context, job store.MemoJob) string {
+//
+// The CODE is what decides whether this memo is tried again, so a result the
+// service will not hand over is treated as retryable rather than permanent: an
+// unreachable ASR service is the most likely reason for it, and holding a memo
+// because a poll failed would be the wrong side to err on.
+func (s *Service) failureDetail(ctx context.Context, job store.MemoJob) (code, message string) {
 	resp, err := s.asr.GetJobResultWithResponse(ctx, *job.JobID)
 	if err != nil || resp.JSON200 == nil || resp.JSON200.Failure == nil {
-		return "the ASR service reported a failure with no detail"
+		return "", "the ASR service reported a failure with no detail"
 	}
-	return resp.JSON200.Failure.Code + ": " + resp.JSON200.Failure.Message
+	return resp.JSON200.Failure.Code, resp.JSON200.Failure.Message
 }
 
 // fail settles the attempt and HOLDS the memo, which is the half of the ticket
@@ -571,6 +662,50 @@ func (s *Service) fail(ctx context.Context, job store.MemoJob, memo store.Memo, 
 	s.hold(ctx, memo.ID, memo.State, code+": "+message)
 	s.logger.WarnContext(ctx, "transcription failed; memo held",
 		"memo", memo.ID, "code", code, "detail", message)
+}
+
+// failed decides what a failed attempt costs: another attempt, or a human.
+//
+// THE TICKET'S DONE-WHEN IS "RETRIES, THEN LANDS SOMEWHERE A HUMAN WILL NOTICE",
+// and CHRN-27 shipped only the second half — every failure held the memo on the
+// first attempt. A GPU that dropped one job, a child that crashed once, a 500
+// from a restarting service: all of them cost a person's attention under that
+// rule, and none of them should.
+//
+// So: a code that will produce the same answer next time holds now
+// (permanentFailures); everything else is requeued until the ceiling, and the
+// ceiling holds. Either way the memo ends somewhere visible — `held` with its
+// reason, which `GET /admin/transcription` lists and `chronicle retranscribe`
+// clears — and either way NO PATH HERE PRODUCES A DURABLE TRANSCRIPT, so none
+// of them can let the pruner take the audio.
+func (s *Service) failed(ctx context.Context, job store.MemoJob, memo store.Memo) {
+	code, message := s.failureDetail(ctx, job)
+
+	if why, permanent := permanentFailures[code]; permanent {
+		s.fail(ctx, job, memo, failureTranscription,
+			fmt.Sprintf("%s: %s (%s)", code, message, why))
+		return
+	}
+
+	attempts, _, _, err := s.store.MemoAttempts(ctx, memo.ID)
+	if err != nil {
+		s.logError(ctx, "could not count previous attempts", err, "memo", memo.ID)
+		// Held rather than retried: counting is how the loop is bounded, and a
+		// loop with a broken bound is the thing the ceiling exists to prevent.
+		s.fail(ctx, job, memo, failureTranscription, code+": "+message)
+		return
+	}
+	if attempts >= s.maxAttempts {
+		s.fail(ctx, job, memo, failureTranscription, fmt.Sprintf(
+			"%s: %s — %d attempts, which is the ceiling; held for review", code, message, attempts))
+		s.logger.WarnContext(ctx, "retry ceiling reached; memo held",
+			"memo", memo.ID, "attempts", attempts, "ceiling", s.maxAttempts, "code", code)
+		return
+	}
+
+	s.requeue(ctx, job, memo, failureTranscription,
+		fmt.Sprintf("%s: %s — attempt %d of %d; re-submitting after %s",
+			code, message, attempts, s.maxAttempts, s.retryDelay(attempts)))
 }
 
 // requeue settles the attempt and returns the memo to the queue for a FRESH

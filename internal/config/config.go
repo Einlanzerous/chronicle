@@ -20,6 +20,11 @@ import (
 // (4001-4008, 4010, 4012-4013 are taken).
 const DefaultPort = 4009
 
+// DefaultASRMaxAttempts mirrors transcribe.DefaultMaxAttempts. Written as its
+// own constant rather than imported: internal/config is the leaf every package
+// reads, and pointing it at the pump would invert that.
+const DefaultASRMaxAttempts = 5
+
 // Config is the process-wide configuration.
 type Config struct {
 	DatabaseURL   string        // pgx DSN for Chronicle's own database
@@ -108,6 +113,10 @@ type Config struct {
 	// which is the right behaviour: the deployment knows what it has on disk
 	// and Chronicle does not.
 	ASRModel string
+
+	// ASRMaxAttempts is CHRN-28's ceiling: attempts per memo before it is held
+	// for a human rather than tried again.
+	ASRMaxAttempts int
 
 	// TranscribeInterval is how often the pump sweeps. Default in
 	// internal/transcribe.
@@ -226,6 +235,18 @@ func Load() (Config, error) {
 		}
 	}
 	c.ASRModel = strings.TrimSpace(os.Getenv("CHRONICLE_ASR_MODEL"))
+
+	// CHRN-28's ceiling: how many attempts one memo gets before it is held for
+	// a human. Zero is refused rather than read as "no ceiling" — an unbounded
+	// retry loop is the thing this setting exists to close, and it should not
+	// be reachable by typing 0.
+	c.ASRMaxAttempts = DefaultASRMaxAttempts
+	if v := strings.TrimSpace(os.Getenv("CHRONICLE_ASR_MAX_ATTEMPTS")); v != "" {
+		c.ASRMaxAttempts, err = strconv.Atoi(v)
+		if err != nil || c.ASRMaxAttempts < 1 {
+			return c, fmt.Errorf("config: CHRONICLE_ASR_MAX_ATTEMPTS %q is not a positive integer", v)
+		}
+	}
 
 	c.TranscribeInterval, err = optionalDuration("CHRONICLE_TRANSCRIBE_INTERVAL")
 	if err != nil {
