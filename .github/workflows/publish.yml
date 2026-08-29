@@ -51,12 +51,20 @@ jobs:
         # The shape purser and lyceum share (SERV-154, LYCM-121).
         #
         # `stamp` is the version `type=semver` below will put in the image's
-        # org.opencontainers.image.version label, or the empty string when there
-        # will be no such label. That equivalence is the whole point: the binary
-        # is stamped from this and the label comes from the same condition, so
-        # `chronicle version` and the label agree by construction. The delivery
-        # ledger compares them with STRICT EQUALITY, and a disagreement is a
-        # permanently unresolvable row.
+        # org.opencontainers.image.version label — on a RELEASE. The binary is
+        # stamped from this and the label comes from the same condition, so
+        # `chronicle version` and the label agree by construction there. The
+        # delivery ledger compares them with STRICT EQUALITY, and a disagreement
+        # is a permanently unresolvable row.
+        #
+        # It is NOT "empty means no label". metadata-action emits
+        # org.opencontainers.image.version unconditionally, from the
+        # highest-priority tag that matched, so on a main build the label says
+        # the moving tag `latest` while the binary honestly reports `dev`. Those
+        # two do not agree and are not meant to: `latest` is not an identity, and
+        # the ledger would file it as a mismatch if it ever observed :latest. The
+        # by-construction claim is about the release path, which is the one the
+        # ledger is comparing.
         #
         # `on.push.tags: ["v*"]` accepts more than releases, so `ref_type ==
         # 'tag'` is not the same test as "this has a version":
@@ -90,10 +98,21 @@ jobs:
         run: |
           set -euo pipefail
           stamp=""
+          # The SemVer 2.0.0 regex from semver.org, translated to POSIX ERE
+          # (`(?:` -> `(`, `\d` -> `[0-9]`), because this has to agree with
+          # node-semver EXACTLY and a looser pattern reopens the bug in a
+          # narrower band: a shape this accepts but `semver.valid()` rejects sets
+          # `stamp`, which turns the :sha-<short> fallback OFF, while
+          # metadata-action emits no tag at all — and build-push-action cannot
+          # push an empty tag list. `v01.2.3`, `v1.02.3`, `v1.2.3-01`,
+          # `v1.2.3-a..b` and `v1.2.3+a..b` are all in that band for the obvious
+          # `[0-9]+\.[0-9]+\.[0-9]+` version of this. Leading zeros in a numeric
+          # identifier and empty dot-separated identifiers are the two rules that
+          # do the work.
+          SEMVER='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$'
           if [ "$REF_TYPE" = tag ]; then
             candidate="${REF_NAME#v}"
-            if printf '%s' "$candidate" \
-              | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
+            if printf '%s' "$candidate" | grep -qE "$SEMVER"; then
               # Build metadata is dropped rather than stamped. A Docker tag cannot
               # contain `+`, so metadata-action emits `1.2.3` for `v1.2.3+build.5`
               # — stamping the `+build.5` form would disagree with the label it is
