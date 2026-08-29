@@ -291,7 +291,12 @@ func (s *Store) Reap(ctx context.Context, maxAttempts int) ([]Reaped, error) {
 		       attempts = CASE WHEN e.target = 'cancelled'
 		                       THEN j.attempts ELSE j.attempts + 1 END,
 		       audio    = CASE WHEN e.target = 'queued' THEN j.audio ELSE NULL END,
-		       last_release_reason = 'lease_expired',
+		       -- Unchanged on the cancelled branch: a cancellation is not a
+		       -- release, and recording one would contradict this column's
+		       -- own meaning on exactly the rows nobody re-reads.
+		       last_release_reason = CASE WHEN e.target = 'cancelled'
+		                                  THEN j.last_release_reason
+		                                  ELSE 'lease_expired' END,
 		       result   = CASE WHEN e.target = 'queued' THEN j.result
 		                       ELSE jsonb_build_object(
 		                              'job_id',   j.id,
@@ -396,7 +401,9 @@ func (s *Store) Release(ctx context.Context, id uuid.UUID, workerID, reason stri
 		       attempts = CASE WHEN h.target = 'cancelled'
 		                       THEN j.attempts ELSE j.attempts + 1 END,
 		       audio    = CASE WHEN h.target = 'queued' THEN j.audio ELSE NULL END,
-		       last_release_reason = $6,
+		       last_release_reason = CASE WHEN h.target = 'cancelled'
+		                                  THEN j.last_release_reason
+		                                  ELSE $6 END,
 		       result   = CASE WHEN h.target = 'queued' THEN j.result
 		                       ELSE jsonb_build_object(
 		                              'job_id',   j.id,

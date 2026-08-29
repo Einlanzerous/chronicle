@@ -242,8 +242,10 @@ type PartialMemo struct {
 // Every one of those behaviours is right, and together they make a partial memo
 // read as a healthy one.
 //
-// CHRN-28 owns the retry POLICY. What it will need first is a way to find
-// these, and a count nobody can see is not one.
+// CHRN-28 settled the retry policy, and its answer for partials is the one
+// already in force: keep them, mark them partial, and never let one satisfy the
+// durable gate. So this count is not a backlog to work through — it is the list
+// of memos whose best answer so far is incomplete, and the only way to see them.
 func (s *Store) PartialTranscripts(ctx context.Context, limit int) (int64, []PartialMemo, error) {
 	var total int64
 	if err := s.pool.QueryRow(ctx, `

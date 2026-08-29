@@ -263,15 +263,24 @@ func (h *harness) memo(t *testing.T, email, content string) store.Memo {
 	return res.Memo
 }
 
-func (h *harness) pump(t *testing.T, asr ASR) *Service {
+// noBackoff turns off CHRN-28's retry delay. A test that has to reach the
+// ceiling would otherwise take half an hour of wall clock, and what those tests
+// are about is the bound rather than the wait — the wait has its own test.
+func noBackoff(o *Options) { o.RetryBackoff = -1 }
+
+func (h *harness) pump(t *testing.T, asr ASR, opts ...func(*Options)) *Service {
 	t.Helper()
-	s, err := New(Options{
+	o := Options{
 		Store:  h.store,
 		Audio:  h.audio,
 		ASR:    asr,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError})),
 		Model:  "small.en",
-	})
+	}
+	for _, fn := range opts {
+		fn(&o)
+	}
+	s, err := New(o)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -583,7 +592,7 @@ func TestTheAttemptCeilingBoundsTheLoop(t *testing.T) {
 	h := newHarness(t)
 	asr := newFakeASR()
 	asr.set(func(f *fakeASR) { f.resultStatus = http.StatusGone })
-	p := h.pump(t, asr.serve(t))
+	p := h.pump(t, asr.serve(t), noBackoff)
 	memo := h.memo(t, "loop@example.test", "round and round")
 
 	for i := 0; i < DefaultMaxAttempts*3; i++ {
@@ -787,7 +796,7 @@ func TestNoFailurePathLeavesADurableTranscript(t *testing.T) {
 			h := newHarness(t)
 			asr := newFakeASR()
 			asr.set(asr.failing(code))
-			p := h.pump(t, asr.serve(t))
+			p := h.pump(t, asr.serve(t), noBackoff)
 			memo := h.memo(t, code+"@example.test", "a memo that fails")
 
 			for i := 0; i < DefaultMaxAttempts*2+2; i++ {
@@ -805,5 +814,62 @@ func TestNoFailurePathLeavesADurableTranscript(t *testing.T) {
 				t.Fatalf("state %q after the ceiling; a failing memo must end somewhere visible", m.State)
 			}
 		})
+	}
+}
+
+// THE RETRIES ARE BACKED OFF, NOT MERELY BOUNDED. The ticket asks for "bounded
+// retries with backoff", and a ceiling spent at the sweep interval spends
+// itself in about a hundred seconds — so a whisper process restarting takes
+// every memo in flight to `held` for a fault that clears on its own. That is
+// the cost this ticket exists to remove, moved from attempt one to attempt
+// five rather than removed.
+func TestAFailedAttemptWaitsBeforeItIsRetried(t *testing.T) {
+	h := newHarness(t)
+	asr := newFakeASR()
+	asr.set(asr.failing("inference_failed"))
+	p := h.pump(t, asr.serve(t)) // the real backoff, one minute
+	memo := h.memo(t, "backoff@example.test", "not so fast")
+
+	p.Tick(h.ctx) // submit
+	p.Tick(h.ctx) // poll, fail, requeue
+
+	if m := h.state(t, memo.ID); m.State != store.StateQueued {
+		t.Fatalf("state %q; setup expects the memo back in the queue", m.State)
+	}
+
+	// Several more sweeps, all inside the first minute.
+	for i := 0; i < 5; i++ {
+		p.Tick(h.ctx)
+	}
+
+	var attempts int
+	if err := h.store.Pool().QueryRow(h.ctx,
+		`SELECT count(*) FROM tier1.memo_jobs WHERE memo_id = $1`, memo.ID).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 1 {
+		t.Fatalf("%d attempts within the backoff window; the ceiling would be spent in "+
+			"seconds and a transient fault would still cost a person", attempts)
+	}
+	if m := h.state(t, memo.ID); m.State != store.StateQueued {
+		t.Fatalf("state %q; a memo waiting out its backoff stays queued rather than held", m.State)
+	}
+}
+
+// The delay grows, and it is capped. An unbounded doubling would put the last
+// attempt beyond any interval an operator would wait for.
+func TestTheRetryDelayDoublesAndIsCapped(t *testing.T) {
+	s := &Service{retryBackoff: RetryBackoff}
+	if got := s.retryDelay(0); got != 0 {
+		t.Fatalf("a memo with no attempts waited %s; the first attempt is never delayed", got)
+	}
+	if got := s.retryDelay(1); got != RetryBackoff {
+		t.Fatalf("first retry waits %s, want %s", got, RetryBackoff)
+	}
+	if got := s.retryDelay(2); got != 2*RetryBackoff {
+		t.Fatalf("second retry waits %s, want %s", got, 2*RetryBackoff)
+	}
+	if got := s.retryDelay(40); got != MaxRetryBackoff {
+		t.Fatalf("a far-out attempt waited %s; the doubling must cap rather than overflow", got)
 	}
 }

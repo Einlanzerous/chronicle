@@ -219,14 +219,46 @@ func (s *Store) memoJobs(ctx context.Context, query string, args ...any) ([]Memo
 // it again — leaving the memo untranscribable by any path the service or the
 // CLI offers.
 func (s *Store) CountMemoJobs(ctx context.Context, memoID uuid.UUID) (int, error) {
-	var n int
-	err := s.pool.QueryRow(ctx,
-		`SELECT count(*) FROM tier1.memo_jobs
-		  WHERE memo_id = $1 AND superseded_at IS NULL`, memoID).Scan(&n)
+	n, _, _, err := s.MemoAttempts(ctx, memoID)
+	return n, err
+}
+
+// MemoAttempts is CountMemoJobs plus WHEN the last one started.
+//
+// The time is what makes CHRN-28's retries BACKED OFF rather than merely
+// bounded. A ceiling with no delay spends itself at the sweep interval — five
+// attempts inside two minutes — so a whisper process that is restarting takes
+// every memo in flight to `held` for a fault that clears on its own a minute
+// later. The bound stops an infinite loop; the delay is what makes the retries
+// worth having.
+//
+// It also reports the LAST attempt's failure code, because not every requeue
+// deserves a wait. An attempt the service simply lost — `result_expired`,
+// `job_missing`, a rejected idempotency key — should be re-sent at once: the
+// memo is fine and the answer is gone. Only a transcription that actually
+// failed is worth waiting out.
+//
+// Zero time for a memo with no attempts, which the caller reads as "no wait".
+func (s *Store) MemoAttempts(ctx context.Context, memoID uuid.UUID) (n int, last time.Time, lastFailure string, err error) {
+	var at *time.Time
+	var code *string
+	err = s.pool.QueryRow(ctx, `
+		SELECT count(*), max(created_at),
+		       (SELECT failure_code FROM tier1.memo_jobs
+		         WHERE memo_id = $1 AND superseded_at IS NULL
+		         ORDER BY created_at DESC LIMIT 1)
+		  FROM tier1.memo_jobs
+		 WHERE memo_id = $1 AND superseded_at IS NULL`, memoID).Scan(&n, &at, &code)
 	if err != nil {
-		return 0, fmt.Errorf("store: count memo jobs: %w", err)
+		return 0, time.Time{}, "", fmt.Errorf("store: count memo jobs: %w", err)
 	}
-	return n, nil
+	if at != nil {
+		last = *at
+	}
+	if code != nil {
+		lastFailure = *code
+	}
+	return n, last, lastFailure, nil
 }
 
 // SupersedeMemoJobs declares a memo's settled attempts spent, so the ceiling

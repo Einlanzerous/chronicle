@@ -20,11 +20,8 @@ ALTER TABLE jobs ADD COLUMN IF NOT EXISTS last_release_reason TEXT;
 COMMENT ON COLUMN jobs.last_release_reason IS
   'CHRN-28. Why this job last went back to the queue: the reaper''s '
   '`lease_expired`, or the worker''s reason from Store.Release. NULL on a job '
-  'that has never been released. Read by the retry ceiling, which prices a '
-  'wedged run differently from a crashed one.';
-
--- What the ceiling scans: the requeue paths both filter on it, and a job that
--- has never been released never reaches them.
-CREATE INDEX IF NOT EXISTS jobs_attempts
-    ON jobs (attempts)
-    WHERE status IN ('leased', 'running');
+  'that has never been released, and unchanged by a cancellation, which is not '
+  'a release. DIAGNOSTIC, not read by any query: the ceiling prices the reason '
+  'in Go, at the call site that knows it (asr.CeilingFor). This is what an '
+  'operator reads when asking why a job dead-lettered, after the log line has '
+  'rotated away.';
