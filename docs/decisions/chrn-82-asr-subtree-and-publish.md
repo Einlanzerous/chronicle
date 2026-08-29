@@ -241,6 +241,15 @@ messages is cosmetic from here on; the path is what sorts them.
 `bump-minor-pre-major` is there so that `1.0.0` is cut by decision (ruling 1)
 and not by the first commit someone marks `!`.
 
+**[rev] And `initial-version: "0.1.0"`, because the manifest seed is not what
+sets the first number.** With no `asr-v*` tag to find, release-please ignores
+the manifest's `0.0.0` and proposes its own default first release — `1.0.0`,
+which is exactly the number ruling 1 said not to publish yet. The first
+release PR it opened (#35) said `release asr 1.0.0`; `initial-version` is the
+key that makes it say `0.1.0`, and it only applies to a package with no
+release behind it, so it is inert from the second release on. Found on the
+first release PR, which is where §4 said this would be checked.
+
 **[rev] Not `bump-patch-for-minor-pre-major`**, which the first draft also
 listed: that flag makes a `feat` bump the patch digit before 1.0, so the first
 release would have been `0.0.1` and ruling 1's `0.1.0` unreachable by any
