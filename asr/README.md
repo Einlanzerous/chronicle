@@ -119,6 +119,39 @@ Models are **not** baked in. `large-v3` alone is 2.9 GB and the four together ar
 5.0 GB, against a 466 MB default — and a model is data the service is pointed at,
 not code it ships. Mount them at `/opt/whisper/models`.
 
+## Publish
+
+The image is **`ghcr.io/einlanzerous/estate-asr`**, built by
+`.github/workflows/publish-asr.yml` on the repository's own runner:
+
+| trigger | tags |
+|---|---|
+| push to `main` touching `asr/` | `latest`, `sha-<short>` — `asrd version` reports `dev` |
+| tag `asr-vX.Y.Z` | `X.Y.Z`, `X.Y` — `asrd version` reports `X.Y.Z` |
+
+The tags come from release-please: this subtree is its own package, with its
+own changelog (`asr/CHANGELOG.md`) and its own version, independent of
+Chronicle's. That is the point of the subtree — the argument is
+`docs/decisions/chrn-82-asr-subtree-and-publish.md`. construct-server pins
+`ASR_TAG` at major.minor in `versions.env`, like every other first-party image;
+`latest` is main's tip and is a fallback, not a deployment.
+
+The name deliberately breaks the estate's `<repo>/<component>` habit. The
+image is what Catenary and construct-server consume, the repository is an
+implementation detail, and a name that said `chronicle/asr` would have to
+change on the day this subtree becomes its own repository.
+
+Two things about the build worth knowing rather than discovering:
+
+- **The whisper.cpp stages are cached in the registry**, at
+  `estate-asr:buildcache`, so a pin bump rebuilds them once and every build
+  after that is the `asrd` stage alone. A build that compiles whisper.cpp from
+  scratch on a commit that touched no pin means the cache tag was lost.
+- **A publish that changes the ENTRYPOINT, the pins or the stages invalidates
+  the tables below in the same commit.** The regression test is
+  `bench-in-container.sh` against the published image reading inside the
+  tolerances this file states, with load recorded at both ends.
+
 ## Smoke test — is the GPU actually being used?
 
 The first thing to check, always, because a silent CPU fallback reports success:
@@ -432,10 +465,6 @@ jump its queue.
 - **No callback or webhook.** Deliberately not now: it needs the service to hold
   its clients' credentials, which is the same objection that ruled out
   pull-by-URL for the audio.
-- **No GHCR publish — yet.** The repository question that was tied to it is
-  decided: `docs/decisions/chrn-82-asr-subtree-and-publish.md` keeps the
-  service here, in this subtree, with its own release. The publish itself is
-  that ticket's second PR.
 - **No HIP build.** IDEA-26 measured it slower in every cell, and a second
   backend in the image is a second thing that can be selected by accident.
 - **No generated `schema.sql` for the `asr` database.** Chronicle has one

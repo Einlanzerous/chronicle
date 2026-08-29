@@ -1,0 +1,128 @@
+name: publish-asr
+
+# Builds the shared estate ASR image (asr/Dockerfile: the pinned whisper.cpp
+# Vulkan build plus asrd) and pushes it to GHCR as
+# ghcr.io/einlanzerous/estate-asr (CHRN-82). A SIBLING of publish.yml rather
+# than a second job in it, with its own trigger paths and its own concurrency
+# group, so the two images in this repository cannot queue behind or cancel
+# each other.
+#
+# The name is deliberately not the estate's <repo>/<component> shape: the
+# image is what Catenary and construct-server consume, the repository is an
+# implementation detail, and a name that said chronicle/asr would have to
+# change on the day the subtree becomes its own repository.
+# docs/decisions/chrn-82-asr-subtree-and-publish.md, section 5.
+#
+# Tags, from two triggers:
+#   push to main touching asr/   -> :latest and :sha-<short>
+#   tag asr-vX.Y.Z (release-please) -> :X.Y.Z and :X.Y   (construct-server pins ASR_TAG at X.Y)
+#
+# The tag prefix is why this differs from publish.yml in shape: release-please
+# tags this package asr-v0.1.0, and metadata-action's `type=semver` does not
+# parse a prefixed tag, so the version is captured by `type=match` and
+# validated in a step of its own before anything is built.
+
+on:
+  push:
+    branches: [main]
+    # Path filters are NOT applied to tag pushes, so a tag always builds.
+    paths:
+      - "asr/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/publish-asr.yml"
+    tags: ["asr-v*"]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-asr-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    name: build and push estate-asr
+    # The whisper.cpp stages compile from source against a pinned Vulkan SDK
+    # with cmake -j $(nproc); this is the box with the cores, and the runner is
+    # online. Not load-bearing, because of the registry cache below: if the
+    # runner is down the workflow can be pointed at ubuntu-latest and runs
+    # slowly rather than not at all. CHRN-83 moves the other workflows here.
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - uses: actions/checkout@v4
+
+      # The tag is validated BEFORE metadata-action sees it, and both the
+      # version stamp and the release tags key off this step rather than off
+      # `ref_type == 'tag'`: a hand-cut tag that is not asr-vX.Y.Z fails here
+      # with a message, instead of producing an image with no version tags or
+      # an image claiming a version nothing released. SERV-154's third point.
+      - id: version
+        name: Validate the release tag
+        run: |
+          v=""
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            case "${GITHUB_REF_NAME}" in
+              asr-v[0-9]*.[0-9]*.[0-9]*) v="${GITHUB_REF_NAME#asr-v}" ;;
+              *) echo "::error::tag ${GITHUB_REF_NAME} is not asr-vX.Y.Z; nothing built"; exit 1 ;;
+            esac
+          fi
+          echo "version=${v}" >> "$GITHUB_OUTPUT"
+          if [ -n "$v" ]; then echo "release=true" >> "$GITHUB_OUTPUT"; else echo "release=false" >> "$GITHUB_OUTPUT"; fi
+          echo "version='${v:-<none: main build>}'"
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/einlanzerous/estate-asr
+          # SERV-154, fixed here before it can fire: `latest=auto` (the default)
+          # emits :latest by itself on any release build, so a release commit
+          # pushed to main and then tagged writes :latest twice with no ordering
+          # between the two. With latest=false the `type=raw` line below is the
+          # ONLY thing that can emit :latest, and it does so on main alone.
+          # Polarity (latest = main's tip) follows publish.yml until SERV-108
+          # chooses for the estate; the two images in one repository should not
+          # disagree with each other.
+          flavor: |
+            latest=false
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short,enable={{is_default_branch}}
+            type=match,pattern=asr-v(\d+\.\d+\.\d+),group=1
+            type=match,pattern=asr-v(\d+\.\d+)\.\d+,group=1
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: asr/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          # metadata-action's labels, then the title put back: the action
+          # derives org.opencontainers.image.title from the REPOSITORY name and
+          # a build-time --label overrides the Dockerfile's LABEL. This image is
+          # estate-asr, and its own label already says so.
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            org.opencontainers.image.title=estate-asr
+          # Build identity, read back by `asrd version`. VERSION only on a
+          # release build, for the reason publish.yml gives at length: a main
+          # build has no release to name and reports `dev`. GIT_SHA always.
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            GIT_SHA=${{ github.sha }}
+          # A REGISTRY cache, not GHA's. The whisper.cpp stages are the entire
+          # cost of this build and change only when a pin does; cached in the
+          # registry they are warm for whichever runner builds next, and they
+          # are not subject to the 10 GB per-repo limit a 971 MB image would
+          # spend quickly. mode=max keeps the intermediate stages, which is the
+          # point.
+          cache-from: type=registry,ref=ghcr.io/einlanzerous/estate-asr:buildcache
+          cache-to: type=registry,ref=ghcr.io/einlanzerous/estate-asr:buildcache,mode=max

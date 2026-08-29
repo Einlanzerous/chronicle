@@ -64,6 +64,7 @@
 # `release-please-config.json` on the BASE ref, so adding an `extra-files`
 # target there cannot silently un-match the release skip.
 ^CHANGELOG\.md$
+^asr/CHANGELOG\.md$
 
 # NOT excluded, deliberately, and each for a reason:
 #
