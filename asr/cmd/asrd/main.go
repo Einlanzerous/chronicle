@@ -3,10 +3,13 @@
 //
 // A SECOND BINARY IN CHRONICLE'S REPOSITORY, not a Chronicle subcommand. It has
 // its own database, its own role, its own migrations and its own migrator, and
-// it links nothing from Chronicle's store: Catenary is the second client, and
+// it links nothing from Chronicle at all: Catenary is the second client, and
 // the whole reason this is an estate service is that Catenary must not depend
-// on Chronicle's schema. CHRN-29 decides whether it moves to its own repo, and
-// says plainly that it is the last cheap moment to do so.
+// on Chronicle's schema. CHRN-82 decided it stays here, in the asr/ subtree,
+// with its own release (asr-v*) and a sealed boundary — nothing under asr/
+// imports anything outside it — so that if it ever becomes its own repository
+// the move is a filter-repo, a go.mod and an import-path rewrite, with nothing
+// of Chronicle's to untangle. docs/decisions/chrn-82-asr-subtree-and-publish.md.
 package main
 
 import (
@@ -21,7 +24,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Einlanzerous/chronicle/internal/asr"
+	"github.com/Einlanzerous/chronicle/asr/internal/asr"
 )
 
 // Stamped at build time with -ldflags "-X main.version=..." / "-X main.commit=...".
@@ -153,7 +156,7 @@ func runServe(args []string) error {
 	if len(models) == 0 {
 		logger.Warn("no models found: every submit will be refused",
 			"model_dir", cfg.ModelDir,
-			"remedy", "mount the ggml-*.bin store at ASR_MODEL_DIR (deploy/asr/compose.asr.yml)")
+			"remedy", "mount the ggml-*.bin store at ASR_MODEL_DIR (asr/deploy/compose.asr.yml)")
 	} else {
 		logger.Info("models available", "models", models, "default", cfg.DefaultModel)
 	}

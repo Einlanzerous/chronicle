@@ -206,16 +206,17 @@ jobs:
       #                         the same judgement that put watch/ and audio/
       #                         here: an ingest or deletion path earns the
       #                         expensive tier whatever mode its ticket ran in.
-      # internal/asr/ and cmd/asrd/ are the ASR service (CHRN-25): a job queue,
-      # a lease, an auth surface and a second database. deploy/asr/openapi.yaml
-      # is the contract two services generate from, and it is already covered by
-      # the `deploy/` entry.
+      # asr/ is the ASR service (CHRN-25), whole: a job queue, a lease, an auth
+      # surface, a second database, the pinned image, and the contract two
+      # services generate from (asr/openapi.yaml). The entire subtree, because
+      # every part of it is on the path between a memo and its transcript, and
+      # CHRN-82 made it one directory precisely so that it reads as one thing.
       #
       # internal/transcribe/ is CHRN-27, and it is here because it WRITES TIER 2:
       # it is the only thing that creates a transcript, and a transcript is what
       # CHRN-22 gates audio deletion on. A bug that writes the wrong `partial`
       # here becomes deleted audio there.
-      sensitive_paths: '^(internal/store/|internal/asr/|internal/transcribe/|internal/api/(session|cfaccess|ratelimit|router|storage|upload|transcription)|internal/(invite|config|audio|watch|upload|retention)/|cmd/(chronicle|asrd)/|migrations/|deploy/|scripts/|verify\.sh|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore)'
+      sensitive_paths: '^(internal/store/|asr/|internal/transcribe/|internal/api/(session|cfaccess|ratelimit|router|storage|upload|transcription)|internal/(invite|config|audio|watch|upload|retention)/|cmd/chronicle/|migrations/|deploy/|scripts/|verify\.sh|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore)'
 
       # No `docs_skip_extra`: this repo commits no knowledge-graph cache, and
       # the one generated artifact it does carry is excluded outright in

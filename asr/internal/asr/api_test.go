@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Einlanzerous/chronicle/internal/asrclient"
+	"github.com/Einlanzerous/chronicle/asr/internal/wire"
 )
 
 // The HTTP surface, in process. The lease properties are tested against a real
@@ -47,7 +47,7 @@ func submitReq(t *testing.T, url, token, key, mediaType, sha string, audio []byt
 		"Content-Disposition": {`form-data; name="spec"`},
 		"Content-Type":        {"application/json"},
 	})
-	_ = json.NewEncoder(spec).Encode(asrclient.JobSpec{AudioSha256: sha})
+	_ = json.NewEncoder(spec).Encode(wire.JobSpec{AudioSha256: sha})
 
 	part, _ := mw.CreatePart(textproto.MIMEHeader{
 		"Content-Disposition": {`form-data; name="audio"; filename="memo.ogg"`},
@@ -110,7 +110,7 @@ func TestUnsupportedMediaTypeIsRefusedAndTheSetIsDiscoverable(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("GET /v1/models: %d %s", code, body)
 	}
-	var caps asrclient.Capabilities
+	var caps wire.Capabilities
 	if err := json.Unmarshal(body, &caps); err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestSubmitStatusCodes(t *testing.T) {
 	if code != http.StatusCreated {
 		t.Fatalf("new job: %d %s", code, body)
 	}
-	var first asrclient.Job
+	var first wire.Job
 	if err := json.Unmarshal(body, &first); err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestSubmitStatusCodes(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("replay: %d %s, want 200", code, body)
 	}
-	var replay asrclient.Job
+	var replay wire.Job
 	if err := json.Unmarshal(body, &replay); err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestAnotherClientsJobIs404OverHTTP(t *testing.T) {
 	if code != http.StatusCreated {
 		t.Fatalf("submit: %d %s", code, body)
 	}
-	var job asrclient.Job
+	var job wire.Job
 	if err := json.Unmarshal(body, &job); err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +232,7 @@ func TestResultBeforeTerminalIs409(t *testing.T) {
 	if code != http.StatusCreated {
 		t.Fatalf("submit: %d %s", code, body)
 	}
-	var job asrclient.Job
+	var job wire.Job
 	if err := json.Unmarshal(body, &job); err != nil {
 		t.Fatal(err)
 	}
@@ -281,11 +281,11 @@ func TestCancelIsIdempotent(t *testing.T) {
 		if code != http.StatusOK {
 			t.Fatalf("cancel %d: status %d, want 200: %s", i, code, body)
 		}
-		var got asrclient.Job
+		var got wire.Job
 		if err := json.Unmarshal(body, &got); err != nil {
 			t.Fatal(err)
 		}
-		if got.Status != asrclient.JobStatusSucceeded {
+		if got.Status != wire.JobStatusSucceeded {
 			t.Fatalf("cancel changed a succeeded job to %q", got.Status)
 		}
 	}
@@ -303,7 +303,7 @@ func TestUnknownModelIsRefusedAtSubmit(t *testing.T) {
 		"Content-Type":        {"application/json"},
 	})
 	model := "large-v3"
-	_ = json.NewEncoder(spec).Encode(asrclient.JobSpec{AudioSha256: hash64("u"), Model: &model})
+	_ = json.NewEncoder(spec).Encode(wire.JobSpec{AudioSha256: hash64("u"), Model: &model})
 	part, _ := mw.CreatePart(textproto.MIMEHeader{
 		"Content-Disposition": {`form-data; name="audio"`},
 		"Content-Type":        {"audio/ogg"},
@@ -329,7 +329,7 @@ func TestUnknownModelIsRefusedAtSubmit(t *testing.T) {
 
 // readyzWith builds a router whose device state is whatever the test says, and
 // answers GET /readyz. The probe is open, so there is no token here.
-func readyzWith(t *testing.T, device func() ResidentState) (int, asrclient.Readiness) {
+func readyzWith(t *testing.T, device func() ResidentState) (int, wire.Readiness) {
 	t.Helper()
 	srv := httptest.NewServer(NewRouter(Deps{
 		Store:        testStore(t),
@@ -346,7 +346,7 @@ func readyzWith(t *testing.T, device func() ResidentState) (int, asrclient.Readi
 		t.Fatal(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	var body asrclient.Readiness
+	var body wire.Readiness
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}

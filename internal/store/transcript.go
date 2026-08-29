@@ -32,7 +32,7 @@ var ErrTranscriptDowngrade = errors.New("store: a complete transcript may not be
 //
 // Deliberately NOT internal/asrclient's generated type. The store should not
 // know the wire format: the pump converts once, at the boundary, so that a
-// change to deploy/asr/openapi.yaml cannot reach into Chronicle's schema.
+// change to asr/openapi.yaml cannot reach into Chronicle's schema.
 type Segment struct {
 	StartMS int64  `json:"start_ms"`
 	EndMS   int64  `json:"end_ms"`

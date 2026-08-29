@@ -3,12 +3,13 @@
 # Shared estate ASR runner — whisper.cpp on the R9700 (gfx1201, RDNA4), Vulkan/RADV.
 # CHRN-24. Chronicle is client one; Catenary is client two (CHRN-29).
 #
-#   docker build -f deploy/asr/Dockerfile -t estate-asr:dev .
+#   docker build -f asr/Dockerfile -t estate-asr:dev .
 #
-# FROM THE REPOSITORY ROOT, not from deploy/asr. It was the latter until
-# CHRN-25, which added the job service to this image: asrd is a Go binary in
-# this repository, and a build context that cannot see go.mod cannot build it.
-# The whisper.cpp stages read nothing from the context either way.
+# FROM THE REPOSITORY ROOT, not from asr/. It was the latter until CHRN-25,
+# which added the job service to this image: asrd is a Go binary in this
+# repository, and a build context that cannot see go.mod cannot build it. The
+# whisper.cpp stages read nothing from the context either way, and the asrd
+# stage reads only the asr/ subtree — see the COPY there for why.
 #
 # Everything that enters a published number is pinned, and the pins are the
 # deliverable rather than housekeeping. IDEA-26 could not promise that a later
@@ -40,7 +41,7 @@ ARG VULKAN_SDK_VERSION=1.4.357.1
 # RADV. Pinned to the driver the reference numbers were taken on, and pinned
 # EXACTLY on purpose: when this version rotates out of noble-updates the build
 # fails loudly instead of quietly measuring a different driver. Bump it as a
-# decision, then re-measure and update deploy/asr/README.md.
+# decision, then re-measure and update asr/README.md.
 ARG MESA_VERSION=25.2.8-0ubuntu0.24.04.2
 
 # The Vulkan loader. Declared once here and inherited by both stages that need
@@ -133,7 +134,13 @@ FROM golang:1.26-bookworm AS asrd
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
-COPY . .
+
+# ONLY THE SUBTREE. This is the boundary CHRN-82 §2 draws — nothing under asr/
+# imports anything outside it — enforced for free: a package outside asr/ is
+# not in the context, so an import of one fails this build rather than waiting
+# for a review to notice. It is also why a Chronicle-only commit no longer
+# invalidates this layer.
+COPY asr/ asr/
 
 # Build identity, defaulting to EMPTY rather than a placeholder for the reason
 # deploy/Dockerfile gives: an image built outside the publish workflow must not
@@ -144,7 +151,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
     -ldflags "-s -w \
       -X main.version=${VERSION} \
       -X main.commit=${GIT_SHA}" \
-    -o /out/asrd ./cmd/asrd
+    -o /out/asrd ./asr/cmd/asrd
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +225,7 @@ COPY --from=asrd /out/asrd /usr/local/bin/asrd
 EXPOSE 4011
 
 # THE ENTRYPOINT IS STILL whisper-cli, deliberately, even though the usual
-# thing this image does now is serve. deploy/asr/bench-in-container.sh runs the
+# thing this image does now is serve. asr/bench/bench-in-container.sh runs the
 # CHRN-12 harness through it unmodified, and that harness is what produced the
 # reference numbers in README.md — changing the entrypoint would mean rewriting
 # the measurement path in the same commit that adds a service to the image,

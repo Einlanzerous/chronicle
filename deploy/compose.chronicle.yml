@@ -167,7 +167,7 @@ services:
       #   signet target add-key --project construct-server \
       #     --path /opt/construct-server/.env --name CHRONICLE_ASR_TOKEN
       # It must equal the `chronicle:` half of ASR_CLIENT_TOKENS on the asr
-      # service (deploy/asr/compose.asr.yml).
+      # service (asr/deploy/compose.asr.yml).
       - CHRONICLE_ASR_URL=http://asr:4011
       - CHRONICLE_ASR_TOKEN=${CHRONICLE_ASR_TOKEN}
       # Empty takes the ASR deployment's own default, which is the right

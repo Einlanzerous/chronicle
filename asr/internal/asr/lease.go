@@ -12,7 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/Einlanzerous/chronicle/internal/asrclient"
+	"github.com/Einlanzerous/chronicle/asr/internal/wire"
 )
 
 // The worker side of the job table: claim, start, renew, finish — and the
@@ -199,7 +199,7 @@ func (s *Store) RenewLease(ctx context.Context, id uuid.UUID, workerID string, l
 // The audio is nulled in the same statement as the status, not in a follow-up:
 // the jobs_audio_present constraint holds that a terminal job carries no bytes,
 // so the two cannot drift even if a future caller forgets.
-func (s *Store) Finish(ctx context.Context, id uuid.UUID, workerID string, res asrclient.Result) (Job, error) {
+func (s *Store) Finish(ctx context.Context, id uuid.UUID, workerID string, res wire.Result) (Job, error) {
 	// A partial success is a real outcome — CHRN-28 decides what to do about
 	// one — so it is stored as written rather than refused here. What it is
 	// NOT is a durable transcript, and the predicate that says so is `succeeded
@@ -469,13 +469,13 @@ func (s *Store) PurgeResults(ctx context.Context) (int64, error) {
 // `partial` is TRUE on every one of these: no run completed, so this is
 // emphatically not a durable transcript, and a client that reads only that
 // field still reaches the safe answer.
-func (s *Store) terminalResult(id uuid.UUID, model string, status asrclient.ResultStatus, failure *asrclient.Failure) ([]byte, error) {
-	return json.Marshal(asrclient.Result{
+func (s *Store) terminalResult(id uuid.UUID, model string, status wire.ResultStatus, failure *wire.Failure) ([]byte, error) {
+	return json.Marshal(wire.Result{
 		JobId:    id,
 		Status:   status,
 		Partial:  true,
 		Text:     "",
-		Segments: []asrclient.Segment{},
+		Segments: []wire.Segment{},
 		Model:    "whisper.cpp/" + model,
 		Backend:  s.backend,
 		Failure:  failure,

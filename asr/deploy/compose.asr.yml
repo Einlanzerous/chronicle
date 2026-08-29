@@ -6,7 +6,7 @@
 # Postgres. Kept here so the deploy shape is reviewable in this repo.
 #
 # Prerequisites, in order:
-#   1. deploy/asr/provision-db.sh has run (database `asr` + role `asr` exist)
+#   1. asr/deploy/provision-db.sh has run (database `asr` + role `asr` exist)
 #   2. ASR_DB_PASSWORD and ASR_CLIENT_TOKENS reach .env out of Signet:
 #        signet target add-key --project construct-server \
 #          --path /opt/construct-server/.env --name ASR_DB_PASSWORD
@@ -25,11 +25,11 @@ services:
     container_name: asr
     restart: unless-stopped
     build:
-      # The repository ROOT, not deploy/asr: the image now builds asrd, which
-      # is a Go binary in this repository, and a context that cannot see go.mod
-      # cannot build it.
+      # The repository ROOT, not asr/: the image builds asrd, which is a Go
+      # binary in this repository, and a context that cannot see go.mod cannot
+      # build it.
       context: ../..
-      dockerfile: deploy/asr/Dockerfile
+      dockerfile: asr/Dockerfile
 
     # The image's ENTRYPOINT is whisper-cli, so that CHRN-12's benchmark
     # harness runs through it unmodified and the reference numbers keep

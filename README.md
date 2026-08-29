@@ -74,7 +74,7 @@ or the app    small.en       DISCUSSION                     discussion
   Chronicle Android app. Both converge on one memo row with the same idempotency
   rules, so a memo delivered twice by two routes is one memo.
 - **Transcribe** — the shared estate ASR service, `whisper.cpp` on Vulkan on the
-  R9700 (`deploy/asr/`). Chronicle submits over a versioned HTTP contract and
+  R9700 (`asr/`). Chronicle submits over a versioned HTTP contract and
   collects asynchronously, so a transcription outage delays the corpus rather
   than rejecting a recording. A 60-second note takes about a second. Audio
   prunes at 30 days unless pinned; **the transcript is permanent**, and the gate
@@ -90,12 +90,11 @@ or the app    small.en       DISCUSSION                     discussion
 | path | |
 |---|---|
 | `cmd/chronicle/` | entrypoint and subcommands |
-| `cmd/asrd/` | the estate ASR service — its own database, its own role |
+| `asr/` | the estate ASR service: the whisper.cpp image, the job contract, and `asrd` over it — its own database, its own role, its own release (`asr-v*`), and a sealed subtree that imports nothing outside itself |
 | `internal/` | config, model, store, api, the transcription pump |
-| `internal/asrclient/` | generated from `deploy/asr/openapi.yaml`; do not hand-edit |
+| `internal/asrclient/` | generated from `asr/openapi.yaml`; do not hand-edit |
 | `migrations/` | embedded SQL, applied on boot |
 | `deploy/` | compose fragment and Traefik labels |
-| `deploy/asr/` | the whisper.cpp image, the job contract, and the service over it |
 | `docs/decisions/` | written decisions for the tickets that get one before code |
 | `docs/salvage/` | the Scribe, recovered from `imperium-loop` before it was decommissioned |
 | `docs/benchmarks/` | measured ASR model choice — read this before picking a model |

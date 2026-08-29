@@ -8,7 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/Einlanzerous/chronicle/internal/asrclient"
+	"github.com/Einlanzerous/chronicle/asr/internal/wire"
 )
 
 // Worker is the claim loop over the resident transcriber. CHRN-26 replaced
@@ -217,27 +217,27 @@ func (w *Worker) processOne(ctx context.Context, job Job) (released bool) {
 		return true
 	}
 
-	res := asrclient.Result{
+	res := wire.Result{
 		JobId:    job.ID,
 		Model:    "whisper.cpp/" + job.Model,
 		Backend:  w.Store.backend,
-		Segments: []asrclient.Segment{},
+		Segments: []wire.Segment{},
 	}
 	if transcribeErr != nil {
 		var fe *FailureError
 		if !errors.As(transcribeErr, &fe) {
 			fe = &FailureError{Code: "internal_error", Message: transcribeErr.Error()}
 		}
-		res.Status = asrclient.ResultStatusFailed
+		res.Status = wire.ResultStatusFailed
 		// A run that did not complete is partial, always. The predicate
 		// CHRN-22 gates on is `succeeded AND NOT partial`, so a failure is
 		// already not durable — this is the belt to that brace, for a client
 		// that reads only the one field.
 		res.Partial = true
-		res.Failure = &asrclient.Failure{Code: fe.Code, Message: fe.Message}
+		res.Failure = &wire.Failure{Code: fe.Code, Message: fe.Message}
 		log.Warn("transcription failed", "code", fe.Code, "detail", fe.Message)
 	} else {
-		res.Status = asrclient.ResultStatusSucceeded
+		res.Status = wire.ResultStatusSucceeded
 		// The run completed, so it is not partial — INDEPENDENTLY of whether
 		// it produced any text. A memo that is forty seconds of silence has a
 		// true and complete answer, and treating "no speech" as not-durable

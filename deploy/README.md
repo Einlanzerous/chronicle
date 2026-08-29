@@ -14,7 +14,7 @@ Lyceum's (SERV-60), and the database is provisioned the way Purser's is.
 | `provision-db.sh` | database, roles and the tier lockdown. Run once, as superuser, under `signet exec` |
 | `compose.chronicle.yml` | the service block to paste into `~/construct-server/docker-compose.yml` |
 | `traefik-chronicle.yml` | the routers and middleware to paste into `config/traefik/dynamic/routers.yml` |
-| `asr/` | the shared estate ASR service: the pinned whisper.cpp image, the job contract, and `asrd`. **Its own database and its own role** — see `asr/README.md` |
+| `../asr/` | the shared estate ASR service — the pinned whisper.cpp image, the job contract, and `asrd`. Its own subtree, database, role and release; see `asr/README.md` |
 
 ## Order
 
@@ -143,8 +143,8 @@ no port, so this is the only route to it. Both variables or neither —
 rather than failing every submission with a 401 that reads like the token was
 wrong.
 
-1. **The ASR service first** — `deploy/asr/README.md`. It has its own database
-   and its own role, provisioned by `deploy/asr/provision-db.sh`.
+1. **The ASR service first** — `asr/README.md`. It has its own database
+   and its own role, provisioned by `asr/deploy/provision-db.sh`.
 2. **One token, two places.** `ASR_CLIENT_TOKENS` on the asr service carries
    `chronicle:<token>`; `CHRONICLE_ASR_TOKEN` here carries the same value. They
    are the same credential, and `client_id` is derived from it on the far side —

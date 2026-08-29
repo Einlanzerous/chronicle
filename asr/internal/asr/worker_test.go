@@ -286,7 +286,7 @@ func buildASRD(t *testing.T) string {
 		t.Fatal(err)
 	}
 	bin := filepath.Join(dir, "asrd")
-	build := exec.Command("go", "build", "-o", bin, "github.com/Einlanzerous/chronicle/cmd/asrd")
+	build := exec.Command("go", "build", "-o", bin, "github.com/Einlanzerous/chronicle/asr/cmd/asrd")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build asrd: %v\n%s", err, out)
 	}

@@ -17,7 +17,7 @@
 # Passwords are never written here or into a compose file — they live in Signet
 # and are injected for the length of this command:
 #
-#   signet exec --secret construct-server/ASR_DB_PASSWORD -- deploy/asr/provision-db.sh
+#   signet exec --secret construct-server/ASR_DB_PASSWORD -- asr/deploy/provision-db.sh
 #
 # Idempotent: re-running resets the role password to the current Signet value
 # and re-asserts the grants, which is also how a rotation is applied.

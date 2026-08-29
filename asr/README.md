@@ -104,13 +104,16 @@ the only thing between this and a far slower device.
 ## Build
 
 ```bash
-docker build -f deploy/asr/Dockerfile -t estate-asr:dev .
+docker build -f asr/Dockerfile -t estate-asr:dev .
 ```
 
-**From the repository root**, not from `deploy/asr` — it was the latter until
+**From the repository root**, not from `asr/` — it was the latter until
 CHRN-25 put `asrd` in this image. `asrd` is a Go binary in this repository, and
 a build context that cannot see `go.mod` cannot build it. The whisper.cpp
-stages read nothing from the context either way.
+stages read nothing from the context either way, and the `asrd` stage copies
+**only `go.mod`, `go.sum` and `asr/`** — which is the subtree boundary from
+CHRN-82 §2 enforced for free: anything under `asr/` that imported a package
+outside it would not be in the context, and the build would fail here.
 
 Models are **not** baked in. `large-v3` alone is 2.9 GB and the four together are
 5.0 GB, against a 466 MB default — and a model is data the service is pointed at,
@@ -158,7 +161,7 @@ run on the format the estate records in.
 ## Benchmark
 
 ```bash
-OUT_DIR=deploy/asr/results ./deploy/asr/bench-in-container.sh
+OUT_DIR=asr/bench/results ./asr/bench/bench-in-container.sh
 ```
 
 The harness is **not** rewritten for the container. The image lays itself out as
@@ -238,7 +241,7 @@ reference, not a verdict on one.
 ## The service — `asrd` (CHRN-25)
 
 The image carries a second binary: `asrd`, the transcription job service. The
-contract it implements is `deploy/asr/openapi.yaml`, and the argument behind
+contract it implements is `asr/openapi.yaml`, and the argument behind
 every shape in it is `docs/decisions/chrn-25-job-contract.md`.
 
 It is **in this image** because it shells out to `ffmpeg` and supervises
@@ -258,7 +261,7 @@ GET  /healthz  /readyz       open; /readyz pings the database and reports the qu
 Its own database and its own role, provisioned separately:
 
 ```bash
-signet exec --secret construct-server/ASR_DB_PASSWORD -- deploy/asr/provision-db.sh
+signet exec --secret construct-server/ASR_DB_PASSWORD -- asr/deploy/provision-db.sh
 ```
 
 Not a schema inside Chronicle's, and this is the call worth understanding rather
@@ -429,10 +432,10 @@ jump its queue.
 - **No callback or webhook.** Deliberately not now: it needs the service to hold
   its clients' credentials, which is the same objection that ruled out
   pull-by-URL for the audio.
-- **No GHCR publish.** CHRN-29, which is also the last cheap moment to decide
-  whether this service moves to a repository of its own — once Catenary
-  generates a client against a spec living in Chronicle's repo, moving it is a
-  coordinated change across two services.
+- **No GHCR publish — yet.** The repository question that was tied to it is
+  decided: `docs/decisions/chrn-82-asr-subtree-and-publish.md` keeps the
+  service here, in this subtree, with its own release. The publish itself is
+  that ticket's second PR.
 - **No HIP build.** IDEA-26 measured it slower in every cell, and a second
   backend in the image is a second thing that can be selected by accident.
 - **No generated `schema.sql` for the `asr` database.** Chronicle has one
