@@ -64,7 +64,7 @@ func heldMemoAtTheCeiling(t *testing.T, s *store.Store, ctx context.Context, ema
 		t.Fatal(err)
 	}
 
-	for i := 0; i < transcribe.MaxAttempts; i++ {
+	for i := 0; i < transcribe.DefaultMaxAttempts; i++ {
 		job, err := s.BeginTranscription(ctx, res.Memo.ID, "small.en", res.Memo.ContentHash)
 		if err != nil {
 			t.Fatalf("attempt %d: %v", i, err)
@@ -98,8 +98,8 @@ func TestRetranscribeClearsTheAttemptsThatHeldTheMemo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if before != transcribe.MaxAttempts {
-		t.Fatalf("countable attempts = %d, want %d", before, transcribe.MaxAttempts)
+	if before != transcribe.DefaultMaxAttempts {
+		t.Fatalf("countable attempts = %d, want %d", before, transcribe.DefaultMaxAttempts)
 	}
 
 	if err := runRetranscribe([]string{"--memo", memoID.String()}); err != nil {
@@ -134,8 +134,8 @@ func TestRetranscribeClearsTheAttemptsThatHeldTheMemo(t *testing.T) {
 		`SELECT count(*) FROM tier1.memo_jobs WHERE memo_id = $1`, memoID).Scan(&kept); err != nil {
 		t.Fatal(err)
 	}
-	if kept != transcribe.MaxAttempts {
-		t.Fatalf("%d attempt rows survived; want all %d kept as evidence", kept, transcribe.MaxAttempts)
+	if kept != transcribe.DefaultMaxAttempts {
+		t.Fatalf("%d attempt rows survived; want all %d kept as evidence", kept, transcribe.DefaultMaxAttempts)
 	}
 }
 
@@ -228,7 +228,7 @@ func TestRetranscribeRefusesAMemoWhoseAudioIsGone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != transcribe.MaxAttempts {
+	if n != transcribe.DefaultMaxAttempts {
 		t.Fatalf("countable attempts = %d; a refused release must not spend them", n)
 	}
 }

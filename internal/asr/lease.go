@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"time"
 
+	"slices"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
@@ -223,8 +225,37 @@ func (s *Store) Finish(ctx context.Context, id uuid.UUID, workerID string, res a
 // Reaped is one job the reaper moved, and why.
 type Reaped struct {
 	ID       uuid.UUID
-	Status   string // where it went: queued, or cancelled
+	Status   string // where it went: queued, cancelled, or failed
 	Attempts int
+}
+
+// ExhaustedCode is what a job carries when the retry ceiling stopped it.
+//
+// A CODE RATHER THAN A MESSAGE because a client branches on it: CHRN-27's pump
+// must not answer a dead-lettered job by starting another one, which is what a
+// generic failure would produce.
+const ExhaustedCode = "retries_exhausted"
+
+// wedgedReasons are the release reasons the LOWER ceiling applies to.
+//
+// CHRN-26 handed this ticket six reasons and the observation that `attempts`
+// cannot tell them apart while they cost very differently. These two are the
+// expensive ones: a job killed by a deadline spent five times its expected run
+// getting nowhere, up to 200 s of a stalled queue per attempt on `small.en` and
+// eleven minutes on `large-v3`. A crash costs one wasted claim, and the file
+// that crashes a decoder is usually the file that crashes it every time — but
+// that loop is cheap enough to give more rope.
+var wedgedReasons = []string{"inference_deadline", "decode_deadline"}
+
+// CeilingFor is the retry ceiling that applies to one release reason. The
+// policy lives here rather than at the two call sites so that "which reasons
+// are expensive" is answered in one place and cannot drift between the reaper
+// and the worker.
+func CeilingFor(reason string, max, wedged int) int {
+	if slices.Contains(wedgedReasons, reason) {
+		return wedged
+	}
+	return max
 }
 
 // Reap returns every job whose lease has expired.
@@ -239,41 +270,61 @@ type Reaped struct {
 // (constraint AS004 in 0001_jobs.up.sql); this is not the only line standing
 // between that and a re-run.
 //
-// `attempts` increments only on the requeue path, so the counter means "times
-// this job's claim was lost and it went back" — which is what CHRN-28 will set
-// a ceiling against.
-func (s *Store) Reap(ctx context.Context) ([]Reaped, error) {
+// `attempts` increments on every path that is not a cancellation, so the counter
+// means "times this job's claim was lost" — and CHRN-28's ceiling is read from
+// it here: a job that would come back for the (maxAttempts)th time is DEAD
+// LETTERED instead, to `failed` with ExhaustedCode, rather than requeued into a
+// loop nobody is watching.
+func (s *Store) Reap(ctx context.Context, maxAttempts int) ([]Reaped, error) {
 	rows, err := s.pool.Query(ctx, `
-		UPDATE jobs
-		   SET status   = CASE WHEN cancel_requested_at IS NOT NULL
-		                       THEN 'cancelled' ELSE 'queued' END,
-		       attempts = CASE WHEN cancel_requested_at IS NOT NULL
-		                       THEN attempts ELSE attempts + 1 END,
-		       audio    = CASE WHEN cancel_requested_at IS NOT NULL
-		                       THEN NULL ELSE audio END,
-		       result   = CASE WHEN cancel_requested_at IS NOT NULL
-		                       THEN jsonb_build_object(
-		                              'job_id',   id,
-		                              'status',   'cancelled',
+		WITH expired AS (
+		    SELECT id,
+		           CASE WHEN cancel_requested_at IS NOT NULL THEN 'cancelled'
+		                WHEN attempts + 1 >= $3                THEN 'failed'
+		                ELSE 'queued' END AS target
+		      FROM jobs
+		     WHERE status IN ('leased', 'running')
+		       AND lease_expires_at < now()
+		)
+		UPDATE jobs j
+		   SET status   = e.target,
+		       attempts = CASE WHEN e.target = 'cancelled'
+		                       THEN j.attempts ELSE j.attempts + 1 END,
+		       audio    = CASE WHEN e.target = 'queued' THEN j.audio ELSE NULL END,
+		       last_release_reason = 'lease_expired',
+		       result   = CASE WHEN e.target = 'queued' THEN j.result
+		                       ELSE jsonb_build_object(
+		                              'job_id',   j.id,
+		                              'status',   e.target,
 		                              'partial',  true,
 		                              'text',     '',
 		                              'segments', '[]'::jsonb,
-		                              'model',    'whisper.cpp/' || model,
+		                              'model',    'whisper.cpp/' || j.model,
 		                              'backend',  $1::text)
-		                       ELSE result END,
-		       result_purge_at = CASE WHEN cancel_requested_at IS NOT NULL
-		                              THEN now() + make_interval(secs => $2)
-		                              ELSE result_purge_at END,
-		       finished_at = CASE WHEN cancel_requested_at IS NOT NULL
-		                          THEN now() ELSE finished_at END,
-		       started_at  = CASE WHEN cancel_requested_at IS NOT NULL
-		                          THEN started_at ELSE NULL END,
+		                            || CASE WHEN e.target = 'failed'
+		                                    THEN jsonb_build_object('failure',
+		                                           jsonb_build_object(
+		                                             'code',    '`+ExhaustedCode+`',
+		                                             'message', 'the retry ceiling stopped this job after ' ||
+		                                                        (j.attempts + 1) || ' attempts'))
+		                                    ELSE '{}'::jsonb END END,
+		       result_purge_at = CASE WHEN e.target = 'queued'
+		                              THEN j.result_purge_at
+		                              ELSE now() + make_interval(secs => $2) END,
+		       finished_at = CASE WHEN e.target = 'queued' THEN j.finished_at ELSE now() END,
+		       started_at  = CASE WHEN e.target = 'queued' THEN NULL ELSE j.started_at END,
 		       lease_expires_at = NULL,
 		       leased_by = NULL
-		 WHERE status IN ('leased', 'running')
-		   AND lease_expires_at < now()
-		RETURNING id, status, attempts`,
-		s.backend, s.resultTTL.Seconds())
+		  FROM expired e
+		 WHERE j.id = e.id
+		   -- The status and lease predicates are REPEATED here on purpose. The
+		   -- CTE chose the target from one snapshot; without them a second
+		   -- reaper that blocked on this row would apply its own choice to a
+		   -- row already reaped and increment attempts twice.
+		   AND j.status IN ('leased', 'running')
+		   AND j.lease_expires_at < now()
+		RETURNING j.id, j.status, j.attempts`,
+		s.backend, s.resultTTL.Seconds(), maxAttempts)
 	if err != nil {
 		return nil, fmt.Errorf("asr: reap: %w", err)
 	}
@@ -320,42 +371,63 @@ type Released struct {
 // being mechanical, so such a job goes to `cancelled` with the reaper's
 // terminal payload instead.
 //
+// `maxAttempts` is CHRN-28's ceiling for THIS reason — see CeilingFor. A job
+// that would come back for the (maxAttempts)th time is dead-lettered to
+// `failed` with ExhaustedCode instead, because a file that wedges the GPU on
+// every attempt is a file that will wedge it on the next one too.
+//
 // `reason` travels with the outcome so exactly one line says why. It matters
 // because a crash and a deadline breach both increment `attempts` and the
 // counter cannot tell them apart — while they cost differently by a factor of
 // five, which is CHRN-28's ceiling to set.
-func (s *Store) Release(ctx context.Context, id uuid.UUID, workerID, reason string) (Released, error) {
+func (s *Store) Release(ctx context.Context, id uuid.UUID, workerID, reason string, maxAttempts int) (Released, error) {
 	out := Released{Reason: reason}
 	err := s.pool.QueryRow(ctx, `
-		UPDATE jobs
-		   SET status   = CASE WHEN cancel_requested_at IS NOT NULL
-		                       THEN 'cancelled' ELSE 'queued' END,
-		       attempts = CASE WHEN cancel_requested_at IS NOT NULL
-		                       THEN attempts ELSE attempts + 1 END,
-		       audio    = CASE WHEN cancel_requested_at IS NOT NULL
-		                       THEN NULL ELSE audio END,
-		       result   = CASE WHEN cancel_requested_at IS NOT NULL
-		                       THEN jsonb_build_object(
-		                              'job_id',   id,
-		                              'status',   'cancelled',
+		WITH held AS (
+		    SELECT id,
+		           CASE WHEN cancel_requested_at IS NOT NULL THEN 'cancelled'
+		                WHEN attempts + 1 >= $5                THEN 'failed'
+		                ELSE 'queued' END AS target
+		      FROM jobs
+		     WHERE id = $3 AND leased_by = $4 AND status IN ('leased', 'running')
+		)
+		UPDATE jobs j
+		   SET status   = h.target,
+		       attempts = CASE WHEN h.target = 'cancelled'
+		                       THEN j.attempts ELSE j.attempts + 1 END,
+		       audio    = CASE WHEN h.target = 'queued' THEN j.audio ELSE NULL END,
+		       last_release_reason = $6,
+		       result   = CASE WHEN h.target = 'queued' THEN j.result
+		                       ELSE jsonb_build_object(
+		                              'job_id',   j.id,
+		                              'status',   h.target,
 		                              'partial',  true,
 		                              'text',     '',
 		                              'segments', '[]'::jsonb,
-		                              'model',    'whisper.cpp/' || model,
+		                              'model',    'whisper.cpp/' || j.model,
 		                              'backend',  $1::text)
-		                       ELSE result END,
-		       result_purge_at = CASE WHEN cancel_requested_at IS NOT NULL
-		                              THEN now() + make_interval(secs => $2)
-		                              ELSE result_purge_at END,
-		       finished_at = CASE WHEN cancel_requested_at IS NOT NULL
-		                          THEN now() ELSE finished_at END,
-		       started_at  = CASE WHEN cancel_requested_at IS NOT NULL
-		                          THEN started_at ELSE NULL END,
+		                            || CASE WHEN h.target = 'failed'
+		                                    THEN jsonb_build_object('failure',
+		                                           jsonb_build_object(
+		                                             'code',    '`+ExhaustedCode+`',
+		                                             'message', 'the retry ceiling stopped this job after ' ||
+		                                                        (j.attempts + 1) || ' attempts; last reason: ' || $6::text))
+		                                    ELSE '{}'::jsonb END END,
+		       result_purge_at = CASE WHEN h.target = 'queued'
+		                              THEN j.result_purge_at
+		                              ELSE now() + make_interval(secs => $2) END,
+		       finished_at = CASE WHEN h.target = 'queued' THEN j.finished_at ELSE now() END,
+		       started_at  = CASE WHEN h.target = 'queued' THEN NULL ELSE j.started_at END,
 		       lease_expires_at = NULL,
 		       leased_by = NULL
-		 WHERE id = $3 AND leased_by = $4 AND status IN ('leased', 'running')
-		RETURNING id, status, attempts`,
-		s.backend, s.resultTTL.Seconds(), id, workerID).Scan(&out.ID, &out.Status, &out.Attempts)
+		  FROM held h
+		 WHERE j.id = h.id
+		   -- Repeated for the reason Reap repeats them: the CTE chose from one
+		   -- snapshot, and the lease may have moved since.
+		   AND j.leased_by = $4
+		   AND j.status IN ('leased', 'running')
+		RETURNING j.id, j.status, j.attempts`,
+		s.backend, s.resultTTL.Seconds(), id, workerID, maxAttempts, reason).Scan(&out.ID, &out.Status, &out.Attempts)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// The lease was lost between the failure and this call. Whoever holds
 		// the job now is entitled to finish it; saying nothing is correct.

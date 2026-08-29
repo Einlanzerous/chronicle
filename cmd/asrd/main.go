@@ -202,6 +202,7 @@ func runServe(args []string) error {
 		// interval to be noticed leaves the job idle for the sum of the two.
 		Interval:      cfg.LeaseTTL / 3,
 		PurgeInterval: time.Hour,
+		MaxAttempts:   cfg.MaxAttempts,
 	}
 	running.Add(1)
 	go func() {
@@ -240,6 +241,8 @@ func runServe(args []string) error {
 			Idle:               time.Second,
 			ResidentModel:      func() string { return transcriber.State().Model },
 			ModelSwitchMaxWait: cfg.ModelSwitchMaxWait,
+			MaxAttempts:        cfg.MaxAttempts,
+			MaxAttemptsWedged:  cfg.MaxAttemptsWedged,
 			Device:             deviceLock.Held,
 		}
 		running.Add(1)

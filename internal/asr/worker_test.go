@@ -67,7 +67,7 @@ func TestKillNineReturnsTheJobToTheQueue(t *testing.T) {
 		return err == nil && got.LeaseExpiresAt != nil && got.LeaseExpiresAt.Before(time.Now())
 	})
 
-	reaped, err := s.Reap(ctx)
+	reaped, err := s.Reap(ctx, DefaultMaxAttempts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestCancelledJobWhoseWorkerDiesIsNotRequeued(t *testing.T) {
 		return err == nil && got.LeaseExpiresAt != nil && got.LeaseExpiresAt.Before(time.Now())
 	})
 
-	if _, err := s.Reap(ctx); err != nil {
+	if _, err := s.Reap(ctx, DefaultMaxAttempts); err != nil {
 		t.Fatal(err)
 	}
 
@@ -152,7 +152,7 @@ func TestCancelledJobWhoseWorkerDiesIsNotRequeued(t *testing.T) {
 	}
 
 	// And it stays cancelled: a second reap, and a claim, must not resurrect it.
-	if _, err := s.Reap(ctx); err != nil {
+	if _, err := s.Reap(ctx, DefaultMaxAttempts); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Claim(ctx, "worker-2", testLease); !errors.Is(err, ErrNotFound) {

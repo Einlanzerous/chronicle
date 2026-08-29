@@ -573,9 +573,12 @@ func TestMissingAudioHoldsRatherThanLoops(t *testing.T) {
 	}
 }
 
-// The attempt ceiling bounds the requeue loop. It is a PLACEHOLDER — the retry
-// policy is CHRN-28's — and it is here so that a service which keeps losing
-// jobs cannot put one memo through an unmetered series of GPU runs.
+// The attempt ceiling bounds the requeue loop, so that a service which keeps
+// losing jobs cannot put one memo through an unmetered series of GPU runs.
+//
+// CHRN-28 turned this from a bound into a policy: the memo is held with a
+// reason that tells a person what happened and what clears it, rather than one
+// naming a ticket that had not been written yet.
 func TestTheAttemptCeilingBoundsTheLoop(t *testing.T) {
 	h := newHarness(t)
 	asr := newFakeASR()
@@ -583,16 +586,17 @@ func TestTheAttemptCeilingBoundsTheLoop(t *testing.T) {
 	p := h.pump(t, asr.serve(t))
 	memo := h.memo(t, "loop@example.test", "round and round")
 
-	for i := 0; i < MaxAttempts*3; i++ {
+	for i := 0; i < DefaultMaxAttempts*3; i++ {
 		p.Tick(h.ctx)
 	}
 
 	m := h.state(t, memo.ID)
 	if m.State != store.StateHeld {
-		t.Fatalf("state %q after %d sweeps; the requeue loop is unbounded", m.State, MaxAttempts*3)
+		t.Fatalf("state %q after %d sweeps; the requeue loop is unbounded", m.State, DefaultMaxAttempts*3)
 	}
-	if m.StateReason == nil || !strings.Contains(*m.StateReason, "CHRN-28") {
-		t.Fatalf("state_reason = %v; the hold should name the ticket that owns the real policy", m.StateReason)
+	if m.StateReason == nil || !strings.Contains(*m.StateReason, "retranscribe") {
+		t.Fatalf("state_reason = %v; a held memo's reason has to tell a person what clears it",
+			m.StateReason)
 	}
 
 	var attempts int
@@ -600,8 +604,8 @@ func TestTheAttemptCeilingBoundsTheLoop(t *testing.T) {
 		`SELECT count(*) FROM tier1.memo_jobs WHERE memo_id = $1`, memo.ID).Scan(&attempts); err != nil {
 		t.Fatal(err)
 	}
-	if attempts > MaxAttempts {
-		t.Fatalf("%d attempts; the ceiling is %d", attempts, MaxAttempts)
+	if attempts > DefaultMaxAttempts {
+		t.Fatalf("%d attempts; the ceiling is %d", attempts, DefaultMaxAttempts)
 	}
 }
 
@@ -679,5 +683,127 @@ func TestAnIdempotencyMismatchRequeuesForAFreshKey(t *testing.T) {
 	}
 	if got := h.state(t, memo.ID).State; got != store.StateTranscribed {
 		t.Fatalf("state %q; the memo did not recover", got)
+	}
+}
+
+// --- CHRN-28: retry, then somewhere a human notices ------------------------
+
+// failing points the fake at a failed job carrying one code.
+func (f *fakeASR) failing(code string) func(*fakeASR) {
+	return func(f *fakeASR) {
+		f.jobStatus = asrclient.JobStatusFailed
+		f.result = asrclient.Result{
+			Status:  asrclient.ResultStatusFailed,
+			Partial: true,
+			Model:   "whisper.cpp/small.en", Backend: "vulkan",
+			Segments: []asrclient.Segment{},
+			Failure:  &asrclient.Failure{Code: code, Message: "the fake failed on purpose"},
+		}
+	}
+}
+
+// A FAILING MEMO IS RETRIED BEFORE IT IS HELD. Half of the ticket's Done-when,
+// and the half CHRN-27 did not ship: every failure held the memo on its first
+// attempt, so one dropped job, one crashed child or one 500 from a restarting
+// service each cost a person's attention.
+func TestAFailedAttemptIsRetriedBeforeItIsHeld(t *testing.T) {
+	h := newHarness(t)
+	asr := newFakeASR()
+	asr.set(asr.failing("inference_failed"))
+	p := h.pump(t, asr.serve(t))
+	memo := h.memo(t, "retry@example.test", "worth another go")
+
+	// One sweep to submit, one to poll and fail.
+	p.Tick(h.ctx)
+	p.Tick(h.ctx)
+
+	m := h.state(t, memo.ID)
+	if m.State == store.StateHeld {
+		t.Fatal("a transient failure held the memo on its first attempt; it should be retried")
+	}
+	if m.State != store.StateQueued {
+		t.Fatalf("state %q; a failed attempt returns the memo to the queue", m.State)
+	}
+}
+
+// A PERMANENT FAILURE IS HELD AT ONCE. Spending the ceiling to arrive at the
+// same answer wastes GPU and delays the human who has to fix the mount.
+func TestAPermanentFailureIsHeldWithoutSpendingTheCeiling(t *testing.T) {
+	h := newHarness(t)
+	asr := newFakeASR()
+	asr.set(asr.failing("decode_failed"))
+	p := h.pump(t, asr.serve(t))
+	memo := h.memo(t, "broken@example.test", "unreadable bytes")
+
+	p.Tick(h.ctx)
+	p.Tick(h.ctx)
+
+	m := h.state(t, memo.ID)
+	if m.State != store.StateHeld {
+		t.Fatalf("state %q; a decode failure will fail identically next time", m.State)
+	}
+	if m.StateReason == nil || !strings.Contains(*m.StateReason, "decode_failed") {
+		t.Fatalf("state_reason = %v; the code is what tells a person what to fix", m.StateReason)
+	}
+
+	var attempts int
+	if err := h.store.Pool().QueryRow(h.ctx,
+		`SELECT count(*) FROM tier1.memo_jobs WHERE memo_id = $1`, memo.ID).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 1 {
+		t.Fatalf("%d attempts for a permanent failure; want 1", attempts)
+	}
+}
+
+// asrd's own ceiling is permanent HERE too. Starting a fresh attempt would run
+// the same file into the same wall with a new counter, which is how two
+// bounded loops make one unbounded one.
+func TestAnExhaustedASRJobIsNotRetriedAgain(t *testing.T) {
+	h := newHarness(t)
+	asr := newFakeASR()
+	asr.set(asr.failing("retries_exhausted"))
+	p := h.pump(t, asr.serve(t))
+	memo := h.memo(t, "exhausted@example.test", "the service gave up")
+
+	p.Tick(h.ctx)
+	p.Tick(h.ctx)
+
+	if m := h.state(t, memo.ID); m.State != store.StateHeld {
+		t.Fatalf("state %q; the ASR service already exhausted its retries", m.State)
+	}
+}
+
+// NO FAILURE PATH PRODUCES A DURABLE TRANSCRIPT — the ticket's last Done-when,
+// and the one that matters most: a durable transcript is the only thing that
+// lets CHRN-22 delete the audio, so this is the assertion that failure can
+// never cost a recording.
+func TestNoFailurePathLeavesADurableTranscript(t *testing.T) {
+	for _, code := range []string{
+		"decode_failed", "inference_failed", "retries_exhausted",
+		"model_unloadable", "internal_error",
+	} {
+		t.Run(code, func(t *testing.T) {
+			h := newHarness(t)
+			asr := newFakeASR()
+			asr.set(asr.failing(code))
+			p := h.pump(t, asr.serve(t))
+			memo := h.memo(t, code+"@example.test", "a memo that fails")
+
+			for i := 0; i < DefaultMaxAttempts*2+2; i++ {
+				p.Tick(h.ctx)
+			}
+
+			durable, err := h.store.HasDurableTranscript(h.ctx, memo.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if durable {
+				t.Fatalf("%s produced a durable transcript; the pruner would delete the audio", code)
+			}
+			if m := h.state(t, memo.ID); m.State != store.StateHeld {
+				t.Fatalf("state %q after the ceiling; a failing memo must end somewhere visible", m.State)
+			}
+		})
 	}
 }

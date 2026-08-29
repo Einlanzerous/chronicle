@@ -46,6 +46,11 @@ type Worker struct {
 	// under mixed models.
 	ModelSwitchMaxWait time.Duration
 
+	// MaxAttempts and MaxAttemptsWedged are CHRN-28's ceilings, applied per
+	// release reason by CeilingFor.
+	MaxAttempts       int
+	MaxAttemptsWedged int
+
 	// Device reports whether this process holds the device lock. A standby
 	// claims NOTHING: it serves the API, and the process that owns the card
 	// does the work. nil means "no lock in play", which is what the tests that
@@ -262,7 +267,14 @@ func (w *Worker) processOne(ctx context.Context, job Job) (released bool) {
 // differently by a factor of five. That difference is CHRN-28's to price, and
 // this line is where it reads it.
 func (w *Worker) release(ctx context.Context, job Job, cause *ReleaseError, elapsed time.Duration, log *slog.Logger) {
-	out, err := w.Store.Release(ctx, job.ID, w.ID, cause.Reason)
+	max, wedged := w.MaxAttempts, w.MaxAttemptsWedged
+	if max < 1 {
+		max = DefaultMaxAttempts
+	}
+	if wedged < 1 {
+		wedged = DefaultMaxAttemptsWedged
+	}
+	out, err := w.Store.Release(ctx, job.ID, w.ID, cause.Reason, CeilingFor(cause.Reason, max, wedged))
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			log.Warn("could not release the job; the lease was already lost",
@@ -270,6 +282,12 @@ func (w *Worker) release(ctx context.Context, job Job, cause *ReleaseError, elap
 			return
 		}
 		log.Error("could not release the job", "reason", cause.Reason, "error", err)
+		return
+	}
+	if out.Status == StatusFailed {
+		log.Error("RETRY CEILING REACHED; job dead-lettered and will not be retried",
+			"reason", out.Reason, "detail", cause.Detail,
+			"attempts", out.Attempts, "code", ExhaustedCode)
 		return
 	}
 	log.Warn("job released without a result; nothing was wrong with the job itself",
