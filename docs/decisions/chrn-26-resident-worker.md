@@ -404,6 +404,40 @@ Three rules follow, and none of them are optional:
    (`server.cpp:1175-1182`) — so "not installed" and "installed and broken" are
    distinguishable, and only the second costs the resident process.
 
+**[impl] The last half-sentence turned out to be wrong, and the correction was
+measured rather than read.** `/load` stores `SERVER_STATE_LOADING_MODEL`
+*before* both of its 400 checks (`server.cpp:1163-1183`) and never resets it on
+either path. Run against the pinned tree in the CHRN-24 image:
+
+```
+GET  /health                                  200  {"status":"ok"}
+POST /load  model=/opt/whisper/models/ggml-nope.bin   400  Invalid request
+GET  /health                                  404  File Not Found (/health)
+POST /inference                               200  ...a correct transcript...
+```
+
+So an absent model leaves the child **permanently unhealthy while still
+transcribing perfectly well** — a readiness that lies, on a process this service
+supervises by polling exactly that endpoint. The absent case therefore costs the
+resident process too, and `asrd` restarts it on last-known-good rather than
+leaving it. It also stats the model file itself first, so the 400 is the race —
+the file went away between the check and the call — and not the ordinary path.
+
+**Two other things that run says, both of which code would otherwise be written
+against:**
+
+- **`/health` never answers 503.** `set_error_handler`
+  (`server.cpp:1231-1238`) rewrites every non-500 error response, so the
+  handler's 503 arrives as a **404**. §1's [rev] paragraph reads the handler
+  correctly and the wire disagrees with it. `asrd` treats anything but 200 as
+  not-ready, which is right either way.
+- **`/load`'s JSON error bodies never arrive either** — the same handler
+  replaces `{"error":"model not found!"}` with the plain text `Invalid
+  request`. The STATUS is the only thing to branch on.
+
+Nothing else in this section changes: absent is still distinguished from broken,
+and only absent is recoverable by putting the file back.
+
 **A correction to the review, which is worth having right because code would be
 written for it.** `/inference` does **not** answer 503 during a load. Both
 handlers take the same `whisper_mutex` (`server.cpp:638`, locked at `819` for
@@ -602,6 +636,23 @@ and `verbose_json` reports it too — so this needs nothing new to compute. And
 the per-job inference wall-clock it requires **is the same number ruling 2 wants
 for contention detection**, so the two findings cost one measurement between
 them.
+
+**[impl] The rule wanted a third application, and the review of the code found
+it.** This section bounded `/inference`, and [rev 3] bounded `/load`. **The
+decode had neither.** An ffmpeg that does not exit reproduces this section's own
+failure one step earlier and more quietly than either: the renewal goroutine
+ticks, the job lease never expires, the reaper never fires, and the one worker
+goroutine is blocked so nothing else is claimed — while the resident process is
+up and holding its model, so `/readyz` answers **ready, with a model**. Only
+`queue_depth` climbing says anything at all, and nothing says why.
+
+So the decode gets a wall clock too: **a fixed 5 minutes**, not derived, because
+the duration it would be derived from is the thing the decode produces. The
+decode runs at roughly 390x realtime in this image (154 ms for the 60 s clip),
+so a forty-minute memo takes about six seconds and this is fifty times that. It
+is not a performance budget. A breach releases the job with reason
+`decode_deadline`, which is a fourth thing **CHRN-28** can price separately —
+and it should, because unlike the other three it costs no GPU at all.
 
 **[rev 2] `expected_rate(model)` is the WORKER's rate, not the table's.**
 CHRN-24's numbers describe the R9700. A worker on another device (§3 [rev 2])

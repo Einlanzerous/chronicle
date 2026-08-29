@@ -35,13 +35,22 @@ import (
 
 // stubTranscriber stands in for the GPU. It is a Go type rather than a fake
 // binary because what is being tested here is the CONTRACT, not the runner;
-// internal/asr's own tests exercise ffmpeg and whisper-cli through the real
-// CLITranscriber.
+// internal/asr's own tests exercise ffmpeg and a real child process through the
+// real Resident.
 type stubTranscriber struct{ text string }
 
 func (s stubTranscriber) Models() []string { return []string{"small.en"} }
 
-func (s stubTranscriber) Transcribe(ctx context.Context, _ []byte, _, _, _ string) (asr.Transcript, error) {
+func (s stubTranscriber) Transcribe(ctx context.Context, req asr.TranscribeRequest) (asr.Transcript, error) {
+	const durationMs = 60000
+	// The worker moves the job leased -> running here, which is the edge
+	// CHRN-26 made visible: `leased` while it decodes and waits for the
+	// device, `running` only once inference has actually started.
+	if req.OnInference != nil {
+		if err := req.OnInference(durationMs); err != nil {
+			return asr.Transcript{}, err
+		}
+	}
 	segs := []asrclient.Segment{}
 	covered := int64(0)
 	if s.text != "" {
@@ -50,7 +59,7 @@ func (s stubTranscriber) Transcribe(ctx context.Context, _ []byte, _, _, _ strin
 	}
 	return asr.Transcript{
 		Text: s.text, Segments: segs,
-		AudioDurationMs: 60000, CoveredMs: covered,
+		AudioDurationMs: durationMs, CoveredMs: covered,
 	}, nil
 }
 

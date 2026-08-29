@@ -22,7 +22,9 @@ import (
 // whose lease has passed. Nothing here asks a dying process to do anything.
 
 // Claim takes the oldest queued job for this worker, or returns ErrNotFound
-// when the queue is empty.
+// when the queue is empty. Global FIFO, no fairness: kept for the tests that
+// exercise the lease itself, where one client submits everything and the
+// ordering is not what is under test.
 //
 // COMPARE-AND-SWAP, and this is inherited rather than invented: CHRN-18's
 // review measured SIX OF SIX workers winning the same claim once the `from`
@@ -47,6 +49,76 @@ func (s *Store) Claim(ctx context.Context, workerID string, leaseTTL time.Durati
 		   AND status = 'queued'
 		RETURNING `+jobColumns,
 		workerID, leaseTTL.Seconds()))
+}
+
+// ClaimForModel is Claim with CHRN-26 §5's ordering: round-robin by client,
+// biased towards the model this worker already holds.
+//
+// It is the claim the resident worker uses, and the CAS shape above is
+// untouched — `WHERE status = 'queued'` and SKIP LOCKED are both still here.
+// ONLY THE ORDERING CHANGES, which is what §5 promised and what keeps CHRN-25's
+// durable half intact.
+//
+// The order, stated so it cannot be composed two ways:
+//
+//  1. A job for a NON-RESIDENT model that has waited longer than maxWait.
+//     Starvation beats residency: it is the only rule here with an unbounded
+//     downside, and maxWait is therefore also the fairness bound under mixed
+//     models that CHRN-29 publishes to client two.
+//  2. Otherwise, round-robin among jobs for the RESIDENT model — the common
+//     case, and the one CHRN-24's numbers describe. `resident` is the CALLER'S,
+//     passed in rather than read from a column, so two workers holding
+//     different models drain different halves of a mixed queue without either
+//     switching. An empty string means "nothing loaded yet", which matches no
+//     job and falls through to rule 3.
+//  3. Otherwise — nothing queued for the resident model — round-robin among
+//     everything, and the worker switches to whatever wins.
+//
+// ROUND-ROBIN IS `max(started_at)` PER CLIENT, NULLS FIRST: the client least
+// recently served goes next, and a client that has never been served goes
+// before all of them. Within one client the order stays oldest-first, because a
+// client's own jobs have no ranking this service could justify inventing.
+//
+// The bookkeeping is in the query and not in memory, decided rather than left
+// open (§5 [rev 2]): in-memory last-served is not round-robin at all with two
+// workers — each alternates on its own view, and the pair can serve one client
+// twice while the other waits. 0002_claim_fairness is the index that makes the
+// aggregate cheap over a table CHRN-25 calls unbounded by design.
+//
+// The honest limitation, recorded because it is otherwise discovered as a bug:
+// with a deep backlog on one client this gives the quiet client HALF the
+// device, not priority.
+func (s *Store) ClaimForModel(ctx context.Context, workerID string, leaseTTL time.Duration, resident string, maxWait time.Duration) (Job, error) {
+	return scanJob(s.pool.QueryRow(ctx, `
+		WITH client_last AS (
+		    SELECT client_id, max(started_at) AS last_started
+		      FROM jobs
+		     GROUP BY client_id
+		)
+		UPDATE jobs
+		   SET status = 'leased',
+		       leased_by = $1,
+		       lease_expires_at = now() + make_interval(secs => $2)
+		 WHERE id = (
+		           SELECT j.id
+		             FROM jobs j
+		             JOIN client_last c ON c.client_id = j.client_id
+		            WHERE j.status = 'queued'
+		              AND j.cancel_requested_at IS NULL
+		            ORDER BY CASE
+		                       WHEN j.model <> $3
+		                        AND j.created_at < now() - make_interval(secs => $4) THEN 0
+		                       WHEN j.model = $3 THEN 1
+		                       ELSE 2
+		                     END,
+		                     c.last_started ASC NULLS FIRST,
+		                     j.created_at
+		            LIMIT 1
+		            FOR UPDATE OF j SKIP LOCKED
+		       )
+		   AND status = 'queued'
+		RETURNING `+jobColumns,
+		workerID, leaseTTL.Seconds(), resident, maxWait.Seconds()))
 }
 
 // Audio returns the submitted bytes for a job this worker holds.
@@ -216,6 +288,83 @@ func (s *Store) Reap(ctx context.Context) ([]Reaped, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// Released is one job Release moved, and why.
+type Released struct {
+	ID       uuid.UUID
+	Status   string // where it went: queued, or cancelled
+	Attempts int
+	Reason   string
+}
+
+// Release hands a job this worker holds back to the queue, explicitly.
+//
+// IT EXISTS BECAUSE "THE REAPER HANDLES IT" WAS WRONG. The reaper is the path
+// for asrd DYING. When the resident child dies, asrd is alive: it sees a
+// connection reset from a request it made, and treating that as a transcription
+// failure would permanently fail a memo that nothing was wrong with — one child
+// crash, one lost memo. Waiting for the lease instead costs the TTL plus a reap
+// interval, about 35 s of an idle GPU with a live worker sitting next to it.
+//
+// `running > queued` is ALREADY LEGAL in CHRN-25's trigger — it is the reaper's
+// edge — so this is a new method over an existing edge and not a schema change.
+// `leased > queued` is legal too, which is the path for a child that died while
+// loading a model, before inference began.
+//
+// THE CANCEL CLAUSE IS NOT OPTIONAL AND IS COPIED FROM Reap DELIBERATELY. A
+// child that dies while running a job somebody cancelled is a `running` row
+// with cancel_requested_at set, and sending that back to `queued` raises AS004
+// — a cancelled job may not return to the queue. The database would catch it,
+// but catching it in the one path nobody tests is how a mechanical PR stops
+// being mechanical, so such a job goes to `cancelled` with the reaper's
+// terminal payload instead.
+//
+// `reason` travels with the outcome so exactly one line says why. It matters
+// because a crash and a deadline breach both increment `attempts` and the
+// counter cannot tell them apart — while they cost differently by a factor of
+// five, which is CHRN-28's ceiling to set.
+func (s *Store) Release(ctx context.Context, id uuid.UUID, workerID, reason string) (Released, error) {
+	out := Released{Reason: reason}
+	err := s.pool.QueryRow(ctx, `
+		UPDATE jobs
+		   SET status   = CASE WHEN cancel_requested_at IS NOT NULL
+		                       THEN 'cancelled' ELSE 'queued' END,
+		       attempts = CASE WHEN cancel_requested_at IS NOT NULL
+		                       THEN attempts ELSE attempts + 1 END,
+		       audio    = CASE WHEN cancel_requested_at IS NOT NULL
+		                       THEN NULL ELSE audio END,
+		       result   = CASE WHEN cancel_requested_at IS NOT NULL
+		                       THEN jsonb_build_object(
+		                              'job_id',   id,
+		                              'status',   'cancelled',
+		                              'partial',  true,
+		                              'text',     '',
+		                              'segments', '[]'::jsonb,
+		                              'model',    'whisper.cpp/' || model,
+		                              'backend',  $1::text)
+		                       ELSE result END,
+		       result_purge_at = CASE WHEN cancel_requested_at IS NOT NULL
+		                              THEN now() + make_interval(secs => $2)
+		                              ELSE result_purge_at END,
+		       finished_at = CASE WHEN cancel_requested_at IS NOT NULL
+		                          THEN now() ELSE finished_at END,
+		       started_at  = CASE WHEN cancel_requested_at IS NOT NULL
+		                          THEN started_at ELSE NULL END,
+		       lease_expires_at = NULL,
+		       leased_by = NULL
+		 WHERE id = $3 AND leased_by = $4 AND status IN ('leased', 'running')
+		RETURNING id, status, attempts`,
+		s.backend, s.resultTTL.Seconds(), id, workerID).Scan(&out.ID, &out.Status, &out.Attempts)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The lease was lost between the failure and this call. Whoever holds
+		// the job now is entitled to finish it; saying nothing is correct.
+		return Released{}, ErrNotFound
+	}
+	if err != nil {
+		return Released{}, fmt.Errorf("asr: release: %w", err)
+	}
+	return out, nil
 }
 
 // PurgeResults drops result PAYLOADS that have aged out. The rows stay, which

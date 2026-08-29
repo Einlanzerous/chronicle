@@ -57,7 +57,7 @@ paths:
   /readyz:
     get:
       tags: [meta]
-      summary: Readiness. Pings the database and reports queue depth.
+      summary: Readiness. Pings the database, and reports the queue and the device.
       security: []
       responses:
         "200":
@@ -351,11 +351,30 @@ components:
           enum: [ready, unready]
         check:
           type: string
-          description: which dependency failed, when unready
+          description: |
+            which dependency failed, when unready. `database`, `whisper_server`
+            when the resident process is absent or holds no model, or `standby`
+            when another process holds the device lock — a standby serves the
+            API correctly and cannot transcribe, and naming it keeps a second
+            asrd during a redeploy from reading as a broken one.
         queue_depth:
           type: integer
           format: int64
           description: jobs not yet in a terminal state
+        resident_model:
+          type: string
+          description: |
+            the model the resident worker is holding. Absent when nothing is
+            loaded, which is itself a reason this endpoint answers unready: a
+            service whose GPU has gone but whose database is fine would
+            otherwise report ready and accept work forever.
+        inference_running_ms:
+          type: integer
+          format: int64
+          description: |
+            how long the current inference has been running; absent when the
+            device is idle. Evidence for an operator, NOT a bound — the bound is
+            the per-job deadline the worker applies.
 
     Capabilities:
       type: object

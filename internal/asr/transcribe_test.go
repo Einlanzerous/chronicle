@@ -42,19 +42,26 @@ func TestWavDurationRejectsSomethingElse(t *testing.T) {
 	}
 }
 
-// whisper.cpp's JSON, and the two facts read out of it.
+// verbose_json, and the two facts read out of it.
 //
-// The transcript is assembled from segment text rather than from a top-level
+// ITS TIMESTAMPS ARE FLOAT SECONDS. whisper-cli's -oj wrote integer
+// milliseconds and the placeholder read them straight; the resident server
+// emits t0 * 0.01, so the same fixture in the new format is a thousand times
+// smaller. Leaving the conversion out would produce a corpus of transcripts
+// timed a thousand times short — every one of them plausible.
+//
+// The transcript is assembled from segment text rather than from the top-level
 // field, and covered_ms is the END OF THE LAST SEGMENT — evidence, never a
 // predicate. The fixture deliberately ends before the audio does, which is what
 // an ordinary recording with trailing silence looks like.
-func TestParseWhisperJSON(t *testing.T) {
-	raw := []byte(`{"transcription":[
-	  {"offsets":{"from":0,"to":1500},"text":" first"},
-	  {"offsets":{"from":1500,"to":2600},"text":" second"}
-	]}`)
+func TestParseVerboseJSON(t *testing.T) {
+	raw := []byte(`{"task":"transcribe","duration":3.0,"text":" ignored",
+	  "segments":[
+	    {"id":0,"text":" first",  "start":0.0, "end":1.5},
+	    {"id":1,"text":" second", "start":1.5, "end":2.6}
+	  ]}`)
 
-	tr, err := parseWhisperJSON(raw)
+	tr, err := parseVerboseJSON(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +82,7 @@ func TestParseWhisperJSON(t *testing.T) {
 // something a client is tempted to skip, and skipping it strands the audio of
 // exactly the memos that should prune.
 func TestSilenceParsesToAnEmptyButPresentTranscript(t *testing.T) {
-	tr, err := parseWhisperJSON([]byte(`{"transcription":[]}`))
+	tr, err := parseVerboseJSON([]byte(`{"duration":40.0,"text":"","segments":[]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,8 +98,29 @@ func TestSilenceParsesToAnEmptyButPresentTranscript(t *testing.T) {
 	}
 }
 
+// A RESPONSE WITH NO `segments` KEY AT ALL is what response_format=json
+// produces, and it is the trap this ticket had to catch: CHRN-25's contract
+// makes an empty segment list valid, so such a transcript passes every check
+// downstream and quietly carries no timing.
+//
+// Parsing keeps the text rather than erroring — the honest place to notice is
+// the worker, which knows whether the audio was silent — and this pins the
+// shape that would arrive.
+func TestJSONFormatYieldsTextAndNoSegments(t *testing.T) {
+	tr, err := parseVerboseJSON([]byte(`{"text":"hello there"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr.Text != "hello there" {
+		t.Fatalf("text %q", tr.Text)
+	}
+	if len(tr.Segments) != 0 {
+		t.Fatalf("segments %+v; the point of this fixture is that there are none", tr.Segments)
+	}
+}
+
 func TestUnreadableWhisperOutputIsAFailureWithACode(t *testing.T) {
-	_, err := parseWhisperJSON([]byte(`not json`))
+	_, err := parseVerboseJSON([]byte(`not json`))
 	fe, ok := err.(*FailureError)
 	if !ok {
 		t.Fatalf("got %T, want *FailureError — a client branches on the code, not the message", err)
@@ -112,9 +140,9 @@ func writeFile(path, body string) error {
 // the warning has to come from here or from nowhere.
 func TestBackendAnnouncementWarnsOnASoftwareRasteriser(t *testing.T) {
 	var buf bytes.Buffer
-	tr := &CLITranscriber{Logger: slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))}
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	tr.announceBackend(`ggml_vulkan: Found 1 Vulkan devices:
+	announceGGMLBackend(log, `ggml_vulkan: Found 1 Vulkan devices:
 ggml_vulkan: 0 = llvmpipe (LLVM 20.1.2, 256 bits) (llvmpipe) | uma: 0 | matrix cores: none
 whisper_init_with_params_no_state: use gpu = 1`)
 
@@ -129,9 +157,9 @@ whisper_init_with_params_no_state: use gpu = 1`)
 // filtered out before the day it matters.
 func TestBackendAnnouncementIsQuietOnTheRealDevice(t *testing.T) {
 	var buf bytes.Buffer
-	tr := &CLITranscriber{Logger: slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))}
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	tr.announceBackend(`ggml_vulkan: Found 1 Vulkan devices:
+	announceGGMLBackend(log, `ggml_vulkan: Found 1 Vulkan devices:
 ggml_vulkan: 0 = AMD Radeon AI PRO R9700 (RADV GFX1201) | uma: 0 | fp16: 1 | matrix cores: KHR_coopmat`)
 
 	out := buf.String()
@@ -148,25 +176,25 @@ ggml_vulkan: 0 = AMD Radeon AI PRO R9700 (RADV GFX1201) | uma: 0 | fp16: 1 | mat
 // and well off the pace — precisely what the pinned LunarG SDK prevents.
 func TestBackendAnnouncementWarnsWhenCoopmatIsAbsent(t *testing.T) {
 	var buf bytes.Buffer
-	tr := &CLITranscriber{Logger: slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))}
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	tr.announceBackend(`ggml_vulkan: 0 = AMD Radeon AI PRO R9700 (RADV GFX1201) | matrix cores: none`)
+	announceGGMLBackend(log, `ggml_vulkan: 0 = AMD Radeon AI PRO R9700 (RADV GFX1201) | matrix cores: none`)
 
 	if !strings.Contains(buf.String(), "cooperative-matrix") {
 		t.Fatalf("a coopmat-less build was not flagged:\n%s", buf.String())
 	}
 }
 
-// Once per process. The same answer every time, and one line per job would
-// bury everything else in the log.
-func TestBackendAnnouncementHappensOnce(t *testing.T) {
+// A child that names no Vulkan device at all is the third failure shape, and
+// the quietest: nothing warns, nothing is slow enough to notice on one job, and
+// the corpus is transcribed on the CPU for a week.
+func TestBackendAnnouncementWarnsWhenNoDeviceIsNamed(t *testing.T) {
 	var buf bytes.Buffer
-	tr := &CLITranscriber{Logger: slog.New(slog.NewTextHandler(&buf, nil))}
-	line := "ggml_vulkan: 0 = AMD Radeon AI PRO R9700 (RADV GFX1201) | matrix cores: KHR_coopmat"
-	tr.announceBackend(line)
-	tr.announceBackend(line)
-	tr.announceBackend(line)
-	if strings.Count(buf.String(), "R9700") != 1 {
-		t.Fatalf("announced %d times, want 1:\n%s", strings.Count(buf.String(), "R9700"), buf.String())
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+
+	announceGGMLBackend(log, "whisper_init_with_params_no_state: use gpu = 1")
+
+	if !strings.Contains(buf.String(), "may be running on the CPU") {
+		t.Fatalf("a startup that named no device was not flagged:\n%s", buf.String())
 	}
 }

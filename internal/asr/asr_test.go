@@ -7,7 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -82,121 +81,11 @@ func submitInput(client, key, seed string) SubmitInput {
 	}
 }
 
-// --- the fake runner -------------------------------------------------------
-//
-// A pair of shell scripts standing in for ffmpeg and whisper-cli, so that
-// every lease property can be tested WITHOUT A GPU and in CI. What is being
-// tested here is that a crashed process releases its work, not that whisper
-// transcribes — CHRN-24's benchmarks are what cover the latter, on hardware.
-
-type fakeRunner struct {
-	Dir      string
-	FFmpeg   string
-	Whisper  string
-	ModelDir string
-
-	// releaseFile, once created, lets a waiting fake whisper-cli finish. A
-	// fake that merely sleeps would leave the test choosing between a slow run
-	// and a flaky one.
-	releaseFile string
-}
-
-func newFakeRunner(t *testing.T) *fakeRunner {
-	t.Helper()
-	dir := t.TempDir()
-
-	wav := filepath.Join(dir, "decoded.wav")
-	writeTestWAV(t, wav, 3*time.Second)
-
-	f := &fakeRunner{
-		Dir:         dir,
-		FFmpeg:      filepath.Join(dir, "fake-ffmpeg"),
-		Whisper:     filepath.Join(dir, "fake-whisper"),
-		ModelDir:    filepath.Join(dir, "models"),
-		releaseFile: filepath.Join(dir, "release"),
-	}
-
-	if err := os.MkdirAll(f.ModelDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(f.ModelDir, "ggml-small.en.bin"), []byte("not a model"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// The last argument is ffmpeg's output path, which is also true of the
-	// real invocation in transcribe.go.
-	write(t, f.FFmpeg, `#!/bin/sh
-out=""
-for a in "$@"; do out="$a"; done
-cp "`+wav+`" "$out"
-`)
-
-	// Waits for the release file, then writes the JSON whisper.cpp would.
-	// ASR_FAKE_HANG=1 makes it wait indefinitely, which is what the kill -9
-	// and cancel tests need: a job that is genuinely in flight.
-	write(t, f.Whisper, `#!/bin/sh
-prefix=""
-next=0
-for a in "$@"; do
-  [ "$next" = 1 ] && { prefix="$a"; next=0; }
-  [ "$a" = "-of" ] && next=1
-done
-parent=$PPID
-i=0
-while [ ! -f "`+f.releaseFile+`" ]; do
-  i=$((i+1))
-  [ "$i" -gt 240 ] && exit 1
-  # Do not outlive asrd. The kill -9 test leaves this script with no parent,
-  # and a stray fake that polls for another minute is a stray fake somebody
-  # eventually finds in ps and has to explain.
-  kill -0 "$parent" 2>/dev/null || exit 1
-  sleep 0.25
-done
-cat > "$prefix.json" <<'JSON'
-${ASR_FAKE_JSON}
-JSON
-`)
-	return f
-}
-
-// release lets any waiting fake whisper-cli finish.
-func (f *fakeRunner) release(t *testing.T) {
-	t.Helper()
-	if err := os.WriteFile(f.releaseFile, []byte("go"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// transcriber is the CLITranscriber pointed at the fakes, so the code under
-// test is the real one down to the exec call.
-func (f *fakeRunner) transcriber() *CLITranscriber {
-	return &CLITranscriber{WhisperBin: f.Whisper, FFmpegBin: f.FFmpeg, ModelDir: f.ModelDir}
-}
-
-// env is what asrd needs to run against these fakes.
-func (f *fakeRunner) env(dsn, tokens string, leaseTTL time.Duration) []string {
-	return []string{
-		"ASR_DATABASE_URL=" + dsn,
-		"ASR_CLIENT_TOKENS=" + tokens,
-		"ASR_MODEL_DIR=" + f.ModelDir,
-		"ASR_WHISPER_BIN=" + f.Whisper,
-		"ASR_FFMPEG_BIN=" + f.FFmpeg,
-		"ASR_LEASE_TTL=" + leaseTTL.String(),
-		"ASR_LOG_FORMAT=text",
-		"ASR_LOG_LEVEL=debug",
-		"ASR_PORT=0",
-		"PATH=" + os.Getenv("PATH"),
-	}
-}
-
+// write drops an executable stand-in on disk. The decode is still a shell
+// script: ffmpeg is a one-shot command and a script is the honest fake for one.
+// The resident process is not, and its fake lives in fakewhisper_test.go.
 func write(t *testing.T, path, body string) {
 	t.Helper()
-	// The heredoc in the whisper fake reads ${ASR_FAKE_JSON} from the
-	// environment, so the script is written verbatim.
-	body = strings.Replace(body, "${ASR_FAKE_JSON}", `{"transcription":[
-  {"offsets":{"from":0,"to":1500},"text":" hello"},
-  {"offsets":{"from":1500,"to":2600},"text":" there"}
-]}`, 1)
 	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}

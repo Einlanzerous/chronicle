@@ -113,11 +113,36 @@ func runServe(args []string) error {
 	logger.Info("migrations applied")
 
 	store := asr.New(pool, cfg.Backend, cfg.ResultTTL)
-	transcriber := &asr.CLITranscriber{
-		WhisperBin: cfg.WhisperBin,
-		FFmpegBin:  cfg.FFmpegBin,
-		ModelDir:   cfg.ModelDir,
-		Logger:     logger,
+
+	// THE DEVICE LOCK IS TAKEN ONCE, FOR THE PROCESS'S LIFETIME, and not per
+	// inference. It says something more useful than "an inference is running":
+	// this asrd owns the card. A process that cannot get it is a standby — it
+	// claims no jobs and loads no model, so it holds no VRAM either.
+	//
+	// Unlike the reaper below, it runs ONLY in a process that works jobs: a
+	// process with no worker has no device to own, and taking the lock would
+	// make it a standby that nothing is waiting on.
+	deviceLock := &asr.DeviceLock{
+		DSN:      cfg.DatabaseURL,
+		DeviceID: cfg.DeviceID,
+		Logger:   logger,
+		Poll:     5 * time.Second,
+	}
+
+	transcriber := &asr.Resident{
+		Bin:            cfg.WhisperServerBin,
+		Addr:           cfg.WhisperServerAddr,
+		ModelDir:       cfg.ModelDir,
+		FFmpegBin:      cfg.FFmpegBin,
+		Model:          cfg.DefaultModel,
+		Logger:         logger,
+		ExpectedRates:  cfg.ExpectedRates,
+		DeadlineFactor: cfg.InferenceDeadlineFactor,
+		MinDeadline:    cfg.MinInferenceDeadline,
+		LoadDeadline:   asr.DefaultLoadDeadline,
+		DecodeDeadline: asr.DefaultDecodeDeadline,
+		StartTimeout:   2 * time.Minute,
+		Gate:           deviceLock.Held,
 	}
 
 	// Said out loud rather than discovered by a client. With no models on
@@ -133,7 +158,7 @@ func runServe(args []string) error {
 		logger.Info("models available", "models", models, "default", cfg.DefaultModel)
 	}
 
-	handler := asr.NewRouter(asr.Deps{
+	deps := asr.Deps{
 		Store:         store,
 		Transcriber:   transcriber,
 		Logger:        logger,
@@ -142,21 +167,27 @@ func runServe(args []string) error {
 		Tokens:        cfg.ClientTokens,
 		DefaultModel:  cfg.DefaultModel,
 		MaxAudioBytes: cfg.MaxAudioBytes,
-	})
+	}
+	if cfg.Worker {
+		// Readiness answers for the device only in a process that has one.
+		deps.Device = transcriber.State
+	}
+	handler := asr.NewRouter(deps)
 	srv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	// The worker id names this PROCESS. Included in every leased_by, so a
-	// stalled lease can be traced to the container holding it.
-	workerID := workerIdentity()
+	// The worker id names this PROCESS and the DEVICE it works. Included in
+	// every leased_by, so a stalled lease can be traced to the container
+	// holding it — and, once there is more than one card, to the card.
+	workerID := workerIdentity(cfg.DeviceID)
 
 	logger.Info("asrd starting",
 		"version", buildVersion(), "addr", cfg.Addr, "worker", cfg.Worker,
-		"worker_id", workerID, "backend", cfg.Backend,
-		"clients", len(cfg.ClientTokens))
+		"worker_id", workerID, "device", cfg.DeviceID, "backend", cfg.Backend,
+		"model", cfg.DefaultModel, "clients", len(cfg.ClientTokens))
 
 	var running sync.WaitGroup
 
@@ -181,13 +212,35 @@ func runServe(args []string) error {
 	}()
 
 	if cfg.Worker {
+		running.Add(1)
+		go func() {
+			defer running.Done()
+			if err := deviceLock.Run(ctx); err != nil {
+				logger.Error("the device lock stopped", "error", err)
+			}
+		}()
+
+		// The supervisor. A resident process nobody supervises is a resident
+		// process that dies once and turns the service into a queue that fills
+		// forever — which looks exactly like a busy service.
+		running.Add(1)
+		go func() {
+			defer running.Done()
+			if err := transcriber.Run(ctx); err != nil {
+				logger.Error("the resident worker supervisor stopped", "error", err)
+			}
+		}()
+
 		worker := &asr.Worker{
-			Store:       store,
-			Transcriber: transcriber,
-			Logger:      logger,
-			ID:          workerID,
-			LeaseTTL:    cfg.LeaseTTL,
-			Idle:        time.Second,
+			Store:              store,
+			Transcriber:        transcriber,
+			Logger:             logger,
+			ID:                 workerID,
+			LeaseTTL:           cfg.LeaseTTL,
+			Idle:               time.Second,
+			ResidentModel:      func() string { return transcriber.State().Model },
+			ModelSwitchMaxWait: cfg.ModelSwitchMaxWait,
+			Device:             deviceLock.Held,
 		}
 		running.Add(1)
 		go func() {
@@ -210,14 +263,19 @@ func runServe(args []string) error {
 	return err
 }
 
-// workerIdentity names this process in leased_by. The hostname is the
-// container id under compose, which is the handle an operator already has.
-func workerIdentity() string {
+// workerIdentity names this process in leased_by: the device it works, then
+// the hostname — the container id under compose, which is the handle an
+// operator already has — then the pid.
+//
+// The device is first because it is the part that will stop being constant.
+// GET /admin/transcription can say which card transcribed what once there is
+// more than one, without a schema change to get there.
+func workerIdentity(deviceID string) string {
 	host, err := os.Hostname()
 	if err != nil || host == "" {
 		host = "unknown"
 	}
-	return fmt.Sprintf("%s/%d", host, os.Getpid())
+	return fmt.Sprintf("%s/%s/%d", deviceID, host, os.Getpid())
 }
 
 func runMigrate(args []string) error {

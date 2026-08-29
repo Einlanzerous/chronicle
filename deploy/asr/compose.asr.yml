@@ -77,6 +77,18 @@ services:
       ASR_CLIENT_TOKENS: ${ASR_CLIENT_TOKENS}
 
       ASR_DEFAULT_MODEL: ${ASR_DEFAULT_MODEL:-small.en}
+
+      # CHRN-26. What the advisory lock names, and what lands in leased_by —
+      # per DEVICE, never per deployment. A second card is a second value here
+      # and not a redesign; two asrd processes naming the SAME device still
+      # exclude each other, which is the redeploy case the lock exists for.
+      ASR_DEVICE_ID: ${ASR_DEVICE_ID:-r9700}
+
+      # The resident child. Loopback only: whisper-server has no
+      # authentication of any kind, so a listener on construct_net that
+      # transcribes anything sent to it would make ASR_CLIENT_TOKENS
+      # decorative. It is deliberately NOT in `expose:` for the same reason.
+      ASR_WHISPER_SERVER_ADDR: 127.0.0.1:8081
       ASR_LOG_LEVEL: ${ASR_LOG_LEVEL:-info}
       ASR_LOG_FORMAT: ${ASR_LOG_FORMAT:-json}
 
