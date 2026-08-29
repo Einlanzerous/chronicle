@@ -1,8 +1,16 @@
 # CHRN-26 — The resident worker and the GPU lease (decision)
 
-Status: **proposed 2026-08-28, revised the same day after review, and revised
-again after magos raised a second device.** Three rulings at the end still need
-magos before any code is written.
+Status: **accepted 2026-08-28.** Proposed, revised twice after review, revised a
+third time to fold in the second review pass, and accepted by magos the same day
+**at the recommendations** — the three rulings at the end are settled and the
+settlement is recorded there. The PR that follows this document is mechanical.
+
+**Third revision, marked [rev 3].** Seven items from the second review pass,
+all small, all of the kind an implementer closes silently: the advisory lock's
+connection (§3), a sentence that still described the per-inference draft (§3),
+a `/load` deadline (§7), `Release` against the cancel constraint (§8), what a
+deadline breach costs CHRN-28 (§8), the contention warning coupled to the
+deadline factor (ruling 2), and what a standby reports (§9).
 
 **Second revision, marked [rev 2].** magos asked what §3 means for a second
 worker — the desktop, and possibly a machine outside the estate — and for a
@@ -31,6 +39,7 @@ produced a passing Done-when over broken behaviour:
 - **§4**: `response_format` defaults to `json`, which returns text and **no
   segments** — and CHRN-25's contract makes an empty segment list *valid*, so
   nothing downstream would ever complain.
+
 Ticket: CHRN-26 (Phase P2, parent CHRN-3). Tier `opus`, so Mode B: this document
 is the review artefact and the PR that follows it should be mechanical.
 Decision owner: magos.
@@ -255,9 +264,33 @@ the mechanism and anything else is ceremony.
 **Plus a Postgres advisory lock on the `asr` database**, because the case the
 semaphore cannot see is two `asrd` processes: a rolling redeploy overlapping old
 and new, or somebody running a second one by hand. An advisory lock is released
-automatically when its connection dies, which is the same property CHRN-25's
-job lease relies on and for the same reason — a crashed process must not hold
-the device.
+automatically when its connection dies, so a crashed process cannot hold the
+device.
+
+**[rev 3] That is a different property from CHRN-25's lease, and the first
+draft said otherwise.** The job lease is a **timestamp**, chosen precisely so
+that it depends on no connection; the advisory lock is **connection-scoped**,
+and everything below follows from that.
+
+- **It is held on a dedicated `pgx.Conn`, outside the pool.** A pooled
+  connection is the pool's to close, and the lock goes with it.
+- **Loss of that connection is loss of ownership.** A Postgres restart drops
+  every session, and the lock with it. `asrd` must notice — the connection
+  errors on its next use, and a periodic `SELECT 1` on it is the cheap way to
+  make "next use" soon — **stop claiming**, and re-acquire before claiming
+  again. The inference in flight may finish: its job lease is time-based and
+  renewal resumes on reconnect, and an outage longer than the 30 s TTL reaps
+  it, which is CHRN-25's existing behaviour and not this ticket's problem.
+- **A standby polls `pg_try_advisory_lock`.** Never the blocking form: a query
+  that blocks forever on one connection is invisible to everything, including
+  `/readyz`.
+- **A process exit sends FIN, so container stop and `kill -9` both release
+  cleanly.** What does not is a host crash, which leaves the session — and the
+  lock — until Postgres's TCP keepalive notices, and the OS default for that is
+  **7200 s**. One statement on the lock connection bounds it to about a
+  minute: `SET tcp_keepalives_idle = 30, tcp_keepalives_interval = 10,
+  tcp_keepalives_count = 3`. Session-settable, no change to the shared
+  Postgres.
 
 **[rev] It is taken ONCE, FOR THE PROCESS'S LIFETIME, and not per inference.**
 The first draft implied per-inference and that is worse in three ways.
@@ -293,12 +326,16 @@ per deployment — and it is why it comes back under a name that says what it
 locks. `ASR_DEVICE_ID` also lands in `leased_by`, so `GET /admin/transcription`
 can say which device transcribed what once there is more than one.
 
-It is deliberately **not** the job lease from CHRN-25. Those are different
-things: the job lease says *this worker owns this job*, and the GPU lease says
-*this process may run inference now*. A worker holds a job lease for the whole
-of a job including the decode, and holds the GPU lease only for the inference.
-Collapsing them would serialise ffmpeg behind the GPU, which is a decode that
-could have happened while the previous job was still on the device.
+Neither half is the job lease from CHRN-25, and **[rev 3]** the three are
+worth naming apart because the first draft's sentence here still described the
+per-inference design. The **job lease** says *this worker owns this job* and is
+held for the whole of a job including the decode. The **advisory lock** says
+*this process owns this device* and is held for the process's lifetime. The
+**semaphore** says *inference is running now* and is held only for the
+inference. A worker decodes under the job lease alone, and takes the semaphore
+after — collapsing the last two would serialise ffmpeg behind the GPU, which is
+a decode that could have happened while the previous job was still on the
+device.
 
 ## 4 · One resident model, switched only when the queue is empty of it
 
@@ -552,6 +589,14 @@ and does not prevent — cannot trip it, and finite.
 distinguishes this from the lease, which cannot help: the process holding
 everything is the healthy one.
 
+**[rev 3] A `/load` gets a deadline too, and it is fixed.** A model load that
+never returns — a driver wedge during pipeline compile — is the same finding
+one step earlier: every lease healthy, nothing moving. The measured cost is
+1.9 s for the largest model, so **60 s** is wide by thirty times and finite.
+On breach: kill, restart on last-known-good, and treat the model as if its init
+had failed — §4's three rules apply unchanged, because from outside a load that
+hangs and a load that exits are the same fault.
+
 `audio_duration_ms` is known before inference starts — the decode produced it,
 and `verbose_json` reports it too — so this needs nothing new to compute. And
 the per-job inference wall-clock it requires **is the same number ruling 2 wants
@@ -600,6 +645,22 @@ cleared. That edge is **already legal** in CHRN-25's trigger — `'running>queue
 is in the transition array, put there for the reaper — so this is a new method
 over an existing edge and not a schema change. Per §6's [rev], that is allowed.
 
+**[rev 3] `Release` mirrors the reaper's cancel clause, or the database
+refuses it.** `running>queued` with `cancel_requested_at` set raises `AS004` —
+*a cancelled job may not return to the queue* — and a child that dies while
+running a job somebody cancelled is exactly that row. `Release` sends such a
+job to `cancelled` with the reaper's terminal payload, never to `queued`. The
+constraint would catch the other answer, but catching it in the one path
+nobody tests is how a mechanical PR stops being mechanical.
+
+**[rev 3] `Release` says why.** A crash and a deadline breach both increment
+`attempts`, and the counter cannot tell them apart — but they cost differently
+by a factor of five (§7's deadline is 5× the expected run), and a file that
+wedges the GPU stalls the queue for up to 200 s per attempt on `small.en`, 11
+minutes on `large-v3`. So `Release` takes a reason, logs it at warn with the
+job and the elapsed time, and CHRN-28 is told below that a breach deserves a
+lower ceiling than a crash.
+
 And the case §1 used to argue against cgo deserves finishing: **a malformed file
 that segfaults the decoder now loops** — crash, release, re-claim, crash — until
 CHRN-28's ceiling stops it. That is the correct behaviour for this ticket (the
@@ -634,6 +695,14 @@ fine currently reports **ready** and accepts work forever.
 
 `/healthz` stays dependency-free. A dead `whisper-server` is not a reason to
 restart `asrd` — `asrd` is the thing that restarts `whisper-server`.
+
+**[rev 3] A standby is unready, and says so.** A process that did not get the
+device lock (§3) holds no model, so the Done-when's rule — *refuses readiness
+when the resident model is absent* — already makes it unready. That is the
+right answer stated deliberately rather than by accident: it serves the API
+correctly (submit and status are database-only) but it cannot transcribe, and
+"ready" here means the latter. The body names the check as `standby`, so a
+second `asrd` that came up during a redeploy is not mistaken for a broken one.
 
 **[rev] This also settles a debt CHRN-25's review recorded against this
 ticket.** CHRN-25's *Surface* table promised `/readyz` would report *"the GPU
@@ -677,7 +746,11 @@ exists so a second worker on a second GPU is a value rather than a redesign.
   model that will not load is a deployment fault and not a job to retry; a job
   that failed to decode is. **[rev] Your ceiling is load-bearing, not a
   nicety**: §8 establishes that a file which crashes the decoder loops until
-  something stops it, and that something is yours.
+  something stops it, and that something is yours. **[rev 3] And a deadline
+  breach costs five times a crash** — up to 200 s of a stalled queue per
+  attempt on `small.en`, 11 minutes on `large-v3`. `Release` logs which it
+  was; a breach deserves a lower ceiling than a crash, and that number is
+  yours too.
 - **CHRN-29** — §5's round-robin is a **promise to client two**, and the honest
   limitation is in that section: half the device under contention, not priority.
   **[rev] Publish `ASR_MODEL_SWITCH_MAX_WAIT` as part of it.** Under mixed
@@ -744,6 +817,14 @@ exists so a second worker on a second GPU is a value rather than a redesign.
    wall-clock, so the measurement is being taken either way and this ruling only
    decides whether anything reads it.
 
+   **[rev 3] The warning fires well before the deadline does.** §7's factor of
+   5 is asserted to be wider than any contention with Ollama, and that is an
+   assumption rather than a measurement. So the contention warning fires at
+   **2×** the expected run — under half the kill threshold — which means a
+   deadline kill under contention is never the first symptom, and if the log
+   ever shows 2× drift routinely, the factor is the number to revisit rather
+   than the jobs.
+
 3. **Is §3's scope acceptable?** This is the ruling that matters, because it
    narrows what the ticket said it would deliver. Restated: `asrd` guarantees
    single-flight *transcription*, and does not arbitrate the device against
@@ -783,4 +864,25 @@ exists so a second worker on a second GPU is a value rather than a redesign.
   and recorded with those parameters named.** At the server's own defaults the
   decode is greedy, which is faster, so an unpinned run would pass this
   Done-when without residency having worked.
-- `/readyz` reports the resident model and refuses readiness when it is absent.
+- `/readyz` reports the resident model and refuses readiness when it is absent —
+  **[rev 3]** including a standby, which names `standby` as the check.
+
+## Rulings, settled 2026-08-28
+
+All three accepted by magos at the recommendations, after two review passes
+and the second-device discussion that produced CHRN-80 and CHRN-81.
+
+1. **`ASR_MODEL_SWITCH_MAX_WAIT` = 60 s** — accepted knowing it is two things:
+   the starvation bound for a non-resident model, and the fairness bound under
+   mixed models that CHRN-29 publishes to client two.
+2. **Contention is detected and logged** — per-job wall-clock against the
+   worker's expected rate, warn at 2× (well under the 5× deadline), naming
+   Ollama contention as the likely cause.
+3. **§3's narrowed scope stands.** `asrd` guarantees single-flight
+   *transcription* on the device it owns; it does not arbitrate the R9700
+   against Ollama. Estate-wide admission, if ever wanted, is its own ticket.
+
+What the accepting discussion added rather than changed: the lock names a
+device, not a deployment, so a second worker is CHRN-80's protocol and not a
+redesign here; and a transcript produced on the phone (CHRN-81) never reaches
+this service, but does reach CHRN-22's predicate, which now owes a model floor.
