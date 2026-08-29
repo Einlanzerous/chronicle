@@ -347,32 +347,36 @@ crash or a deadline breach. They cost differently by a factor of five.
 would run to completion holding the device with the queue blocked behind it. The
 child is killed and restarted, which costs about 2.3 s.
 
-### Measuring the resident worker
+### Measured, through `asrd`
 
-**This figure is not yet taken.** The box was at a 1-minute load average of 16.7
-on 16 cores when CHRN-26 landed, and the whole of *Measured, in this container*
-is an argument against reading a number off a busy machine: the same rig has
-produced a confidently wrong figure twice, and the second one was 27% off with
-nothing in the output to suggest a problem. **Do not raise `MAXLOAD`.** Wait for
-an idle window, take it, and fill in the row below.
-
-What has to be true of the measurement, or it is not comparable to the tables
-above:
-
-- **`-bs 5 -bo 5`.** `whisper-server` defaults to greedy decoding, which is
-  *faster* — so an unpinned run would pass the "within a few percent of the
-  resident column" bar for a reason that is not residency. `asrd` passes these,
-  so measuring *through `asrd`* is measuring the right decode; a hand-run
-  `whisper-server` must be told.
-- **`response_format=verbose_json`.** The default returns text and no segments.
-- **`-nlp`.** Language probabilities are an expensive operation the reference
-  numbers did not pay for.
-- The same clip (`voice60`), the same image, decode counted, median of three
-  after a discarded warm-up, and the load average recorded at both ends.
+Taken on an idle box — 1-minute load average **0.63 at the start and 0.69 at
+the end**, against the harness's own refusal threshold of 3.0. The first run is
+discarded and the figure is the median of the three after it.
 
 | model | resident worker, through `asrd` | CHRN-24 resident column | delta |
 |---|---|---|---|
-| `small.en` | *pending an idle box* | 57.9× (1.01 s on the 60 s clip) | — |
+| **`small.en`** | **56.3×** (1.066 s) | 57.9× (1.036 s) | **−2.8%** |
+
+Runs: 1.967 s (discarded), then 1.204 / 1.066 / 1.011 s on `voice60`, 60.01 s of
+audio. Decoded with **`-bs 5 -bo 5 -nlp`** and `response_format=verbose_json`,
+which is what makes the comparison mean anything — at the server's own defaults
+the decode is greedy, which is *faster*, so an unpinned run would beat this
+table for a reason that is not residency.
+
+**What the 1.066 s covers**, because a throughput number without its boundaries
+is the drift this file exists to prevent: the ffmpeg decode (as the reference
+column also counts it), the wait for the device, the `leased`→`running` write,
+the multipart upload of the decoded WAV to the child over loopback, the
+inference, and the parse. It does not count the submit, the result write, or
+the poll. It is the worker's own measurement of one job — the `took` field on
+the `transcribed` log line — so it is the number an operator can reproduce from
+the logs rather than one only a benchmark can see.
+
+**2.8% behind a raw resident bench is the expected shape of answer**, not a
+finding: the gap is a job service's overhead — a database round trip and an HTTP
+upload — around an inference that is doing the same work. What the number rules
+out is the failure this epic keeps meeting, where something is quietly off the
+pace with nothing in the output to say so.
 
 ### Configuration
 
