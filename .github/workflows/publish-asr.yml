@@ -53,23 +53,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The tag is validated BEFORE metadata-action sees it, and both the
-      # version stamp and the release tags key off this step rather than off
-      # `ref_type == 'tag'`: a hand-cut tag that is not asr-vX.Y.Z fails here
-      # with a message, instead of producing an image with no version tags or
-      # an image claiming a version nothing released. SERV-154's third point.
+      # The tag is validated BEFORE anything is built, and the version stamp
+      # keys off this step rather than off `ref_type == 'tag'`: a hand-cut tag
+      # that is not exactly asr-vX.Y.Z fails here with a message. The release
+      # tags themselves come from metadata-action's `type=match` below, and
+      # that match is UNANCHORED -- `asr-v0.1.0-rc1` would match `0.1.0` and
+      # overwrite a real release with an image whose `asrd version` says
+      # `0.1.0-rc1`. This step is what stops such a tag reaching it, so the
+      # pattern is a regex anchored at both ends, not a glob. SERV-154's third
+      # point, plus the review of #34.
       - id: version
         name: Validate the release tag
         run: |
           v=""
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            case "${GITHUB_REF_NAME}" in
-              asr-v[0-9]*.[0-9]*.[0-9]*) v="${GITHUB_REF_NAME#asr-v}" ;;
-              *) echo "::error::tag ${GITHUB_REF_NAME} is not asr-vX.Y.Z; nothing built"; exit 1 ;;
-            esac
+            printf '%s' "${GITHUB_REF_NAME}" | grep -Eq '^asr-v[0-9]+\.[0-9]+\.[0-9]+$' || {
+              echo "::error::tag ${GITHUB_REF_NAME} is not asr-vX.Y.Z; nothing built"; exit 1; }
+            v="${GITHUB_REF_NAME#asr-v}"
           fi
           echo "version=${v}" >> "$GITHUB_OUTPUT"
-          if [ -n "$v" ]; then echo "release=true" >> "$GITHUB_OUTPUT"; else echo "release=false" >> "$GITHUB_OUTPUT"; fi
           echo "version='${v:-<none: main build>}'"
 
       - uses: docker/setup-buildx-action@v3

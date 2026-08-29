@@ -222,13 +222,21 @@ release-please gets a second package:
 ```
 
 with `"asr"` seeded in `.release-please-manifest.json`. Tags are `asr-vX.Y.Z`;
-the root package keeps `vX.Y.Z` and its existing tags. Commits are attributed
-by path — a commit touching only `asr/**` reaches only the asr changelog —
-which makes the `(asr)` scope in commit messages cosmetic from here on rather
-than the thing that sorts them. **The attribution of a commit touching both
-sides is checked on the first release PR rather than assumed**; a commit that
-appears in both changelogs is correct, a commit that appears in neither is a
-misconfiguration.
+the root package keeps `vX.Y.Z` and its existing tags.
+
+**[rev] Attribution by path is not what the root package does by default.**
+The first draft said a commit touching only `asr/**` reaches only the asr
+changelog. release-please special-cases the root path to receive *every*
+commit (`src/manifest.ts`, `path === ROOT_PROJECT_PATH ? commits :
+splitCommits[path]`), so without more the next asr-only `fix` would also
+open a Chronicle release PR, tag `vX.Y.Z+1`, and republish an unchanged
+Chronicle image — the one-version-for-two-binaries problem §1 set out to
+remove, back through the release door. The root package therefore carries
+`"exclude-paths": ["asr"]`, which drops a commit from the root only when
+**every** file in it is under `asr/` — so a commit touching both sides still
+counts for both, which is the behaviour the first draft wanted and the first
+release PR checks. Found by the review of PR 2. The `(asr)` scope in commit
+messages is cosmetic from here on; the path is what sorts them.
 
 `bump-minor-pre-major` is there so that `1.0.0` is cut by decision (ruling 1)
 and not by the first commit someone marks `!`.

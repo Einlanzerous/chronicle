@@ -3,7 +3,9 @@
   "release-type": "simple",
   "separate-pull-requests": true,
   "packages": {
-    ".": {},
+    ".": {
+      "exclude-paths": ["asr"]
+    },
     "asr": {
       "component": "asr",
       "bump-minor-pre-major": true
