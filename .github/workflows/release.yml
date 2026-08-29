@@ -5,6 +5,11 @@ name: Release Please
 # creates the tag and the GitHub Release; publish.yml then builds the semver
 # image from the v* tag. No hand-cut tags.
 #
+# Two packages since CHRN-82: the root (Chronicle, v* tags, publish.yml) and
+# asr/ (the ASR service, asr-v* tags, publish-asr.yml), each with its own
+# changelog and its own release PR. Root excludes asr/ so that an asr-only
+# commit does not also cut a Chronicle release.
+#
 # `CLAUDE.md` requires conventional commits and puts the `feat:`/`fix:` prefix
 # in the commit message rather than the branch name — this workflow is the
 # reason that distinction matters: release-please reads the commit, and the

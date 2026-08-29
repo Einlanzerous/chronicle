@@ -21,15 +21,15 @@
 
 services:
   asr:
-    image: estate-asr:dev
+    # Published by .github/workflows/publish-asr.yml (CHRN-82). ASR_TAG is
+    # pinned at major.minor in construct-server's versions.env like every other
+    # first-party image; `latest` is main's tip and is the fallback, not the
+    # deployment. The estate PULLS this image — there is no `build:` block
+    # here, on purpose, because a compose file that can build is a compose file
+    # that quietly runs whatever tree it was last pointed at.
+    image: ghcr.io/einlanzerous/estate-asr:${ASR_TAG:-latest}
     container_name: asr
     restart: unless-stopped
-    build:
-      # The repository ROOT, not asr/: the image builds asrd, which is a Go
-      # binary in this repository, and a context that cannot see go.mod cannot
-      # build it.
-      context: ../..
-      dockerfile: asr/Dockerfile
 
     # The image's ENTRYPOINT is whisper-cli, so that CHRN-12's benchmark
     # harness runs through it unmodified and the reference numbers keep

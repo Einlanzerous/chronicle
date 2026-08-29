@@ -12,6 +12,12 @@ name: publish
 on:
   push:
     branches: [main]
+    # asr/ is a sealed subtree (CHRN-82): nothing Chronicle links lives under
+    # it, so a commit that touches only asr/ cannot change this binary and
+    # builds publish-asr.yml's image instead. Path filters do not apply to tag
+    # pushes, so a release tag always builds.
+    paths-ignore:
+      - "asr/**"
     tags: ["v*"]
 
 permissions:

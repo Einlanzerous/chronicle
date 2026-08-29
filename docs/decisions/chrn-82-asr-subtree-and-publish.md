@@ -85,8 +85,13 @@ honest version and an honest cadence — for the price of a `git mv` and an
 import-path rewrite, with no new repository, runner, CI, or cross-repo guard.
 And it makes "stay for now" *reversible* rather than nominally so: if the
 split is ever worth doing, `git filter-repo --subdirectory-filter asr`
-produces the new repository with its history intact and a build that already
-works, because §2 is the invariant that makes it so.
+produces the new repository with its history intact, and §2 is the invariant
+that means nothing of Chronicle's comes with it. **[rev] Not "a build that
+already works"**, as the first draft said — the reviewer of PR 1 was right
+that the subtree carries no `go.mod` and its import paths carry this module's
+name, so the split is three mechanical steps (filter-repo, `go mod init`, an
+import-path rewrite) rather than one. What §2 buys is that they are the *only*
+three.
 
 Chosen: the third.
 
@@ -211,23 +216,36 @@ release-please gets a second package:
 ```json
 "packages": {
   ".":   {},
-  "asr": { "component": "asr", "release-type": "simple",
-           "bump-minor-pre-major": true, "bump-patch-for-minor-pre-major": true }
+  "asr": { "component": "asr", "bump-minor-pre-major": true }
 },
 "separate-pull-requests": true
 ```
 
 with `"asr"` seeded in `.release-please-manifest.json`. Tags are `asr-vX.Y.Z`;
-the root package keeps `vX.Y.Z` and its existing tags. Commits are attributed
-by path — a commit touching only `asr/**` reaches only the asr changelog —
-which makes the `(asr)` scope in commit messages cosmetic from here on rather
-than the thing that sorts them. **The attribution of a commit touching both
-sides is checked on the first release PR rather than assumed**; a commit that
-appears in both changelogs is correct, a commit that appears in neither is a
-misconfiguration.
+the root package keeps `vX.Y.Z` and its existing tags.
+
+**[rev] Attribution by path is not what the root package does by default.**
+The first draft said a commit touching only `asr/**` reaches only the asr
+changelog. release-please special-cases the root path to receive *every*
+commit (`src/manifest.ts`, `path === ROOT_PROJECT_PATH ? commits :
+splitCommits[path]`), so without more the next asr-only `fix` would also
+open a Chronicle release PR, tag `vX.Y.Z+1`, and republish an unchanged
+Chronicle image — the one-version-for-two-binaries problem §1 set out to
+remove, back through the release door. The root package therefore carries
+`"exclude-paths": ["asr"]`, which drops a commit from the root only when
+**every** file in it is under `asr/` — so a commit touching both sides still
+counts for both, which is the behaviour the first draft wanted and the first
+release PR checks. Found by the review of PR 2. The `(asr)` scope in commit
+messages is cosmetic from here on; the path is what sorts them.
 
 `bump-minor-pre-major` is there so that `1.0.0` is cut by decision (ruling 1)
 and not by the first commit someone marks `!`.
+
+**[rev] Not `bump-patch-for-minor-pre-major`**, which the first draft also
+listed: that flag makes a `feat` bump the patch digit before 1.0, so the first
+release would have been `0.0.1` and ruling 1's `0.1.0` unreachable by any
+commit. With `feat` bumping minor, `0.0.0` in the manifest plus one `feat`
+lands on `asr-v0.1.0` exactly.
 
 `asrd version` reports the `asr-v` version, stamped by §5's workflow from the
 tag; a main build stays blank → `dev`, for the reason `publish.yml` already
@@ -288,9 +306,14 @@ inside the tolerances `asr/README.md` already states.
    `sensitive_paths` / `review-ignore` updates. No behaviour change. The
    review question is one question: does `git diff -M` show anything other
    than renames, import paths, and the additions this section names.
-2. **`ci(asr): publish estate-asr on main and asr-v* tags (CHRN-82)`** — the
+2. **`feat(asr): publish estate-asr on main and asr-v* tags (CHRN-82)`** — the
    release-please package, `publish-asr.yml`, the compose fragment on the
    published image, and the *"No GHCR publish"* line gone from the README.
+   **[rev] `feat`, not `ci`:** release-please attributes by path, and the
+   first `asr` release is cut from the commits under `asr/` since the rename
+   — a `ci` commit is hidden and bumps patch, a `feat` bumps minor to the
+   `0.1.0` ruling 1 names. It is also true: an image the estate can pull is
+   the feature.
 
 Two rather than one because the second's path filters and package path depend
 on the first, and because a 30-file rename mixed into a workflow PR hides the
