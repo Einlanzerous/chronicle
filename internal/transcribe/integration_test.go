@@ -214,9 +214,26 @@ func TestChronicleTranscribesThroughTheRealService(t *testing.T) {
 		t.Fatalf("audio_duration_ms = %v", tr.AudioDurationMS)
 	}
 
+	// CHRN-22's MODEL FLOOR, PROVEN THROUGH THE REAL PATH, and this assertion
+	// is why the test carries it here rather than in a store unit test.
+	//
+	// The floor reads `whisper.cpp/small.en`, and the `whisper.cpp/` half is a
+	// string built by the ASR WORKER (internal/asr, another binary's code) and
+	// carried across the HTTP contract. A literal fixture in a store test
+	// cannot prove the two agree: if asrd ever renamed the runner, the pruner
+	// would silently stop firing and every hand-written `whisper.cpp/small.en`
+	// would keep passing. This transcript was produced by the real worker, sent
+	// over the real contract and written by the real pump, so the gate is being
+	// asked about a string nothing in this test typed.
 	durable, err := st.HasDurableTranscript(ctx, res.Memo.ID)
 	if err != nil || !durable {
-		t.Fatal("the memo did not become durable, so CHRN-22 would never prune its audio")
+		t.Fatal("a transcript that arrived through the real service did not satisfy the " +
+			"durable gate. Either the model floor and the worker's model string disagree — " +
+			"in which case the pruner has silently stopped — or the transcript is not durable")
+	}
+	if !strings.HasPrefix(tr.Model, "whisper.cpp/") {
+		t.Fatalf("the worker wrote model %q; the floor's runner half reads the part before "+
+			"the slash, and this is the string it has to match", tr.Model)
 	}
 
 	// The ASR side released the audio it was given: nothing in that service

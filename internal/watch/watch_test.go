@@ -35,7 +35,10 @@ type fakeIngest struct {
 	// was recorded, so a test can assert the watcher's probe read the file the
 	// watcher just wrote.
 	described map[uuid.UUID]int
-	info      map[uuid.UUID]store.AudioInfo
+
+	// pruned is CHRN-22's re-delivery gate, keyed author/hash.
+	pruned map[string]bool
+	info   map[uuid.UUID]store.AudioInfo
 }
 
 func newFakeIngest() *fakeIngest {
@@ -45,6 +48,7 @@ func newFakeIngest() *fakeIngest {
 		info:      map[uuid.UUID]store.AudioInfo{},
 		arrivals:  map[string]int{},
 		sightings: map[string]bool{},
+		pruned:    map[string]bool{},
 	}
 }
 
@@ -78,6 +82,14 @@ func (f *fakeIngest) IngestMemo(_ context.Context, in store.Arrival) (store.Inge
 }
 
 // SetMemoAudioInfo records what a probe found (CHRN-21).
+// AudioPrunedFor is CHRN-22's re-delivery gate. The fake answers from
+// `pruned`, which a test sets to put a memo in the state the pruner leaves.
+func (f *fakeIngest) AudioPrunedFor(_ context.Context, authorID uuid.UUID, hash string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.pruned[authorID.String()+"/"+hash], nil
+}
+
 func (f *fakeIngest) SetMemoAudioInfo(_ context.Context, id uuid.UUID, in store.AudioInfo) (store.Memo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -735,4 +747,58 @@ func opusStream(seconds int) []byte {
 	b := page(0, 0, head)
 	b = append(b, page(0, 1, []byte("OpusTags\x00\x00\x00\x00\x00\x00\x00\x00"))...)
 	return append(b, page(int64(seconds)*48000+preSkip, 2, make([]byte, 64))...)
+}
+
+// CHRN-22 Ruling 2: A RESCAN DOES NOT PUT PRUNED AUDIO BACK ON DISK.
+//
+// The watcher writes file-then-row, so without this check a rescan of a file
+// whose recording the pruner has taken would copy it into the audio store
+// before IngestMemo ever ran — and the next sweep would delete it again,
+// because captured_at cannot move. The check goes after the hash, because the
+// hash is the memo's identity and nothing before it knows which memo the file
+// is.
+func TestARescanDoesNotRestorePrunedAudio(t *testing.T) {
+	h := newHarness(t)
+	const content = "pretend this is opus"
+	h.drop(t, "memo.opus", content)
+
+	sum := sha256.Sum256([]byte(content))
+	h.ingest.pruned[h.author.String()+"/"+hex.EncodeToString(sum[:])] = true
+
+	res := h.scan(t)
+	if res.AudioPruned != 1 {
+		t.Fatalf("audio_pruned = %d, want 1; the rescan did not recognise a pruned memo", res.AudioPruned)
+	}
+	if res.Ingested != 0 {
+		t.Fatalf("ingested %d; a pruned memo's bytes must not be re-delivered", res.Ingested)
+	}
+	if h.ingest.count() != 0 {
+		t.Fatal("a memo was recorded for a delivery that was refused")
+	}
+
+	// And nothing landed in the audio store.
+	var files int
+	_ = filepath.WalkDir(h.audio.Root(), func(_ string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			files++
+		}
+		return nil
+	})
+	if files != 0 {
+		t.Fatalf("%d file(s) in the audio store; the pruned recording was copied back", files)
+	}
+
+	// AND IT IS MARKED SEEN. Without this the refusal is a loop: the file stays
+	// in the inbox (the watcher observes and never consumes), so every scan
+	// would re-read and re-hash it forever.
+	if len(h.ledger.entries) != 1 {
+		t.Fatalf("%d ledger entries; a refused re-delivery that is not marked seen is "+
+			"re-hashed on every scan, five seconds apart, indefinitely", len(h.ledger.entries))
+	}
+
+	// A second scan does no work at all, which is the property the mark buys.
+	second := h.scan(t)
+	if second.AudioPruned != 0 || second.Ingested != 0 {
+		t.Fatalf("the second scan re-processed the file: %+v", second)
+	}
 }

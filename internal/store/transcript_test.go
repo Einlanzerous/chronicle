@@ -51,7 +51,7 @@ func TestDurableTranscriptPredicate(t *testing.T) {
 		m := newTranscribableMemo(t, s, ctx, "dur-partial@example.test")
 		if _, err := s.RecordTranscript(ctx, TranscriptInput{
 			MemoID: m.ID, Text: "half of a th", Partial: true,
-			Model: "small.en", Backend: "vulkan",
+			Model: "whisper.cpp/small.en", Backend: "vulkan",
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -68,7 +68,7 @@ func TestDurableTranscriptPredicate(t *testing.T) {
 		m := newTranscribableMemo(t, s, ctx, "dur-ok@example.test")
 		if _, err := s.RecordTranscript(ctx, TranscriptInput{
 			MemoID: m.ID, Text: "the whole thought", Partial: false,
-			Model: "small.en", Backend: "vulkan",
+			Model: "whisper.cpp/small.en", Backend: "vulkan",
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -91,7 +91,7 @@ func TestDurableTranscriptPredicate(t *testing.T) {
 		m := newTranscribableMemo(t, s, ctx, "dur-silence@example.test")
 		if _, err := s.RecordTranscript(ctx, TranscriptInput{
 			MemoID: m.ID, Text: "", Segments: []Segment{}, Partial: false,
-			Model: "small.en", Backend: "vulkan",
+			Model: "whisper.cpp/small.en", Backend: "vulkan",
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -118,7 +118,7 @@ func TestTheGateIsNotComputedFromCoverage(t *testing.T) {
 	covered := int64(41500) // eighteen and a half seconds of trailing silence
 	if _, err := s.RecordTranscript(ctx, TranscriptInput{
 		MemoID: m.ID, Text: "a complete thought", Partial: false,
-		Model: "small.en", Backend: "vulkan",
+		Model: "whisper.cpp/small.en", Backend: "vulkan",
 		AudioDurationMS: &duration, CoveredMS: &covered,
 	}); err != nil {
 		t.Fatal(err)
@@ -141,14 +141,14 @@ func TestPartialMayBeUpgradedButNeverDowngraded(t *testing.T) {
 	m := newTranscribableMemo(t, s, ctx, "upgrade@example.test")
 
 	if _, err := s.RecordTranscript(ctx, TranscriptInput{
-		MemoID: m.ID, Text: "half a th", Partial: true, Model: "small.en", Backend: "vulkan",
+		MemoID: m.ID, Text: "half a th", Partial: true, Model: "whisper.cpp/small.en", Backend: "vulkan",
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	upgraded, err := s.RecordTranscript(ctx, TranscriptInput{
 		MemoID: m.ID, Text: "half a thought and the rest", Partial: false,
-		Model: "small.en", Backend: "vulkan",
+		Model: "whisper.cpp/small.en", Backend: "vulkan",
 	})
 	if err != nil {
 		t.Fatalf("upgrading a partial: %v", err)
@@ -161,7 +161,7 @@ func TestPartialMayBeUpgradedButNeverDowngraded(t *testing.T) {
 	// so CHRN-28's retry policy cannot downgrade a good transcript by
 	// re-collecting a bad one.
 	kept, err := s.RecordTranscript(ctx, TranscriptInput{
-		MemoID: m.ID, Text: "half a th", Partial: true, Model: "small.en", Backend: "vulkan",
+		MemoID: m.ID, Text: "half a th", Partial: true, Model: "whisper.cpp/small.en", Backend: "vulkan",
 	})
 	if err != nil {
 		t.Fatalf("re-collecting a partial should be a no-op, not an error: %v", err)
@@ -188,7 +188,7 @@ func TestRecollectingIsANoOp(t *testing.T) {
 	in := TranscriptInput{
 		MemoID: m.ID, Text: "said once", Partial: false,
 		Segments: []Segment{{StartMS: 0, EndMS: 900, Text: "said once"}},
-		Model:    "small.en", Backend: "vulkan",
+		Model:    "whisper.cpp/small.en", Backend: "vulkan",
 	}
 	for i := 0; i < 3; i++ {
 		if _, err := s.RecordTranscript(ctx, in); err != nil {
@@ -237,7 +237,7 @@ func TestTranscriptNeedsAMemo(t *testing.T) {
 	s, ctx := newTestStore(t)
 	if _, err := s.RecordTranscript(ctx, TranscriptInput{
 		MemoID: uuid.New(), Text: "orphan", Partial: false,
-		Model: "small.en", Backend: "vulkan",
+		Model: "whisper.cpp/small.en", Backend: "vulkan",
 	}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("got %v, want ErrNotFound", err)
 	}
@@ -252,7 +252,7 @@ func TestSegmentsRoundTrip(t *testing.T) {
 
 	if _, err := s.RecordTranscript(ctx, TranscriptInput{
 		MemoID: m.ID, Text: "", Segments: nil, Partial: false,
-		Model: "small.en", Backend: "vulkan",
+		Model: "whisper.cpp/small.en", Backend: "vulkan",
 	}); err != nil {
 		t.Fatal(err)
 	}

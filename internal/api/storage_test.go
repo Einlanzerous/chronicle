@@ -29,6 +29,12 @@ func (f *fakeCorpus) AudioInventory(context.Context) ([]store.AudioRef, error) {
 	return f.inv, nil
 }
 
+// RetentionStatus: CHRN-22 §3. Nothing in these storage tests renders it —
+// the upload path is where it reaches a client — so a constant is honest here.
+func (f *fakeCorpus) RetentionStatus(context.Context, uuid.UUID, time.Duration) (string, *time.Time, error) {
+	return store.RetentionAwaitingTranscript, nil, nil
+}
+
 func (f *fakeCorpus) CorpusStats(context.Context, time.Duration) (store.CorpusStats, error) {
 	return f.stats, nil
 }

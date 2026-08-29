@@ -25,6 +25,7 @@ import (
 	"github.com/Einlanzerous/chronicle/internal/audio"
 	"github.com/Einlanzerous/chronicle/internal/config"
 	"github.com/Einlanzerous/chronicle/internal/invite"
+	"github.com/Einlanzerous/chronicle/internal/retention"
 	"github.com/Einlanzerous/chronicle/internal/store"
 	"github.com/Einlanzerous/chronicle/internal/transcribe"
 	"github.com/Einlanzerous/chronicle/internal/upload"
@@ -78,6 +79,8 @@ func run(args []string) error {
 		return runMintInvite(args[1:])
 	case "retranscribe":
 		return runRetranscribe(args[1:])
+	case "prune":
+		return runPrune(args[1:])
 	case "-h", "--help", "help":
 		usage()
 		return nil
@@ -95,12 +98,18 @@ usage:
   chronicle migrate [up|down] [-n N]   apply or roll back migrations
   chronicle mint-invite [--email E]    issue a one-time sign-in invite
   chronicle retranscribe [--memo ID]   release held memos back to the queue
+  chronicle prune [--dry-run]          delete audio past its retention window
   chronicle version                    print the build version
 
 migrate defaults to "up". "down" without -n rolls everything back.
 mint-invite defaults to the owner. The invite is shown once and expires.
 retranscribe with no --memo releases every held memo. GET /admin/transcription
 lists them and why each stopped.
+
+prune deletes the audio of memos past their window that have a durable
+transcript, and nothing else — never a pinned memo, never one that was not
+transcribed, and never a transcript. --dry-run reads the same predicate a real
+run marks with, and deletes nothing.
 `)
 }
 
@@ -186,6 +195,7 @@ func runServe(args []string) error {
 
 	var watcher *watch.Watcher
 	var uploads *upload.Service
+	var pruner *retention.Pruner
 	var transcriber *transcribe.Service
 	deps := api.Deps{
 		DB:            st,
@@ -222,6 +232,18 @@ func runServe(args []string) error {
 		deps.Audio = audioStore
 		deps.Corpus = st
 		logger.Info("audio store ready", "root", audioStore.Root())
+
+		// CHRN-22's retention pruner, built HERE because this is where the
+		// corpus is known to exist and to be a directory. A destructive job
+		// whose root might be a typo is one that deletes the wrong thing, or
+		// silently nothing at all.
+		pruner = &retention.Pruner{
+			Store:    st,
+			Audio:    audioStore,
+			Logger:   logger,
+			Window:   audio.ProjectionWindow,
+			Interval: retention.DefaultInterval,
+		}
 
 		// The app's ingest path (CHRN-20). Wired inside this block for the same
 		// reason the watcher is: an upload endpoint with nowhere to put a
@@ -379,6 +401,17 @@ func runServe(args []string) error {
 			defer watching.Done()
 			if err := uploads.Run(ctx); err != nil {
 				logger.Error("the upload sweeper stopped", "error", err)
+			}
+		}()
+	}
+	// CHRN-22's pruner. It exists only where there is a corpus, so a deployment
+	// with no audio directory starts nothing here rather than sweeping a guess.
+	if pruner != nil {
+		watching.Add(1)
+		go func() {
+			defer watching.Done()
+			if err := pruner.Run(ctx); err != nil {
+				logger.Error("the retention pruner stopped", "error", err)
 			}
 		}()
 	}
@@ -585,6 +618,56 @@ func firstNonEmptyString(v, fallback string) string {
 // transcription costs GPU time on a device Chronicle shares with Ollama and
 // with Catenary, and an unmetered endpoint that queues work onto it is not
 // something to ship before CHRN-26 has put a lease on that device.
+// runPrune is CHRN-22's operator surface, and a SUBCOMMAND rather than an
+// endpoint on purpose: a destructive job's rehearsal should not be reachable
+// over HTTP.
+func runPrune(args []string) error {
+	fs := flag.NewFlagSet("prune", flag.ContinueOnError)
+	dryRun := fs.Bool("dry-run", false, "list what a real run would delete, and delete nothing")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	if cfg.AudioDir == "" {
+		return fmt.Errorf("prune: CHRONICLE_AUDIO_DIR is not set, so there is no corpus to prune")
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	pool, err := store.ConnectWithRetry(ctx, cfg.DatabaseURL, 30*time.Second)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	audioStore, err := audio.New(cfg.AudioDir)
+	if err != nil {
+		return err
+	}
+
+	p := &retention.Pruner{
+		Store:  store.New(pool),
+		Audio:  audioStore,
+		Logger: cfg.Logger(os.Stdout),
+		Window: audio.ProjectionWindow,
+	}
+	rep, err := p.Sweep(ctx, *dryRun)
+	if err != nil {
+		return err
+	}
+	for _, m := range rep.Considered {
+		fmt.Printf("%s  %-12s  %9d bytes  captured %s\n",
+			m.MemoID, m.Retention, m.ByteSize, m.CapturedAt.Format(time.RFC3339))
+	}
+	fmt.Println(rep)
+	return nil
+}
+
 func runRetranscribe(args []string) error {
 	fs := flag.NewFlagSet("retranscribe", flag.ContinueOnError)
 	memoID := fs.String("memo", "", "the memo to retry (default: every held memo)")

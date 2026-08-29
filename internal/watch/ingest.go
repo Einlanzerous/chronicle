@@ -19,6 +19,10 @@ type ingestOutcome struct {
 	collapsed           bool
 	changedWhileReading bool
 	hash                string
+
+	// audioPruned means this author already had this memo and the retention
+	// pruner has taken its audio. CHRN-22 Ruling 2: audio is delivered once.
+	audioPruned bool
 }
 
 // ingestFile copies one inbox file into the audio store and records the memo.
@@ -124,6 +128,33 @@ func (w *Watcher) ingestFile(ctx context.Context, path string, authorID uuid.UUI
 	}
 
 	out.hash = hex.EncodeToString(sum.Sum(nil))
+
+	// CHRN-22 Ruling 2, checked HERE — after the hash, because the hash is the
+	// memo's identity and nothing before this line knows which memo the file
+	// is. The temp copy is removed by the defer above, so nothing lands: a
+	// memo's audio is delivered once, and re-delivering it would resurrect a
+	// recording the next sweep would delete again, since captured_at cannot
+	// move.
+	//
+	// The window between this check and the rename is a concurrent prune, and
+	// it loses in the safe direction: the file lands as an orphan, which the
+	// storage report already counts and the pruner may retry.
+	pruned, err := w.ingest.AudioPrunedFor(ctx, authorID, out.hash)
+	if err != nil {
+		return out, fmt.Errorf("audio pruned check: %w", err)
+	}
+	if pruned {
+		out.audioPruned = true
+		// MARKED SEEN, AND THIS IS NOT OPTIONAL. Returning without it would
+		// leave the file unrecorded, so every scan — five seconds apart — would
+		// read a forty-minute memo, copy it into a fresh temp file and hash it,
+		// only to bail here again. Before CHRN-22 this case terminated because
+		// the file was ingested and marked; a refusal has to carry the mark
+		// with it or it becomes a loop that never ends.
+		w.markSeen(ctx, path, before, out.hash)
+		return out, nil
+	}
+
 	ref := audio.Ref{AuthorID: authorID, ContentHash: out.hash}
 	final, err := w.audio.Path(ref)
 	if err != nil {
@@ -193,18 +224,23 @@ func (w *Watcher) ingestFile(ctx context.Context, path string, authorID uuid.UUI
 	// the file it has just written and records what it found.
 	w.describe(ctx, res.Memo)
 
+	w.markSeen(ctx, path, before, out.hash)
+	return out, nil
+}
+
+// markSeen records that this file has been dealt with, whichever way it was
+// dealt with. Not fatal on failure, and deliberately so: the outcome is already
+// recorded, and a missed ledger write costs one re-hash next scan.
+func (w *Watcher) markSeen(ctx context.Context, path string, before os.FileInfo, hash string) {
 	if err := w.ledger.MarkSeen(ctx, store.SeenFile{
 		Path:        path,
 		SizeBytes:   before.Size(),
 		ModTime:     before.ModTime(),
-		ContentHash: out.hash,
+		ContentHash: hash,
 	}); err != nil {
-		// Not fatal, and deliberately so: the memo is already recorded, and a
-		// missed ledger write costs one re-hash next scan, which then collapses.
 		w.logger.Warn("could not record the file in the seen-ledger; it will be re-read",
 			"path", path, "error", err)
 	}
-	return out, nil
 }
 
 // sourceRef is the arrival's handle: the path relative to the inbox root, so

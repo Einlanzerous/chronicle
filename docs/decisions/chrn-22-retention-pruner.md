@@ -1,6 +1,7 @@
 # CHRN-22 — The retention pruner (decision)
 
-Status: **accepted 2026-08-29 by magos, at the recommendations on every ruling.**
+Status: **accepted 2026-08-29 by magos, at the recommendations on every ruling,
+and IMPLEMENTED the same day.**
 Two amendments were owed at acceptance and are folded in, marked **[rev]**: §3's
 status enum had no `pruned` case, and §1's fixture hazard needed a test rather
 than a paragraph. The PR that follows is mechanical against this document, and
@@ -238,6 +239,15 @@ than by a test that compares two implementations, in the same way
 
 E8 is unbuilt, so this ticket's "UI" is a field on the memo's JSON plus the dry
 run's output. The shape is what matters; the rendering is E8's.
+
+**[impl] The field ships.** An earlier revision of this document deferred it on
+the grounds that the only memo JSON today is the upload path's, where a memo has
+just been captured and the answer is always `awaiting_transcript`. Review was
+right that this is a narrowing rather than a saving: the memo a person is most
+likely to be looking at is the one whose audio is gone, and leaving it as a bare
+`audio_pruned` boolean is the label problem this section is about. `memoJSON`
+carries `retention_status` and `prunes_at`, filled from the same function the
+sweep evaluates.
 
 ### A late transcript prunes with no date ever shown, and that is accepted
 
