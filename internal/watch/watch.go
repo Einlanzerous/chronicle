@@ -404,8 +404,9 @@ func (w *Watcher) scanAccount(ctx context.Context, dir string, authorID uuid.UUI
 		if out.audioPruned {
 			// The memo exists and the retention pruner has taken its audio.
 			// Not a failure and not an ingest — a re-delivery of bytes this
-			// system has deliberately stopped keeping. Marked seen, so a
-			// rescan does not hash it again every sweep.
+			// system has deliberately stopped keeping. ingestFile marked it
+			// seen before returning, so the next scan skips it rather than
+			// re-hashing a forty-minute file every five seconds.
 			w.logger.Info("re-delivery of a memo whose audio was pruned; not re-copied",
 				"author_id", authorID)
 			res.AudioPruned++

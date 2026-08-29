@@ -787,4 +787,18 @@ func TestARescanDoesNotRestorePrunedAudio(t *testing.T) {
 	if files != 0 {
 		t.Fatalf("%d file(s) in the audio store; the pruned recording was copied back", files)
 	}
+
+	// AND IT IS MARKED SEEN. Without this the refusal is a loop: the file stays
+	// in the inbox (the watcher observes and never consumes), so every scan
+	// would re-read and re-hash it forever.
+	if len(h.ledger.entries) != 1 {
+		t.Fatalf("%d ledger entries; a refused re-delivery that is not marked seen is "+
+			"re-hashed on every scan, five seconds apart, indefinitely", len(h.ledger.entries))
+	}
+
+	// A second scan does no work at all, which is the property the mark buys.
+	second := h.scan(t)
+	if second.AudioPruned != 0 || second.Ingested != 0 {
+		t.Fatalf("the second scan re-processed the file: %+v", second)
+	}
 }

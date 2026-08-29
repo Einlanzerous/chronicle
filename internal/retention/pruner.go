@@ -205,15 +205,22 @@ func (p *Pruner) window() time.Duration {
 	return p.Window
 }
 
-// String renders a dry run for an operator.
+// String renders a sweep for an operator.
+//
+// The byte count is what WOULD be freed on a dry run and what WAS freed on a
+// real one. They are different numbers whenever a claim is lost or an unlink
+// fails, and reporting the first as the second would tell somebody a pinned
+// memo's audio had been deleted.
 func (r Report) String() string {
-	s := fmt.Sprintf("%d memo(s) would be pruned", len(r.Considered))
 	if !r.DryRun {
-		s = fmt.Sprintf("%d memo(s) pruned, %d orphaned, %d skipped", r.Pruned, r.Lost, r.Skipped)
+		return fmt.Sprintf("%d memo(s) pruned, %d orphaned, %d skipped, %d byte(s) freed\n"+
+			"%d held back · no durable transcript",
+			r.Pruned, r.Lost, r.Skipped, r.Bytes, r.HeldBack)
 	}
 	var bytes int64
 	for _, m := range r.Considered {
 		bytes += m.ByteSize
 	}
-	return fmt.Sprintf("%s, %d byte(s)\n%d held back · no durable transcript", s, bytes, r.HeldBack)
+	return fmt.Sprintf("%d memo(s) would be pruned, %d byte(s)\n"+
+		"%d held back · no durable transcript", len(r.Considered), bytes, r.HeldBack)
 }

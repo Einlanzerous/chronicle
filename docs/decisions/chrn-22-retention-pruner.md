@@ -240,14 +240,14 @@ than by a test that compares two implementations, in the same way
 E8 is unbuilt, so this ticket's "UI" is a field on the memo's JSON plus the dry
 run's output. The shape is what matters; the rendering is E8's.
 
-**[impl] The JSON half is deferred, and this records it rather than leaving it
-to be noticed.** `store.RetentionStatus` ships and is tested — it is the shape,
-and it is the same clause the sweep evaluates. What does not ship is a field on
-a response, because **there is no `GET /memos/{id}`**: the only memo JSON today
-is the upload path's, where a memo has just been captured and its status is
-always `awaiting_transcript`. A per-upload query to render a constant is
-ceremony. The field is one line on the endpoint that will carry it, and E8 is
-the ticket that adds both.
+**[impl] The field ships.** An earlier revision of this document deferred it on
+the grounds that the only memo JSON today is the upload path's, where a memo has
+just been captured and the answer is always `awaiting_transcript`. Review was
+right that this is a narrowing rather than a saving: the memo a person is most
+likely to be looking at is the one whose audio is gone, and leaving it as a bare
+`audio_pruned` boolean is the label problem this section is about. `memoJSON`
+carries `retention_status` and `prunes_at`, filled from the same function the
+sweep evaluates.
 
 ### A late transcript prunes with no date ever shown, and that is accepted
 

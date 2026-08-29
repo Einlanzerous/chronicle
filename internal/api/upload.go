@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Einlanzerous/chronicle/internal/audio"
 	"github.com/Einlanzerous/chronicle/internal/store"
 	"github.com/Einlanzerous/chronicle/internal/upload"
 )
@@ -98,6 +99,18 @@ type memoJSON struct {
 	CapturedAt  time.Time `json:"captured_at"`
 	AudioPruned bool      `json:"audio_pruned"`
 
+	// CHRN-22 §3. A STATUS RATHER THAN A DATE, because for a memo with no
+	// durable transcript there is no date the pruner will use — and a
+	// `PRUNES 2026-09-20` label that passes with nothing happening is the
+	// label lying, which CHRN-25 §5 already refused in the other direction.
+	//
+	// `prunes_at` is set only for `scheduled` and `pruned`. The renderer is
+	// E8's; the shape is this ticket's, and it is the same clause the sweep
+	// evaluates, which is what makes the date the UI shows the date the job
+	// uses by construction.
+	RetentionStatus string     `json:"retention_status"`
+	PrunesAt        *time.Time `json:"prunes_at"`
+
 	// Filled by CHRN-21; null until it has run.
 	DurationMS   *int32  `json:"duration_ms"`
 	Codec        *string `json:"codec"`
@@ -106,8 +119,10 @@ type memoJSON struct {
 	OriginalFilename *string `json:"original_filename,omitempty"`
 }
 
-func toMemoJSON(m store.Memo) memoJSON {
+func toMemoJSON(m store.Memo, retentionStatus string, prunesAt *time.Time) memoJSON {
 	return memoJSON{
+		RetentionStatus:  retentionStatus,
+		PrunesAt:         prunesAt,
 		ID:               m.ID,
 		State:            m.State,
 		Retention:        m.Retention,
@@ -181,7 +196,7 @@ func (a *api) handleUploadOpen(w http.ResponseWriter, r *http.Request) {
 	if res.Created {
 		status = http.StatusCreated
 	}
-	a.writeUpload(w, status, res)
+	a.writeUpload(w, r, status, res)
 }
 
 // handleUploadAppend takes the next chunk.
@@ -234,7 +249,7 @@ func (a *api) handleUploadAppend(w http.ResponseWriter, r *http.Request) {
 		a.uploadError(w, r, "append to upload", err)
 		return
 	}
-	a.writeUpload(w, http.StatusOK, res)
+	a.writeUpload(w, r, http.StatusOK, res)
 }
 
 // handleUploadStatus reports how far a session got. It is how a client that
@@ -252,7 +267,7 @@ func (a *api) handleUploadStatus(w http.ResponseWriter, r *http.Request) {
 		a.uploadError(w, r, "read upload status", err)
 		return
 	}
-	a.writeUpload(w, http.StatusOK, res)
+	a.writeUpload(w, r, http.StatusOK, res)
 }
 
 // handleUploadAbandon drops a session and its bytes.
@@ -307,11 +322,29 @@ func (a *api) findUpload(w http.ResponseWriter, r *http.Request) (store.Upload, 
 
 // writeUpload renders either half of a Result, with the offset in a header as
 // well as the body so a client can act on it without parsing anything.
-func (a *api) writeUpload(w http.ResponseWriter, status int, res upload.Result) {
+// retentionOf asks what will happen to a memo's audio. Best effort: a memo
+// that has just been captured always answers `awaiting_transcript`, and a
+// missing answer is a field a client can see is absent rather than a failed
+// upload.
+func (a *api) retentionOf(r *http.Request, memoID uuid.UUID) (string, *time.Time) {
+	if a.corpus == nil {
+		return "", nil
+	}
+	status, at, err := a.corpus.RetentionStatus(r.Context(), memoID, audio.ProjectionWindow)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "could not read a memo's retention status",
+			"memo", memoID, "error", err)
+		return "", nil
+	}
+	return status, at
+}
+
+func (a *api) writeUpload(w http.ResponseWriter, r *http.Request, status int, res upload.Result) {
 	body := uploadResponse{}
 	switch {
 	case res.Committed != nil:
-		m := toMemoJSON(res.Committed.Memo)
+		status, prunesAt := a.retentionOf(r, res.Committed.Memo.ID)
+		m := toMemoJSON(res.Committed.Memo, status, prunesAt)
 		body.Status = "complete"
 		body.ByteSize = res.Committed.Memo.ByteSize
 		body.Offset = res.Committed.Memo.ByteSize

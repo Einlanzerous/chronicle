@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -230,20 +231,7 @@ func TestTheReportCarriesWhatTheGateIsHolding(t *testing.T) {
 	if rep.HeldBack != 7 {
 		t.Fatalf("held back %d, want 7", rep.HeldBack)
 	}
-	if !contains(rep.String(), "7 held back") {
+	if !strings.Contains(rep.String(), "7 held back") {
 		t.Fatalf("the rendered report does not show it:\n%s", rep)
 	}
-}
-
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && (len(sub) == 0 || indexOf(s, sub) >= 0)
-}
-
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
 }

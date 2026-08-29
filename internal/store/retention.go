@@ -16,11 +16,17 @@ import (
 // docs/decisions/chrn-22-retention-pruner.md and this file carries what it
 // concluded, not the argument.
 //
-// THE PREDICATE IS ONE STRING AND IT IS USED THREE TIMES: by the dry run as a
-// SELECT, by the mark as the WHERE of a compare-and-swap, and by the status
-// function that tells a person what will happen. "A dry run lists exactly what
-// a real run would delete" is then true by construction rather than by a test
-// comparing two queries that can drift apart in the next PR.
+// THE PREDICATE IS ONE STRING AND IT IS USED TWICE: by the dry run as a SELECT,
+// and by the mark as the WHERE of a compare-and-swap. "A dry run lists exactly
+// what a real run would delete" is then true by construction rather than by a
+// test comparing two queries that can drift apart in the next PR.
+//
+// RetentionStatus and HeldBackFromPruning re-express the same conditions as a
+// CASE and as a negation rather than reusing the constant, because neither
+// shape can be built from a conjunction meant for a WHERE. They agree with it
+// today and the tests below pin each branch — but the drift-proof property
+// belongs to the two above, and saying otherwise would be claiming a guarantee
+// this file does not provide.
 
 // Retention statuses. They are what the UI renders and what the dry run
 // reports, and they are a STATUS RATHER THAN A DATE because for a memo with no

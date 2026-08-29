@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"github.com/google/uuid"
 	"net/http"
 	"time"
 
@@ -13,6 +14,11 @@ import (
 type Corpus interface {
 	AudioInventory(ctx context.Context) ([]store.AudioRef, error)
 	CorpusStats(ctx context.Context, window time.Duration) (store.CorpusStats, error)
+
+	// RetentionStatus is CHRN-22 §3: what will happen to one memo's audio, and
+	// when. The same clause the pruner sweeps with, so the date a client
+	// renders is the date the job will use.
+	RetentionStatus(ctx context.Context, memoID uuid.UUID, window time.Duration) (string, *time.Time, error)
 }
 
 // listSample bounds how many individual refs the report names. The counts are

@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/Einlanzerous/chronicle/internal/audio"
 )
 
 // CHRN-22's gate, at the level it is written. Mode C, so these are not
@@ -361,5 +363,85 @@ func TestHeldBackCountsWhatTheGateIsKeeping(t *testing.T) {
 	}
 	if n != 2 {
 		t.Fatalf("held back %d, want 2 — the count is the visible half of an accepted gap", n)
+	}
+}
+
+// THE SEVENTH REFUSAL: THE WINDOW ITSELF.
+//
+// Every other test here runs with a one-nanosecond window, so every fixture is
+// past it by construction and the 30-day clause is never exercised. Delete that
+// clause and those tests all stay green — while the pruner would delete audio
+// the instant a transcript landed, at any age. That is the ticket's headline
+// number gone with no signal, which is exactly the class of bug Mode C exists
+// for.
+//
+// captured_at is immutable (CH002) so a fixture cannot be aged. It does not
+// need to be: a memo captured NOW, with a transcript that satisfies the floor,
+// must not be prunable under the real window — and must report `scheduled` for
+// thirty days' time.
+func TestTheWindowRefusesAMemoThatIsNotOldEnough(t *testing.T) {
+	s, ctx := newTestStore(t)
+	fresh := control(t, s, ctx, "window-fresh@example.test")
+
+	// The control for this test is the SAME memo under a window it has passed,
+	// so the only thing that changes between the two calls is the clause.
+	if !prunableIDs(t, s, ctx)[fresh.ID] {
+		t.Fatal("the memo is not prunable even at a nanosecond window; the fixture is broken " +
+			"and the assertion below would pass for the wrong reason")
+	}
+
+	rows, err := s.PrunableAudio(ctx, audio.ProjectionWindow, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.MemoID == fresh.ID {
+			t.Fatal("a memo captured moments ago was listed for deletion under the 30-day " +
+				"window; the retention period is not being applied at all")
+		}
+	}
+
+	// And the status says so, with the date the job will use.
+	status, at, err := s.RetentionStatus(ctx, fresh.ID, audio.ProjectionWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != RetentionScheduled {
+		t.Fatalf("status %q, want %q", status, RetentionScheduled)
+	}
+	if at == nil {
+		t.Fatal("a scheduled memo carries no date")
+	}
+	want := fresh.CapturedAt.Add(audio.ProjectionWindow)
+	if at.Sub(want) > time.Second || want.Sub(*at) > time.Second {
+		t.Fatalf("prunes_at = %s, want captured_at + 30d = %s — the date a person is shown "+
+			"has to be the date the job uses", at, want)
+	}
+}
+
+// DISCARD NOW BYPASSES THE WINDOW AND ONLY THE WINDOW. It still waits for the
+// transcript (asserted above); what it does not wait for is thirty days.
+func TestDiscardNowBypassesTheWindowButNotTheGate(t *testing.T) {
+	s, ctx := newTestStore(t)
+
+	m := newTranscribableMemo(t, s, ctx, "window-discard@example.test")
+	durable(t, s, ctx, m.ID, "whisper.cpp/small.en")
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE tier2.memos SET retention = 'discard_now' WHERE id = $1`, m.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := s.PrunableAudio(ctx, audio.ProjectionWindow, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, r := range rows {
+		if r.MemoID == m.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("DISCARD NOW waited for the 30-day window; immediately means at the next sweep")
 	}
 }
