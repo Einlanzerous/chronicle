@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.0](https://github.com/Einlanzerous/chronicle/compare/v1.2.0...v1.3.0) (2026-08-29)
+
+
+### Features
+
+* **asr:** the retry ceiling, and a failing memo that retries first (CHRN-28) ([#27](https://github.com/Einlanzerous/chronicle/issues/27)) ([352183b](https://github.com/Einlanzerous/chronicle/commit/352183bb259934030a8dd8bffd319b6ce4c7c4fb))
+* **retention:** the pruner, and the model floor that gates it (CHRN-22) ([#29](https://github.com/Einlanzerous/chronicle/issues/29)) ([6cc805f](https://github.com/Einlanzerous/chronicle/commit/6cc805f6ae5af9e144ed7a5dfb14d1781a1bad8b))
+
 ## [1.2.0](https://github.com/Einlanzerous/chronicle/compare/v1.1.0...v1.2.0) (2026-08-29)
 
 
