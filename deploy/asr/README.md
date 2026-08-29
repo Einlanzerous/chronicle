@@ -1,18 +1,19 @@
 # Shared estate ASR — whisper.cpp on the R9700, and the service over it
 
-**CHRN-24 + CHRN-25 · E3.** One whisper.cpp build, on one GPU, behind one image.
-Chronicle is client one; Catenary is client two and its handoff is CHRN-29.
+**CHRN-24 + CHRN-25 + CHRN-26 · E3.** One whisper.cpp build, on one GPU, behind
+one image. Chronicle is client one; Catenary is client two and its handoff is
+CHRN-29.
 
-Two things live here, and it is worth keeping them apart:
+Three things live here, and it is worth keeping them apart:
 
 - **The runner (CHRN-24)** — a pinned, reproducible container that transcribes a
   file on the R9700 and hits a known number. Everything from here to *Measured,
   in this container* is about that, and about why each pin is load-bearing.
 - **The service (CHRN-25)** — `asrd`, the job contract over it: submit, poll,
   fetch, cancel, with a job table and a lease. See **The service** below.
-
-The resident worker with its real GPU lease is still CHRN-26; what ships here is
-a per-invocation placeholder, and it says so.
+- **The resident worker (CHRN-26)** — one `whisper-server` process holding the
+  model, a single-flight GPU lease, and round-robin fairness between clients.
+  See **The resident worker** below.
 
 ---
 
@@ -184,9 +185,17 @@ CSVs in `results/`, each carrying the pin set that produced it.
 | `medium.en` | 25.7× | 25.6× | +0.4% |
 | `large-v3` | 12.6× | 12.6× | 0.0% |
 
-**Model resident — recorded, not gated on.** CHRN-26 is what makes this the
-operative column; it is measured here so that ticket starts from a number taken
-through this image rather than a host-native one.
+**Model resident — and since CHRN-26 this is the operative column.** The
+service holds the model across jobs, so these are the numbers a memo is
+transcribed at. Measured through this image rather than host-native, which is
+what makes them comparable to what `asrd` actually does.
+
+**Every figure in both tables was taken under BEAM SEARCH** — `whisper-cli`
+defaults to `--beam-size 5 --best-of 5` and `bench.sh` passes neither, so that
+is what the harness measured. `whisper-server` does **not**: it defaults to
+`-bs -1` (greedy) and `-bo 2`, which is *faster* and a different transcript.
+`asrd` therefore passes `-bs 5 -bo 5` explicitly. **A number compared against
+this table must name the decode it was taken with.**
 
 | model | in container | CHRN-12 reference | delta |
 |---|---|---|---|
@@ -229,8 +238,8 @@ The image carries a second binary: `asrd`, the transcription job service. The
 contract it implements is `deploy/asr/openapi.yaml`, and the argument behind
 every shape in it is `docs/decisions/chrn-25-job-contract.md`.
 
-It is **in this image** because it shells out to `ffmpeg` and `whisper-cli` as
-siblings. The alternative — a separate container running `docker run` against
+It is **in this image** because it shells out to `ffmpeg` and supervises
+`whisper-server` as siblings. The alternative — a separate container running `docker run` against
 this one — needs the daemon socket mounted, which hands a network service the
 ability to start anything on the host.
 
@@ -240,7 +249,7 @@ GET  /v1/jobs/{id}           status, cheap, safe to poll; carries retry_after_ms
 GET  /v1/jobs/{id}/result    the transcript, fetched once; 410 once the payload ages out
 POST /v1/jobs/{id}/cancel    idempotent
 GET  /v1/models              what this deployment runs, and the audio it accepts
-GET  /healthz  /readyz       open; /readyz pings the database and reports queue depth
+GET  /healthz  /readyz       open; /readyz pings the database and reports the queue and the device
 ```
 
 Its own database and its own role, provisioned separately:
@@ -262,20 +271,101 @@ database and the estate loses queue position and nothing else. The corollary a
 reviewer should check on any change here is that nothing in it has become the
 only copy of anything.
 
-### The worker in this ticket is a placeholder
+### The resident worker (CHRN-26)
 
-`asrd serve` runs the reaper and a **per-invocation** worker: claim a job,
-decode, run `whisper-cli`, write the result, one job at a time. It is
-deliberately the shape the benchmark measured as the slow one — 43.2× rather
-than 59.6×, because the model is loaded per job — and CHRN-26 replaces it with
-the resident worker, the real GPU lease and per-client fairness.
+`asrd serve` supervises **one `whisper-server` process** from the same pinned
+tree, bound to loopback, holding the model across jobs. The argument for every
+choice below is `docs/decisions/chrn-26-resident-worker.md`; what follows is
+what it concluded.
 
-It exists because the ticket asks for job state to survive `kill -9` of the
-worker, and there has to be a worker to kill. **The lease is the mechanism, not
-a shutdown hook** — a hook does not run on `kill -9`, which is the case being
-tested. The worker renews `lease_expires_at` while it works; the reaper returns
-any job whose lease has passed, with `attempts` incremented — or, if the job was
-cancelled, sends it to `cancelled` and never back to the queue.
+**Why residency is worth having** is not the 28% it saves on a 60-second memo.
+R3 isolated a **fixed 388 ms per process** on Vulkan, so the tax is a constant
+rather than a share: a 5-second voice note is **5.6× slower** per-invocation, a
+40-minute one 1.01×. It dominates exactly the memos there are most of.
+
+**Three different things are called a lease here**, and they are worth keeping
+apart:
+
+| | says | held for |
+|---|---|---|
+| the **job lease** (CHRN-25) | this worker owns this job | the whole job, decode included — a timestamp, so it depends on no connection |
+| the **device lock** | this process owns the card | the process's lifetime — a Postgres advisory lock on `hash(ASR_DEVICE_ID)`, on a connection of its own |
+| the **GPU semaphore** | an inference is running now | the inference only — so ffmpeg is not serialised behind the device |
+
+A process that cannot take the device lock is a **standby**: it serves the API,
+claims no jobs, loads no model and holds no VRAM, and `/readyz` says `standby`
+rather than looking broken. That is what makes a rolling redeploy safe — the
+lock goes with its connection, so the departing process releases it by dying,
+with nothing to run in it.
+
+**What it does NOT guarantee is the device.** Ollama also lives on the R9700 and
+is reached directly by whoever needs a completion, so `asrd` cannot admit it.
+The claim this service makes is **single-flight transcription**; contention with
+Ollama is real, is a slowdown rather than a failure, and is made visible instead
+of arbitrated — a job running past **2× its expected rate** logs a warning
+naming contention as the likely cause.
+
+**Fairness is round-robin by client**, which is a promise to client two: the
+claim takes the oldest queued job of the client least recently served, so a
+Catenary backfill of eight hundred voice messages cannot put a Chronicle memo
+behind it. The honest limitation, because it is otherwise discovered as a bug:
+that is **half the device under contention, not priority**. A memo waits for at
+most one backfill job — about a second at `small.en`, and
+`ASR_MODEL_SWITCH_MAX_WAIT` **plus** one job if the backfill names a different
+model.
+
+**One model is resident at a time, and it drains before it switches.** A job for
+another model waits until the queue holds nothing for the resident one, or until
+it has waited `ASR_MODEL_SWITCH_MAX_WAIT`, whichever comes first. A model that
+fails to initialise takes the child process with it — `/load` frees the old
+model before loading the new one and `exit(1)`s if that fails, which is
+upstream's own TODO — so the supervisor restarts on the **last known good**
+model and refuses the one that failed. That is the difference between a service
+and a restart loop.
+
+**Every job carries an inference deadline**, `max(30s, 5 × audio_ms ÷ expected
+rate)`. It is the only thing that can see a **hung** child, as opposed to a
+crashed one: a `whisper-server` that stops answering without exiting leaves
+every lease reporting healthy while nothing moves, forever. On breach the child
+is killed and the job released.
+
+**A dying child releases its job rather than failing it.** One crash must not
+permanently fail a memo that nothing was wrong with, so `attempts` goes up and
+the job returns to the queue — which is why CHRN-28's retry ceiling is
+load-bearing rather than a nicety, and why `Release` logs whether it was a
+crash or a deadline breach. They cost differently by a factor of five.
+
+**Cancelling actually stops the work.** Dropping the HTTP request would not:
+`/inference` holds the server's mutex for the whole synchronous call, so it
+would run to completion holding the device with the queue blocked behind it. The
+child is killed and restarted, which costs about 2.3 s.
+
+### Measuring the resident worker
+
+**This figure is not yet taken.** The box was at a 1-minute load average of 16.7
+on 16 cores when CHRN-26 landed, and the whole of *Measured, in this container*
+is an argument against reading a number off a busy machine: the same rig has
+produced a confidently wrong figure twice, and the second one was 27% off with
+nothing in the output to suggest a problem. **Do not raise `MAXLOAD`.** Wait for
+an idle window, take it, and fill in the row below.
+
+What has to be true of the measurement, or it is not comparable to the tables
+above:
+
+- **`-bs 5 -bo 5`.** `whisper-server` defaults to greedy decoding, which is
+  *faster* — so an unpinned run would pass the "within a few percent of the
+  resident column" bar for a reason that is not residency. `asrd` passes these,
+  so measuring *through `asrd`* is measuring the right decode; a hand-run
+  `whisper-server` must be told.
+- **`response_format=verbose_json`.** The default returns text and no segments.
+- **`-nlp`.** Language probabilities are an expensive operation the reference
+  numbers did not pay for.
+- The same clip (`voice60`), the same image, decode counted, median of three
+  after a discarded warm-up, and the load average recorded at both ends.
+
+| model | resident worker, through `asrd` | CHRN-24 resident column | delta |
+|---|---|---|---|
+| `small.en` | *pending an idle box* | 57.9× (1.01 s on the 60 s clip) | — |
 
 ### Configuration
 
@@ -285,10 +375,16 @@ cancelled, sends it to `cancelled` and never back to the queue.
 | `ASR_CLIENT_TOKENS` | required | `name:token` pairs out of Signet. Empty is a **boot error**, never "open" |
 | `ASR_DEFAULT_MODEL` | `small.en` | CHRN-12's default, and its reasoning |
 | `ASR_RESULT_TTL` | 7 days | matches `upload.DefaultTTL`; the **payload** ages out, the job row does not |
-| `ASR_LEASE_TTL` | 30s | CHRN-26's to tune against the real worker |
+| `ASR_LEASE_TTL` | 30s | held for the whole job, decode included; renewed at a third of it. CHRN-26 §7 checked it against a 40-minute memo and left it alone |
 | `ASR_MODEL_DIR` | `/opt/whisper/models` | absolute; the mount above |
 | `ASR_BACKEND` | `vulkan` | recorded on every result, so a corpus does not vary invisibly |
-| `ASR_WORKER` | true | off runs the HTTP surface with no worker, which is what CHRN-26 will want |
+| `ASR_WORKER` | true | off runs the HTTP surface with no worker: it serves submit and status, owns no device, and answers `/readyz` for its database alone |
+| `ASR_DEVICE_ID` | `r9700` | what the advisory lock names and what lands in `leased_by`. **Per device, never per deployment** — a second card is a second value |
+| `ASR_WHISPER_SERVER_BIN` | `whisper-server` | the supervised child, from the same pinned tree |
+| `ASR_WHISPER_SERVER_ADDR` | `127.0.0.1:8081` | **loopback only.** It has no authentication of any kind; a listener on `construct_net` would make `ASR_CLIENT_TOKENS` decorative |
+| `ASR_MODEL_SWITCH_MAX_WAIT` | 60s | how long a job for a non-resident model waits before forcing a switch — **and the fairness bound under mixed models** |
+| `ASR_INFERENCE_DEADLINE_FACTOR` | 5 | multiplier on the expected inference time before a job is treated as wedged; floored at 30s |
+| `ASR_EXPECTED_RATES` | CHRN-24's resident column | `model=realtime_x` pairs for **this worker's device**. An unnamed model uses 18.3×, the slowest measured, so it errs wide |
 
 `client_id` comes from the **token** and from nothing else. It is never read
 from a body, header or query parameter: CHRN-26 queues per client for fairness,
@@ -299,11 +395,19 @@ jump its queue.
 
 ## What is deliberately not here
 
-- **No resident worker and no GPU lease.** CHRN-26. The worker above loads the
-  model per job, which is why CHRN-24's gate is the per-invocation column.
+- **No arbitration of the R9700 against Ollama.** CHRN-26 §3, at length.
+  `asrd` admits one *transcription* at a time on the device it owns; Ollama is
+  a separate container reached directly, and making it participate would mean
+  an admission proxy with its own availability, or a lock every future caller
+  has to remember. If it is ever wanted it is an estate admission service and
+  its own ticket.
+- **No second worker on a second device.** CHRN-80, deliberately standalone.
+  The lock key, the fairness bookkeeping and the deadline rates are all
+  per-device already, so what is missing is a worker-facing protocol — and the
+  trust question that comes with it, since audio is tier-2 authored content and
+  a worker outside the estate sees every recording it claims.
 - **No retry ceiling, no backoff, no dead-lettering.** CHRN-28. `attempts`
   exists and the reaper moves it; the ceiling is a policy, not a counter.
-- **No fairness policy between clients.** CHRN-26.
 - **No callback or webhook.** Deliberately not now: it needs the service to hold
   its clients' credentials, which is the same objection that ruled out
   pull-by-URL for the audio.
