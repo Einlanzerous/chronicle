@@ -404,6 +404,40 @@ Three rules follow, and none of them are optional:
    (`server.cpp:1175-1182`) — so "not installed" and "installed and broken" are
    distinguishable, and only the second costs the resident process.
 
+**[impl] The last half-sentence turned out to be wrong, and the correction was
+measured rather than read.** `/load` stores `SERVER_STATE_LOADING_MODEL`
+*before* both of its 400 checks (`server.cpp:1163-1183`) and never resets it on
+either path. Run against the pinned tree in the CHRN-24 image:
+
+```
+GET  /health                                  200  {"status":"ok"}
+POST /load  model=/opt/whisper/models/ggml-nope.bin   400  Invalid request
+GET  /health                                  404  File Not Found (/health)
+POST /inference                               200  ...a correct transcript...
+```
+
+So an absent model leaves the child **permanently unhealthy while still
+transcribing perfectly well** — a readiness that lies, on a process this service
+supervises by polling exactly that endpoint. The absent case therefore costs the
+resident process too, and `asrd` restarts it on last-known-good rather than
+leaving it. It also stats the model file itself first, so the 400 is the race —
+the file went away between the check and the call — and not the ordinary path.
+
+**Two other things that run says, both of which code would otherwise be written
+against:**
+
+- **`/health` never answers 503.** `set_error_handler`
+  (`server.cpp:1231-1238`) rewrites every non-500 error response, so the
+  handler's 503 arrives as a **404**. §1's [rev] paragraph reads the handler
+  correctly and the wire disagrees with it. `asrd` treats anything but 200 as
+  not-ready, which is right either way.
+- **`/load`'s JSON error bodies never arrive either** — the same handler
+  replaces `{"error":"model not found!"}` with the plain text `Invalid
+  request`. The STATUS is the only thing to branch on.
+
+Nothing else in this section changes: absent is still distinguished from broken,
+and only absent is recoverable by putting the file back.
+
 **A correction to the review, which is worth having right because code would be
 written for it.** `/inference` does **not** answer 503 during a load. Both
 handlers take the same `whisper_mutex` (`server.cpp:638`, locked at `819` for
