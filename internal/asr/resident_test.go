@@ -376,3 +376,36 @@ func (b *syncBuffer) String() string {
 	defer b.mu.Unlock()
 	return b.buf.String()
 }
+
+// A MODEL THAT IS MERELY ABSENT IS NOT MARKED UNLOADABLE. §4 distinguishes
+// "not installed" from "installed and broken", and the difference is whether
+// putting the file back fixes it: an absent model that was remembered as
+// unloadable would keep failing jobs after somebody fixed the mount, until the
+// process was restarted.
+func TestAnAbsentModelIsRecheckedRatherThanRemembered(t *testing.T) {
+	f := newFakeRunner(t)
+	f.setMode(t, fakeOK)
+	r := f.resident(t, discardLogger())
+	startResident(t, r)
+
+	_, err := r.Transcribe(context.Background(), testJob("large-v3"))
+	var failure *FailureError
+	if !errors.As(err, &failure) || failure.Code != "model_not_installed" {
+		t.Fatalf("got %v; want a model_not_installed FailureError", err)
+	}
+	// Nothing was asked of the resident process: the file is not there to load.
+	if n := f.countEvents(t, "load"); n != 0 {
+		t.Fatalf("%d load attempts for a model that is not on disk", n)
+	}
+
+	// The mount is fixed, which is the whole point.
+	if err := os.WriteFile(filepath.Join(f.ModelDir, "ggml-large-v3.bin"), []byte("not a model"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Transcribe(context.Background(), testJob("large-v3")); err != nil {
+		t.Fatalf("the model was installed and the job still failed: %v", err)
+	}
+	if got := r.State().Model; got != "large-v3" {
+		t.Fatalf("resident model %q after a switch to large-v3", got)
+	}
+}

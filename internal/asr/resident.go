@@ -480,9 +480,12 @@ func (r *Resident) ensureModel(ctx context.Context, model string) error {
 		return &FailureError{Code: "model_unloadable", Message: model + ": " + why}
 	}
 
+	// ABSENT IS NOT UNLOADABLE, and §4 keeps them apart for a reason: a model
+	// that is merely missing becomes fine again the moment somebody mounts it,
+	// so this is checked afresh every time rather than remembered. Marking it
+	// would mean a fixed mount stayed broken until the process was restarted.
 	path := modelPath(r.ModelDir, model)
 	if _, err := os.Stat(path); err != nil {
-		r.markUnloadable(model, "not installed")
 		return &FailureError{Code: "model_not_installed", Message: model + " is not in " + r.ModelDir}
 	}
 
@@ -526,7 +529,11 @@ func (r *Resident) ensureModel(ctx context.Context, model string) error {
 		// read: after a 400 from /load, /health answers 404 forever and
 		// /inference answers correctly. The honest response is a restart on
 		// last-known-good.
-		r.markUnloadable(model, "the resident process could not find it")
+		//
+		// Still ABSENT rather than unloadable, for the reason above: this is
+		// the same answer as the stat, reached through a race.
+		r.Logger.Warn("the resident process could not find a model this service can see; restarting it",
+			"model", model, "path", path)
 		r.killProcess()
 		return &FailureError{Code: "model_not_installed", Message: model + " is not on the resident process's filesystem"}
 
