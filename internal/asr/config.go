@@ -3,6 +3,8 @@ package asr
 import (
 	"fmt"
 	"log/slog"
+	"maps"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -38,7 +40,55 @@ const (
 	// benchmark clip uses; 256 MB is far above anything a voice note produces
 	// and far below anything that threatens the process.
 	DefaultMaxAudioBytes = 256 << 20
+
+	// DefaultModelSwitchMaxWait is ruling 1, settled at 60 s. It is TWO
+	// things and the second is the one a client cares about: the starvation
+	// bound for a job naming a non-resident model, and — because a queue can
+	// hold two models at once — the fairness bound CHRN-29 publishes to client
+	// two. Under mixed models a memo waits this long plus one job, not the
+	// ~1 s the single-model case gives.
+	DefaultModelSwitchMaxWait = 60 * time.Second
+
+	// DefaultInferenceDeadlineFactor multiplies the expected inference time to
+	// get the wall clock after which a job is treated as WEDGED rather than
+	// long. Five, floored at DefaultMinInferenceDeadline, per CHRN-26 §7.
+	//
+	// Wide on purpose: contention with Ollama (§3, not prevented here) must
+	// never trip it, and the contention warning fires at 2x — under half the
+	// kill threshold — so a deadline kill is never the first symptom.
+	DefaultInferenceDeadlineFactor = 5.0
+
+	// DefaultMinInferenceDeadline floors the above, so a five-second memo is
+	// not killed by a cold cache.
+	DefaultMinInferenceDeadline = 30 * time.Second
+
+	// DefaultLoadDeadline bounds a model switch. The measured cost is 1.9 s
+	// for the largest model, so this is wide by thirty times and finite — and
+	// finite is the property that matters: a /load that never returns is §7's
+	// hung child one step earlier, with every lease reporting healthy.
+	DefaultLoadDeadline = 60 * time.Second
+
+	// UnknownModelRate is the realtime multiple assumed for a model this
+	// worker has no measurement for: the SLOWEST CHRN-24 measured, so an
+	// unknown model errs wide rather than killing a healthy job.
+	UnknownModelRate = 18.3
+
+	// DefaultDeviceID names the GPU this process claims. It is what the
+	// advisory lock hashes and what lands in leased_by — per DEVICE, never per
+	// deployment (CHRN-26 §3 [rev 2]).
+	DefaultDeviceID = "r9700"
 )
+
+// DefaultExpectedRates is CHRN-24's RESIDENT column, in-container, measured
+// under beam search with -bs 5 -bo 5. These describe the R9700; a worker on
+// another device has its own and sets ASR_EXPECTED_RATES, because a deadline
+// computed from somebody else's GPU is either a false kill or no bound at all.
+var DefaultExpectedRates = map[string]float64{
+	"base.en":   76.7,
+	"small.en":  57.9,
+	"medium.en": 35.9,
+	"large-v3":  18.3,
+}
 
 // AcceptedMediaTypes is the audio the service will take.
 //
@@ -81,13 +131,41 @@ type Config struct {
 	// $WHISPER/models, mounted read-only.
 	ModelDir string
 
-	// WhisperBin and FFmpegBin are the two executables the placeholder worker
-	// drives. Both default to the names the CHRN-24 image puts on PATH, which
-	// is where asrd runs — shelling out to a sibling binary in the same image,
-	// not `docker run` from inside a container, which would need the daemon
-	// socket and hand this service the estate.
-	WhisperBin string
-	FFmpegBin  string
+	// WhisperServerBin is the RESIDENT child asrd supervises, and FFmpegBin
+	// decodes into it. Both default to names the CHRN-24 image puts on PATH,
+	// which is where asrd runs — shelling out to a sibling binary in the same
+	// image, not `docker run` from inside a container, which would need the
+	// daemon socket and hand this service the estate.
+	//
+	// ASR_WHISPER_BIN is gone with the per-invocation placeholder: whisper-cli
+	// is no longer on any path asrd takes.
+	WhisperServerBin string
+	FFmpegBin        string
+
+	// WhisperServerAddr is where the child listens. LOOPBACK, always. It has
+	// no authentication of any kind, so a second listener on construct_net
+	// that transcribes anything sent to it would make ASR_CLIENT_TOKENS
+	// decorative.
+	WhisperServerAddr string
+
+	// DeviceID names the GPU this process claims: what the Postgres advisory
+	// lock hashes, and what lands in leased_by. A second device is a second
+	// value rather than a redesign — CHRN-26 §3 [rev 2], CHRN-80.
+	DeviceID string
+
+	// ModelSwitchMaxWait bounds how long a job for a non-resident model waits
+	// before it forces a switch. Ruling 1; also the mixed-model fairness bound.
+	ModelSwitchMaxWait time.Duration
+
+	// InferenceDeadlineFactor and MinInferenceDeadline turn an audio duration
+	// into the wall clock after which a job is wedged rather than long.
+	InferenceDeadlineFactor float64
+	MinInferenceDeadline    time.Duration
+
+	// ExpectedRates is model -> realtime multiple FOR THIS WORKER'S DEVICE. It
+	// is read twice for two findings that cost one measurement between them:
+	// the §7 deadline, and ruling 2's contention warning at 2x.
+	ExpectedRates map[string]float64
 
 	// Backend is recorded on every result. It describes the image asrd is
 	// running in, so it is configuration rather than something to detect: a
@@ -178,8 +256,39 @@ func Load() (Config, error) {
 		return c, fmt.Errorf("config: ASR_MODEL_DIR %q must be an absolute path", c.ModelDir)
 	}
 
-	c.WhisperBin = firstNonEmpty(os.Getenv("ASR_WHISPER_BIN"), "whisper-cli")
+	c.WhisperServerBin = firstNonEmpty(os.Getenv("ASR_WHISPER_SERVER_BIN"), "whisper-server")
+	c.WhisperServerAddr = firstNonEmpty(os.Getenv("ASR_WHISPER_SERVER_ADDR"), "127.0.0.1:8081")
+	if _, _, err := net.SplitHostPort(c.WhisperServerAddr); err != nil {
+		return c, fmt.Errorf("config: ASR_WHISPER_SERVER_ADDR %q is not host:port", c.WhisperServerAddr)
+	}
 	c.FFmpegBin = firstNonEmpty(os.Getenv("ASR_FFMPEG_BIN"), "ffmpeg")
+
+	c.DeviceID = firstNonEmpty(os.Getenv("ASR_DEVICE_ID"), DefaultDeviceID)
+
+	c.ModelSwitchMaxWait = DefaultModelSwitchMaxWait
+	if v := strings.TrimSpace(os.Getenv("ASR_MODEL_SWITCH_MAX_WAIT")); v != "" {
+		c.ModelSwitchMaxWait, err = time.ParseDuration(v)
+		if err != nil || c.ModelSwitchMaxWait <= 0 {
+			return c, fmt.Errorf("config: ASR_MODEL_SWITCH_MAX_WAIT %q is not a positive duration", v)
+		}
+	}
+
+	c.InferenceDeadlineFactor = DefaultInferenceDeadlineFactor
+	if v := strings.TrimSpace(os.Getenv("ASR_INFERENCE_DEADLINE_FACTOR")); v != "" {
+		c.InferenceDeadlineFactor, err = strconv.ParseFloat(v, 64)
+		if err != nil || c.InferenceDeadlineFactor < 1 {
+			// Below 1 is a deadline shorter than the job, which kills healthy
+			// work on every run. Refused at boot rather than discovered as a
+			// queue that never finishes anything.
+			return c, fmt.Errorf("config: ASR_INFERENCE_DEADLINE_FACTOR %q is not a number >= 1", v)
+		}
+	}
+	c.MinInferenceDeadline = DefaultMinInferenceDeadline
+
+	c.ExpectedRates, err = parseExpectedRates(os.Getenv("ASR_EXPECTED_RATES"))
+	if err != nil {
+		return c, err
+	}
 	c.Backend = firstNonEmpty(os.Getenv("ASR_BACKEND"), "vulkan")
 
 	c.Worker = true
@@ -224,6 +333,35 @@ func parseClientTokens(raw string) (map[string]string, error) {
 		return nil, fmt.Errorf("config: ASR_CLIENT_TOKENS is required (name:token pairs, out of Signet). " +
 			"There is no anonymous mode: an unauthenticated transcription service is one any " +
 			"container on the network can queue work into")
+	}
+	return out, nil
+}
+
+// parseExpectedRates reads `model=realtime_x` pairs, comma or whitespace
+// separated, and falls back to CHRN-24's resident column when unset.
+//
+// A model this worker has no rate for is NOT an error: it uses
+// UnknownModelRate, the slowest CHRN-24 measured, so the §7 deadline errs wide
+// rather than killing a healthy job on a model somebody added to the mount and
+// not to the environment.
+func parseExpectedRates(raw string) (map[string]float64, error) {
+	if strings.TrimSpace(raw) == "" {
+		return maps.Clone(DefaultExpectedRates), nil
+	}
+	out := make(map[string]float64)
+	for _, field := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n'
+	}) {
+		model, rate, ok := strings.Cut(field, "=")
+		model, rate = strings.TrimSpace(model), strings.TrimSpace(rate)
+		if !ok || model == "" {
+			return nil, fmt.Errorf("config: ASR_EXPECTED_RATES holds an entry that is not model=realtime_x")
+		}
+		x, err := strconv.ParseFloat(rate, 64)
+		if err != nil || x <= 0 {
+			return nil, fmt.Errorf("config: ASR_EXPECTED_RATES: the rate for %q is not a positive number", model)
+		}
+		out[model] = x
 	}
 	return out, nil
 }

@@ -46,6 +46,16 @@ type Deps struct {
 
 	DefaultModel  string
 	MaxAudioBytes int64
+
+	// Device reports the resident worker's state, and readiness now depends on
+	// it: a service whose GPU has gone but whose database is fine used to
+	// report ready and accept work forever.
+	//
+	// nil when this process runs no worker (ASR_WORKER off). Such a process
+	// serves submit and status correctly — both are database-only — so
+	// answering unready would take a healthy API process out of rotation for a
+	// device it was never going to touch.
+	Device func() ResidentState
 }
 
 type api struct {
@@ -55,14 +65,19 @@ type api struct {
 	tokens        map[string]string
 	defaultModel  string
 	maxAudioBytes int64
+	device        func() ResidentState
 }
 
 // NewRouter builds the HTTP handler.
 //
 // The two probes answer different questions and must not be collapsed:
 // /healthz is liveness and stays dependency-free, /readyz pings the database
-// and reports queue depth. They are the only two routes reachable without a
-// credential; there is no unauthenticated read surface.
+// and reports the queue and the device. They are the only two routes reachable
+// without a credential; there is no unauthenticated read surface.
+//
+// A DEAD whisper-server IS NOT A REASON TO RESTART asrd — asrd is the thing
+// that restarts whisper-server — which is why the device shows up in the second
+// probe and not the first.
 func NewRouter(d Deps) http.Handler {
 	a := &api{
 		store:         d.Store,
@@ -71,6 +86,7 @@ func NewRouter(d Deps) http.Handler {
 		tokens:        d.Tokens,
 		defaultModel:  d.DefaultModel,
 		maxAudioBytes: d.MaxAudioBytes,
+		device:        d.Device,
 	}
 
 	mux := http.NewServeMux()
@@ -99,6 +115,35 @@ func NewRouter(d Deps) http.Handler {
 		body := asrclient.Readiness{Status: asrclient.Ready}
 		if depth, err := a.store.QueueDepth(ctx); err == nil {
 			body.QueueDepth = &depth
+		}
+
+		if a.device != nil {
+			st := a.device()
+			if st.Model != "" {
+				body.ResidentModel = &st.Model
+			}
+			if st.InferenceElapsed > 0 {
+				ms := st.InferenceElapsed.Milliseconds()
+				body.InferenceRunningMs = &ms
+			}
+			// A STANDBY IS UNREADY, AND SAYS WHICH. It did not get the device
+			// lock, so it holds no model and cannot transcribe — "ready" here
+			// means the latter. Naming the check is what keeps a second asrd
+			// that came up during a redeploy from reading as a broken one.
+			check := ""
+			switch {
+			case st.Standby:
+				check = "standby"
+			case !st.Up || st.Model == "":
+				check = "whisper_server"
+			}
+			if check != "" {
+				a.logger.WarnContext(ctx, "readiness probe failed", "check", check)
+				body.Status = asrclient.Unready
+				body.Check = &check
+				writeJSON(w, http.StatusServiceUnavailable, body)
+				return
+			}
 		}
 		writeJSON(w, http.StatusOK, body)
 	})

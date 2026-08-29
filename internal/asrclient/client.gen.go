@@ -183,12 +183,27 @@ type JobStatus string
 
 // Readiness defines model for Readiness.
 type Readiness struct {
-	// Check which dependency failed, when unready
+	// Check which dependency failed, when unready. `database`, `whisper_server`
+	// when the resident process is absent or holds no model, or `standby`
+	// when another process holds the device lock — a standby serves the
+	// API correctly and cannot transcribe, and naming it keeps a second
+	// asrd during a redeploy from reading as a broken one.
 	Check *string `json:"check,omitempty"`
 
+	// InferenceRunningMs how long the current inference has been running; absent when the
+	// device is idle. Evidence for an operator, NOT a bound — the bound is
+	// the per-job deadline the worker applies.
+	InferenceRunningMs *int64 `json:"inference_running_ms,omitempty"`
+
 	// QueueDepth jobs not yet in a terminal state
-	QueueDepth *int64          `json:"queue_depth,omitempty"`
-	Status     ReadinessStatus `json:"status"`
+	QueueDepth *int64 `json:"queue_depth,omitempty"`
+
+	// ResidentModel the model the resident worker is holding. Absent when nothing is
+	// loaded, which is itself a reason this endpoint answers unready: a
+	// service whose GPU has gone but whose database is fine would
+	// otherwise report ready and accept work forever.
+	ResidentModel *string         `json:"resident_model,omitempty"`
+	Status        ReadinessStatus `json:"status"`
 }
 
 // ReadinessStatus defines model for Readiness.Status.
@@ -364,7 +379,7 @@ type ClientInterface interface {
 	// Corresponds with GET /healthz (the `GetHealthz` operationId).
 	GetHealthz(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetReadyz Readiness. Pings the database and reports queue depth.
+	// GetReadyz Readiness. Pings the database, and reports the queue and the device.
 	//
 	// Corresponds with GET /readyz (the `GetReadyz` operationId).
 	GetReadyz(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -459,7 +474,7 @@ func (c *Client) GetHealthz(ctx context.Context, reqEditors ...RequestEditorFn) 
 	return c.Client.Do(req)
 }
 
-// GetReadyz Readiness. Pings the database and reports queue depth.
+// GetReadyz Readiness. Pings the database, and reports the queue and the device.
 //
 // Corresponds with GET /readyz (the `GetReadyz` operationId).
 func (c *Client) GetReadyz(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -874,7 +889,7 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with GET /healthz (the `GetHealthz` operationId).
 	GetHealthzWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetHealthzResponse, error)
 
-	// GetReadyzWithResponse Readiness. Pings the database and reports queue depth.
+	// GetReadyzWithResponse Readiness. Pings the database, and reports the queue and the device.
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
@@ -1376,7 +1391,7 @@ func (c *ClientWithResponses) GetHealthzWithResponse(ctx context.Context, reqEdi
 	return ParseGetHealthzResponse(rsp)
 }
 
-// GetReadyzWithResponse Readiness. Pings the database and reports queue depth.
+// GetReadyzWithResponse Readiness. Pings the database, and reports the queue and the device.
 //
 // Returns a wrapper object for the known response body format(s).
 //

@@ -316,3 +316,149 @@ func TestBootWithoutClientTokensFails(t *testing.T) {
 		t.Fatalf("the boot error does not name the variable that is missing:\n%s", out)
 	}
 }
+
+// --- CHRN-26: the resident worker, in process ------------------------------
+
+// startWorker runs a claim loop against the store for the duration of a test.
+// In process rather than as a real asrd, because what is under test here is the
+// claim ordering and the release path, not what happens when a process dies —
+// which the three tests above cover against a process that really is killed.
+func startWorker(t *testing.T, s *Store, r *Resident, id string) {
+	t.Helper()
+	w := &Worker{
+		Store:              s,
+		Transcriber:        r,
+		Logger:             discardLogger(),
+		ID:                 id,
+		LeaseTTL:           10 * time.Second,
+		Idle:               50 * time.Millisecond,
+		ResidentModel:      func() string { return r.State().Model },
+		ModelSwitchMaxWait: time.Hour,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = w.Run(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			t.Error("the worker did not stop")
+		}
+	})
+}
+
+// TWO CLIENTS SUBMITTING CONCURRENTLY BOTH COMPLETE AND NEITHER STARVES — the
+// ticket's own Done-when, end to end through a real worker.
+//
+// Catenary's backfill is submitted first and is five deep; Chronicle's memo is
+// submitted LAST. Under a global FIFO it would finish sixth while the service
+// looked perfectly healthy, and the symptom would be a memo somebody is waiting
+// on that never arrives.
+//
+// What round-robin gives is HALF THE DEVICE UNDER CONTENTION, NOT PRIORITY —
+// the memo waits for at most one backfill job — and that limitation is
+// asserted here rather than left to be discovered as a bug report.
+func TestTwoClientsBothCompleteAndNeitherStarves(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t)
+	f := newFakeRunner(t)
+	f.setMode(t, fakeOK)
+	r := f.resident(t, discardLogger())
+	startResident(t, r)
+
+	var backfill []Job
+	for _, key := range []string{
+		"backfill-0000000001", "backfill-0000000002", "backfill-0000000003",
+		"backfill-0000000004", "backfill-0000000005",
+	} {
+		backfill = append(backfill, submitFor(t, s, "catenary", key, key, "small.en"))
+	}
+	memo := submitFor(t, s, "chronicle", "memo-00000000000001", "memo", "small.en")
+
+	startWorker(t, s, r, "r9700/test/1")
+
+	waitFor(t, "every job to finish", 60*time.Second, func() bool {
+		for _, j := range append(append([]Job{}, backfill...), memo) {
+			got, err := s.Get(ctx, j.ClientID, j.ID)
+			if err != nil || !got.Terminal() {
+				return false
+			}
+		}
+		return true
+	})
+
+	done, err := s.Get(ctx, "chronicle", memo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done.Status != StatusSucceeded {
+		t.Fatalf("the memo ended %q", done.Status)
+	}
+
+	ahead := 0
+	for _, j := range backfill {
+		got, err := s.Get(ctx, "catenary", j.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status != StatusSucceeded {
+			t.Fatalf("a backfill job ended %q; fairness must not cost the busy client its work", got.Status)
+		}
+		if got.FinishedAt != nil && done.FinishedAt != nil && got.FinishedAt.Before(*done.FinishedAt) {
+			ahead++
+		}
+	}
+	if ahead > 1 {
+		t.Fatalf("%d backfill jobs finished before the memo; round-robin gives the quiet "+
+			"client half the device, so at most one should", ahead)
+	}
+}
+
+// A CHILD CRASH COSTS ONE ATTEMPT, NOT THE MEMO. Done-when 6, through the
+// worker rather than the transcriber: the job goes back to `queued` with
+// attempts incremented and the next claim transcribes it.
+//
+// The placeholder would have written `failed` here, permanently, on a memo that
+// nothing was wrong with.
+func TestAChildCrashRequeuesTheJobAndTheRetrySucceeds(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t)
+	f := newFakeRunner(t)
+	f.setMode(t, fakeCrash)
+	r := f.resident(t, discardLogger())
+	startResident(t, r)
+
+	job := submitFor(t, s, "chronicle", "crashretry-00000001", "crashretry", "small.en")
+	startWorker(t, s, r, "r9700/test/1")
+
+	waitFor(t, "the job to come back to the queue", 60*time.Second, func() bool {
+		got, err := s.Get(ctx, "chronicle", job.ID)
+		return err == nil && got.Status == StatusQueued && got.Attempts >= 1
+	})
+
+	f.setMode(t, fakeOK)
+
+	waitFor(t, "the retry to succeed", 60*time.Second, func() bool {
+		got, err := s.Get(ctx, "chronicle", job.ID)
+		return err == nil && got.Status == StatusSucceeded
+	})
+
+	got, err := s.Get(ctx, "chronicle", job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Partial == nil || *got.Partial {
+		t.Fatal("a completed retry was recorded as partial")
+	}
+	res, err := s.Result(ctx, "chronicle", job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Text != "hello there" {
+		t.Fatalf("text %q after a crash and a retry", res.Text)
+	}
+}

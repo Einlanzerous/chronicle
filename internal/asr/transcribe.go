@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -12,10 +11,14 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 
 	"github.com/Einlanzerous/chronicle/internal/asrclient"
 )
+
+// The decode, and the seam the worker talks to. The resident implementation is
+// in resident.go; CHRN-25's per-invocation CLITranscriber was deleted here by
+// CHRN-26 rather than extended, because "claim, shell out, write" is not the
+// shape of a worker that holds a model and a device lease.
 
 // Transcript is what one run produced. It deliberately does NOT carry a
 // `partial` flag: partial is a fact about whether the RUN completed, which the
@@ -31,46 +34,75 @@ type Transcript struct {
 	CoveredMs int64
 }
 
+// TranscribeRequest is one job's worth of work.
+//
+// It is a struct rather than five positional arguments because of the last
+// field, which the placeholder had no need of: with a resident worker the GPU
+// is a queue, so the moment inference actually STARTS is later than the moment
+// the job was claimed, and only the transcriber knows when it arrives.
+type TranscribeRequest struct {
+	Audio     []byte
+	MediaType string
+	Model     string
+	Language  string
+
+	// OnInference is called once the device lease is held and the model is
+	// loaded, immediately before inference begins, with the decoded audio's
+	// duration. The worker moves the job `leased` -> `running` there: that edge
+	// is the queue for the device made visible, which is what CHRN-25 kept the
+	// two states apart for.
+	//
+	// Returning an error abandons the job before any GPU time is spent — the
+	// lease was lost, and whoever holds it now is entitled to finish it.
+	OnInference func(audioDurationMs int64) error
+}
+
 // Transcriber turns audio into a transcript. An interface so the worker's
 // lease behaviour can be tested without a GPU — and it is worth being explicit
-// that this is not a fake seam invented for tests: CHRN-26 replaces the
-// implementation below with a resident process, and the worker should not have
-// to change when it does.
+// that this is not a fake seam invented for tests: it is what let CHRN-26
+// replace the implementation without the worker changing shape.
 type Transcriber interface {
-	Transcribe(ctx context.Context, audio []byte, mediaType, model, language string) (Transcript, error)
+	Transcribe(ctx context.Context, req TranscribeRequest) (Transcript, error)
 	Models() []string
 }
 
-// CLITranscriber shells out to ffmpeg and whisper-cli, both of which the
-// CHRN-24 image puts on PATH.
+// FailureError is a transcription failure with a code the client can branch on.
+// Distinguished from an ordinary error because a `failed` job carries
+// {code, message} on the wire and "the message we happened to produce" is not
+// a code anything can switch on.
 //
-// Shelling out to siblings in the same image, NOT `docker run` from inside a
-// container: that would need the daemon socket mounted, which hands this
-// service the ability to start anything on the host. The image is the unit of
-// deployment; asrd runs inside it.
-//
-// This is the placeholder CHRN-26 deletes. It is deliberately the shape CHRN-12
-// measured as the SLOW one — 43.2x rather than 59.6x, because the model is
-// loaded per invocation — and it is single-flight by construction: one worker
-// process, one job at a time. The epic's exit criterion is that the R9700 is
-// never running two inferences at once, and a placeholder is not exempt from it.
-type CLITranscriber struct {
-	WhisperBin string
-	FFmpegBin  string
-	ModelDir   string
-
-	// Logger receives the backend announcement below. Optional; nil is silent.
-	Logger *slog.Logger
-
-	announce sync.Once
+// A FailureError FAILS THE JOB. Anything that is a fault of the SERVICE rather
+// than of the audio must be a ReleaseError instead.
+type FailureError struct {
+	Code    string
+	Message string
 }
 
-// Models lists the ggml-*.bin files actually on disk. Reported by GET
+func (e *FailureError) Error() string { return e.Code + ": " + e.Message }
+
+// ReleaseError says the job was not finished and nothing about it was the
+// job's fault: the resident process died under it, or wedged and was killed.
+//
+// It exists because the two are opposite outcomes and the placeholder had only
+// one. A child that crashes mid-inference produces exactly the same Go error as
+// a decode that failed — a connection reset — and treating that as a
+// transcription failure would PERMANENTLY FAIL A MEMO THAT NOTHING WAS WRONG
+// WITH, on one crash. The worker turns this into Store.Release.
+type ReleaseError struct {
+	// Reason is short and machine-ish: it is what CHRN-28 will set different
+	// ceilings against. A deadline breach costs five times a crash.
+	Reason string
+	Detail string
+}
+
+func (e *ReleaseError) Error() string { return "released: " + e.Reason + ": " + e.Detail }
+
+// modelsIn lists the ggml-*.bin files actually on disk. Reported by GET
 // /v1/models so a client discovers rather than hardcodes, and so a submit
 // naming a model this deployment does not have is a 400 now rather than a job
 // that fails after it has been queued.
-func (t *CLITranscriber) Models() []string {
-	entries, err := os.ReadDir(t.ModelDir)
+func modelsIn(dir string) []string {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
 	}
@@ -86,41 +118,45 @@ func (t *CLITranscriber) Models() []string {
 	return out
 }
 
-func (t *CLITranscriber) modelPath(model string) string {
-	return filepath.Join(t.ModelDir, "ggml-"+model+".bin")
+func modelPath(dir, model string) string {
+	return filepath.Join(dir, "ggml-"+model+".bin")
 }
 
-// Transcribe decodes to 16 kHz mono s16 WAV and runs whisper-cli over it.
+// decodeToWAV decodes submitted audio to 16 kHz mono s16 WAV in dir, and
+// reports the duration it read from the result's own header.
 //
-// The decode is here because whisper.cpp does not read Opus, and Chronicle
-// ships no decoder at all — the epic moved the decode to E3 on 2026-08-27 for
-// exactly that reason. The ffmpeg invocation matches the benchmark harness's
-// byte for byte, so the numbers in deploy/asr/README.md describe this path.
+// THE INVOCATION IS BYTE-FOR-BYTE THE BENCHMARK HARNESS'S, and that is not
+// tidiness: every reference number in deploy/asr/README.md counts this decode,
+// so a flag that moved here would move a published figure with nothing in the
+// output to say so.
 //
-// Everything derived lands in a temp directory that goes away with the run. A
-// derived artefact must never be written beside authored bytes, and here there
-// are no authored bytes on disk at all: the submitted audio arrived over HTTP
-// and lives in the database.
-func (t *CLITranscriber) Transcribe(ctx context.Context, audio []byte, mediaType, model, language string) (Transcript, error) {
-	dir, err := os.MkdirTemp("", "asr-job-*")
-	if err != nil {
-		return Transcript{}, fmt.Errorf("asr: temp dir: %w", err)
-	}
-	defer func() { _ = os.RemoveAll(dir) }()
-
+// The decode is in this service because whisper.cpp does not read Opus and
+// Chronicle ships no decoder at all — the epic moved it to E3 on 2026-08-27 for
+// exactly that reason. It happens OUTSIDE the GPU lease: collapsing the two
+// would serialise ffmpeg behind the device, which is a decode that could have
+// happened while the previous job was still on it.
+//
+// Everything derived lands in a caller-owned temp directory that goes away with
+// the run. A derived artefact must never be written beside authored bytes, and
+// here there are no authored bytes on disk at all: the submitted audio arrived
+// over HTTP and lives in the database.
+func decodeToWAV(ctx context.Context, ffmpegBin, dir string, audio []byte, mediaType string) (string, int64, error) {
 	src := filepath.Join(dir, "in"+extensionFor(mediaType))
 	if err := os.WriteFile(src, audio, 0o600); err != nil {
-		return Transcript{}, fmt.Errorf("asr: stage audio: %w", err)
+		return "", 0, fmt.Errorf("asr: stage audio: %w", err)
 	}
 
 	wav := filepath.Join(dir, "in.wav")
-	decode := exec.CommandContext(ctx, t.FFmpegBin,
+	decode := exec.CommandContext(ctx, ffmpegBin,
 		"-y", "-hide_banner", "-loglevel", "error",
 		"-i", src, "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wav)
 	var decodeErr bytes.Buffer
 	decode.Stderr = &decodeErr
 	if err := decode.Run(); err != nil {
-		return Transcript{}, &FailureError{
+		if ctx.Err() != nil {
+			return "", 0, ctx.Err()
+		}
+		return "", 0, &FailureError{
 			Code:    "decode_failed",
 			Message: firstLine(decodeErr.String(), err.Error()),
 		}
@@ -128,141 +164,9 @@ func (t *CLITranscriber) Transcribe(ctx context.Context, audio []byte, mediaType
 
 	durationMs, err := wavDurationMs(wav)
 	if err != nil {
-		return Transcript{}, err
+		return "", 0, err
 	}
-
-	prefix := filepath.Join(dir, "out")
-	args := []string{"-m", t.modelPath(model), "-f", wav, "-oj", "-of", prefix, "-np"}
-	if language != "" {
-		args = append(args, "-l", language)
-	}
-	run := exec.CommandContext(ctx, t.WhisperBin, args...)
-	var runErr bytes.Buffer
-	run.Stderr = &runErr
-	if err := run.Run(); err != nil {
-		return Transcript{}, &FailureError{
-			Code:    "inference_failed",
-			Message: firstLine(runErr.String(), err.Error()),
-		}
-	}
-
-	t.announceBackend(runErr.String())
-
-	raw, err := os.ReadFile(prefix + ".json")
-	if err != nil {
-		return Transcript{}, &FailureError{
-			Code:    "no_output",
-			Message: fmt.Sprintf("whisper-cli exited cleanly but wrote no JSON: %v", err),
-		}
-	}
-
-	tr, err := parseWhisperJSON(raw)
-	if err != nil {
-		return Transcript{}, err
-	}
-	tr.AudioDurationMs = durationMs
-	return tr, nil
-}
-
-// announceBackend puts ggml's device selection into THIS service's logs, once.
-//
-// It is not decoration. The failure CHRN-24 exists to prevent is a backend that
-// runs, transcribes correctly, and is well off the pace — a CPU fallback, or a
-// build without KHR_cooperative_matrix — and the defining property of that
-// failure is that nothing about the output reveals it. whisper-cli says which
-// device it chose on stderr, which this captures anyway and would otherwise
-// throw away on every successful run, leaving asrd unable to answer the first
-// question anyone asks when transcription is slow.
-//
-// Once per process: it is the same answer every time, and one line per job
-// would bury everything else.
-func (t *CLITranscriber) announceBackend(stderr string) {
-	if t.Logger == nil {
-		return
-	}
-	t.announce.Do(func() {
-		var device string
-		for _, line := range strings.Split(stderr, "\n") {
-			line = strings.TrimSpace(line)
-			if !strings.HasPrefix(line, "ggml_vulkan:") {
-				continue
-			}
-			t.Logger.Info("ggml backend", "line", line)
-			if strings.Contains(line, " = ") {
-				device = line
-			}
-		}
-		switch {
-		case device == "":
-			t.Logger.Warn("whisper-cli named no Vulkan device; this may be running on the CPU",
-				"remedy", "check the render node is passed through (deploy/asr/compose.asr.yml)")
-		case strings.Contains(device, "Device type is CPU") || strings.Contains(device, "(llvmpipe)"):
-			t.Logger.Warn("THE GPU IS NOT BEING USED: ggml selected a software rasteriser. "+
-				"Transcription will be correct and roughly twenty times slower",
-				"device", device,
-				"remedy", "pass --device /dev/dri/renderD129 and the render group")
-		case strings.Contains(device, "matrix cores: none"):
-			t.Logger.Warn("the GPU is in use but WITHOUT cooperative-matrix shaders, "+
-				"which is the path that makes RDNA4 fast. This is the failure mode "+
-				"CHRN-24 pins the LunarG SDK to prevent",
-				"device", device)
-		}
-	})
-}
-
-// FailureError is a transcription failure with a code the client can branch on.
-// Distinguished from an ordinary error because a `failed` job carries
-// {code, message} on the wire and "the message we happened to produce" is not
-// a code anything can switch on.
-type FailureError struct {
-	Code    string
-	Message string
-}
-
-func (e *FailureError) Error() string { return e.Code + ": " + e.Message }
-
-// whisperOutput is the subset of whisper.cpp's JSON this reads. Written as its
-// own type rather than map[string]any so that a change in that format is a
-// decode error naming the field, not a nil dereference three lines later.
-type whisperOutput struct {
-	Transcription []struct {
-		Offsets struct {
-			From int64 `json:"from"`
-			To   int64 `json:"to"`
-		} `json:"offsets"`
-		Text string `json:"text"`
-	} `json:"transcription"`
-}
-
-func parseWhisperJSON(raw []byte) (Transcript, error) {
-	var out whisperOutput
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return Transcript{}, &FailureError{
-			Code:    "unreadable_output",
-			Message: fmt.Sprintf("whisper-cli JSON did not parse: %v", err),
-		}
-	}
-
-	// Segments and Text are always non-nil, even for a recording with no
-	// speech in it. EMPTY IS A VALID RESULT — a memo that is forty seconds of
-	// silence has a true and complete answer, and the answer is "no speech".
-	// The value of building it here is that no downstream code ever meets a
-	// nil transcript it might be tempted to skip.
-	tr := Transcript{Segments: []asrclient.Segment{}}
-	var text strings.Builder
-	for _, seg := range out.Transcription {
-		tr.Segments = append(tr.Segments, asrclient.Segment{
-			StartMs: seg.Offsets.From,
-			EndMs:   seg.Offsets.To,
-			Text:    strings.TrimSpace(seg.Text),
-		})
-		if seg.Offsets.To > tr.CoveredMs {
-			tr.CoveredMs = seg.Offsets.To
-		}
-		text.WriteString(seg.Text)
-	}
-	tr.Text = strings.TrimSpace(text.String())
-	return tr, nil
+	return wav, durationMs, nil
 }
 
 // wavDurationMs reads the decoded WAV's own header rather than asking ffprobe.
@@ -271,6 +175,10 @@ func parseWhisperJSON(raw []byte) (Transcript, error) {
 // LIST/INFO chunk under some builds, and a fixed offset would then report a
 // duration a few milliseconds long — which is exactly the sort of small,
 // plausible number nobody checks.
+//
+// verbose_json reports a duration too, and this is still the one used: it is
+// measured from the bytes the reference numbers count, on the near side of a
+// service that might not have answered.
 func wavDurationMs(path string) (int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -313,6 +221,49 @@ func wavDurationMs(path string) (int64, error) {
 				return 0, fmt.Errorf("asr: read decoded wav: %w", err)
 			}
 		}
+	}
+}
+
+// announceGGMLBackend puts ggml's device selection into THIS service's logs.
+//
+// It is not decoration. The failure CHRN-24 exists to prevent is a backend that
+// runs, transcribes correctly, and is well off the pace — a CPU fallback, or a
+// build without KHR_cooperative_matrix — and the defining property of that
+// failure is that nothing about the output reveals it.
+//
+// CHRN-25 read these lines off whisper-cli's stderr on the first job. They now
+// come off the SUPERVISED CHILD'S STARTUP (§8), which is both earlier and the
+// only place they are printed at all once the model is resident: the banner is
+// a property of the process, and the process now outlives the job.
+func announceGGMLBackend(logger *slog.Logger, stderr string) {
+	if logger == nil {
+		return
+	}
+	var device string
+	for _, line := range strings.Split(stderr, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "ggml_vulkan:") {
+			continue
+		}
+		logger.Info("ggml backend", "line", line)
+		if strings.Contains(line, " = ") {
+			device = line
+		}
+	}
+	switch {
+	case device == "":
+		logger.Warn("whisper-server named no Vulkan device; this may be running on the CPU",
+			"remedy", "check the render node is passed through (deploy/asr/compose.asr.yml)")
+	case strings.Contains(device, "Device type is CPU") || strings.Contains(device, "(llvmpipe)"):
+		logger.Warn("THE GPU IS NOT BEING USED: ggml selected a software rasteriser. "+
+			"Transcription will be correct and roughly twenty times slower",
+			"device", device,
+			"remedy", "pass --device /dev/dri/renderD129 and the render group")
+	case strings.Contains(device, "matrix cores: none"):
+		logger.Warn("the GPU is in use but WITHOUT cooperative-matrix shaders, "+
+			"which is the path that makes RDNA4 fast. This is the failure mode "+
+			"CHRN-24 pins the LunarG SDK to prevent",
+			"device", device)
 	}
 }
 

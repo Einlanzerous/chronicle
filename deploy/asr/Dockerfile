@@ -122,11 +122,11 @@ RUN cmake -S /src/whisper.cpp -B /src/whisper.cpp/build-vk \
 # 2b) asrd — the job service (CHRN-25).
 # ---------------------------------------------------------------------------
 #
-# It lives in this image because it SHELLS OUT TO ffmpeg AND whisper-cli as
-# siblings. The alternative — a separate container that runs `docker run`
-# against this one — needs the daemon socket mounted, which hands a network
-# service the ability to start anything on the host. The image is the unit of
-# deployment; the service runs inside it.
+# It lives in this image because it SHELLS OUT TO ffmpeg AND SUPERVISES
+# whisper-server as siblings. The alternative — a separate container that runs
+# `docker run` against this one — needs the daemon socket mounted, which hands a
+# network service the ability to start anything on the host. The image is the
+# unit of deployment; the service runs inside it.
 #
 # Pure Go (pgx, net/http), so CGO is off and the binary is static.
 FROM golang:1.26-bookworm AS asrd
@@ -204,7 +204,13 @@ ENV WHISPER=/opt/whisper \
 # service is pointed at, not code it ships.
 VOLUME ["/opt/whisper/models"]
 
-RUN ln -s /opt/whisper/build-vk/bin/whisper-cli /usr/local/bin/whisper-cli
+# whisper-cli is what bench-in-container.sh and the ENTRYPOINT below run;
+# whisper-server is the RESIDENT CHILD asrd supervises (CHRN-26). Both come out
+# of the same cmake build of the same pinned tree, so the service and the
+# benchmark cannot drift apart — which is the whole reason CHRN-26 chose the
+# binary already in this image over cgo or a bespoke wrapper.
+RUN ln -s /opt/whisper/build-vk/bin/whisper-cli    /usr/local/bin/whisper-cli \
+ && ln -s /opt/whisper/build-vk/bin/whisper-server /usr/local/bin/whisper-server
 
 # The job service. CHRN-25's contract over CHRN-24's runner, with its own
 # database and its own role.

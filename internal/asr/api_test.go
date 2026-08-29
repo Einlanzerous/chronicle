@@ -11,6 +11,7 @@ import (
 	"net/textproto"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/Einlanzerous/chronicle/internal/asrclient"
 )
@@ -321,5 +322,95 @@ func TestUnknownModelIsRefusedAtSubmit(t *testing.T) {
 	code, resp := do(t, req)
 	if code != http.StatusBadRequest {
 		t.Fatalf("status %d, want 400: %s", code, resp)
+	}
+}
+
+// --- readiness reports the device (CHRN-26 §9) -----------------------------
+
+// readyzWith builds a router whose device state is whatever the test says, and
+// answers GET /readyz. The probe is open, so there is no token here.
+func readyzWith(t *testing.T, device func() ResidentState) (int, asrclient.Readiness) {
+	t.Helper()
+	srv := httptest.NewServer(NewRouter(Deps{
+		Store:        testStore(t),
+		Transcriber:  newFakeRunner(t).transcriber(),
+		Logger:       discardLogger(),
+		Tokens:       map[string]string{testToken: "chronicle"},
+		DefaultModel: "small.en",
+		Device:       device,
+	}))
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/readyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var body asrclient.Readiness
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, body
+}
+
+// /readyz reports the resident model. A service whose GPU has gone but whose
+// database is fine used to answer ready and accept work forever.
+//
+// This also settles a debt CHRN-25's review recorded against this ticket: its
+// Surface table promised /readyz would report "the GPU lease and queue depth",
+// and the shipped handler reported queue depth only — correctly, because there
+// was no GPU lease to report until now.
+func TestReadinessReportsTheResidentModel(t *testing.T) {
+	code, body := readyzWith(t, func() ResidentState {
+		return ResidentState{Up: true, Model: "small.en", InferenceElapsed: 1500 * time.Millisecond}
+	})
+	if code != http.StatusOK {
+		t.Fatalf("status %d, want 200", code)
+	}
+	if body.ResidentModel == nil || *body.ResidentModel != "small.en" {
+		t.Fatalf("resident_model %v", body.ResidentModel)
+	}
+	if body.InferenceRunningMs == nil || *body.InferenceRunningMs != 1500 {
+		t.Fatalf("inference_running_ms %v", body.InferenceRunningMs)
+	}
+}
+
+// AN ABSENT MODEL IS UNREADY. Jobs are still ACCEPTED — the queue is the right
+// place for work a service cannot do yet, and rejecting submissions would push
+// the retry into two clients — but this process should be out of rotation.
+func TestReadinessRefusesWhenTheResidentModelIsAbsent(t *testing.T) {
+	code, body := readyzWith(t, func() ResidentState { return ResidentState{Up: false} })
+	if code != http.StatusServiceUnavailable {
+		t.Fatalf("status %d, want 503", code)
+	}
+	if body.Check == nil || *body.Check != "whisper_server" {
+		t.Fatalf("check %v, want whisper_server", body.Check)
+	}
+}
+
+// A STANDBY IS UNREADY AND NAMES ITSELF. It serves submit and status correctly
+// — both are database-only — and cannot transcribe, and "ready" here means the
+// latter. Naming the check is what keeps a second asrd that came up during a
+// redeploy from reading as a broken one.
+func TestReadinessNamesAStandby(t *testing.T) {
+	code, body := readyzWith(t, func() ResidentState { return ResidentState{Standby: true} })
+	if code != http.StatusServiceUnavailable {
+		t.Fatalf("status %d, want 503", code)
+	}
+	if body.Check == nil || *body.Check != "standby" {
+		t.Fatalf("check %v, want standby", body.Check)
+	}
+}
+
+// A process with NO WORKER answers for its database and nothing else. It serves
+// the API correctly, so taking it out of rotation for a device it was never
+// going to touch would be wrong.
+func TestReadinessIgnoresTheDeviceWhenThereIsNoWorker(t *testing.T) {
+	code, body := readyzWith(t, nil)
+	if code != http.StatusOK {
+		t.Fatalf("status %d, want 200", code)
+	}
+	if body.ResidentModel != nil {
+		t.Fatalf("a workerless process reported a resident model: %v", body.ResidentModel)
 	}
 }
