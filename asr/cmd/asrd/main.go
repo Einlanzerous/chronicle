@@ -7,8 +7,9 @@
 // the whole reason this is an estate service is that Catenary must not depend
 // on Chronicle's schema. CHRN-82 decided it stays here, in the asr/ subtree,
 // with its own release (asr-v*) and a sealed boundary — nothing under asr/
-// imports anything outside it — so that it can become its own repository by a
-// filter-repo if that is ever wanted. docs/decisions/chrn-82-asr-subtree-and-publish.md.
+// imports anything outside it — so that if it ever becomes its own repository
+// the move is a filter-repo, a go.mod and an import-path rewrite, with nothing
+// of Chronicle's to untangle. docs/decisions/chrn-82-asr-subtree-and-publish.md.
 package main
 
 import (

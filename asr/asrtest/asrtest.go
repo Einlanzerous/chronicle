@@ -1,8 +1,9 @@
 // Package asrtest is the ONE exported doorway into the asr/ subtree.
 //
 // Everything else under asr/ is internal, and the subtree imports nothing
-// outside itself (CHRN-82 §2), so that it can become its own repository by a
-// filter-repo. The direction here is the permitted one: Chronicle — client one,
+// outside itself (CHRN-82 §2), so that becoming its own repository is a
+// filter-repo, a go.mod and an import-path rewrite, with no Chronicle package
+// to untangle. The direction here is the permitted one: Chronicle — client one,
 // which happens to live beside the service — runs the real service in-process
 // against its generated client, so that the only thing standing between the
 // two is asr/openapi.yaml. That test exists BECAUSE both halves share a

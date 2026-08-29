@@ -18,8 +18,10 @@ the two namespaces would collide.
 - `asr/` — the shared estate ASR service: the pinned whisper.cpp image, the
   job contract (`asr/openapi.yaml`) and `asrd` over it. A **sealed subtree**
   with its own database, role, migrator and release (`asr-v*` tags): nothing
-  under it imports anything outside it, so it can become its own repository by
-  `git filter-repo` if that is ever wanted. `asr/asrtest` is the one exported
+  under it imports anything outside it. If it ever becomes its own repository,
+  the move is `git filter-repo --subdirectory-filter asr`, a `go mod init`, and
+  a rewrite of its own import paths — and nothing else, because nothing else
+  reaches into it. `asr/asrtest` is the one exported
   doorway in, for Chronicle's integration test. Decided in
   `docs/decisions/chrn-82-asr-subtree-and-publish.md`.
 - `internal/config/` — env-only config, `CHRONICLE_`-prefixed.
