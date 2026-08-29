@@ -1,6 +1,10 @@
 # CHRN-22 — The retention pruner (decision)
 
-Status: **proposed 2026-08-29.** Awaiting magos on the four rulings at the end.
+Status: **accepted 2026-08-29 by magos, at the recommendations on every ruling.**
+Two amendments were owed at acceptance and are folded in, marked **[rev]**: §3's
+status enum had no `pruned` case, and §1's fixture hazard needed a test rather
+than a paragraph. The PR that follows is mechanical against this document, and
+code that contradicts a ruling is a 🔴.
 
 Ticket: CHRN-22 (Phase P1, parent CHRN-3). Tier `opus`, **and** one of
 `CLAUDE.md`'s five Mode C tickets — so this is Mode B's artefact *and* the PR
@@ -135,6 +139,23 @@ Adding a runner is a deliberate act with a Mode C review attached, which is the
 correct amount of friction for widening the set of transcripts that may delete
 audio.
 
+### [rev] The prefix is a cross-binary string, so a literal fixture cannot prove the floor
+
+The hazard this section found does not stop at "write the predicate correctly".
+`whisper.cpp/` crosses the HTTP contract **from another binary**: `asrd` builds
+it, Chronicle stores whatever arrives. If `asrd` ever changes that string —
+renames the runner, drops the prefix, adds a version — the pruner silently stops
+firing, and **every test written against a hand-inserted `whisper.cpp/small.en`
+literal keeps passing.** That is the same failure one level up: a fixture that
+agrees with the code and with nothing else.
+
+So the floor's positive case is proven by a transcript that **arrived through the
+real pump path** — `internal/transcribe`'s integration test, or the fake
+`whisper-server` in `internal/asr` — being handed to `HasDurableTranscript` and
+satisfying it. Literals are fine for the six refusal cases, because a refusal
+that is wrong keeps audio. A literal proving the *acceptance* case is the bug
+this section describes, shipped as a test.
+
 ### Where the list lives
 
 **In Go, beside the predicate, as a constant. Never in a `CHRONICLE_*`
@@ -195,15 +216,25 @@ function evaluated over the table.** It returns a status, not a date:
 scheduled(at)          a durable transcript exists and retention is days_30
 pinned                 retention is forever
 awaiting_transcript    no durable transcript yet — prunes when transcribed
-discard_now            retention is discard_now and the gate is satisfied
+discard_pending        retention is discard_now and the gate is satisfied
+pruned(at)             audio_pruned_at is set; the audio is already gone
 ```
 
-The UI renders `PRUNES <date>` only for `scheduled`, and
-`PRUNES WHEN TRANSCRIBED` for `awaiting_transcript` — which also tells a person
-that pinning ahead of time is available and useful. Then *"the date the UI shows
-is the date the job uses"* holds **by construction** rather than by a test that
-compares two implementations, in the same way `audio.ProjectionWindow` already
-makes the interval one number.
+**`pruned` is not optional and it is checked first.** [rev] It is the state the
+pruner itself produces, so a status function without it has an undefined case on
+exactly the rows this job creates — and the memo whose audio is gone is the one a
+person is most likely to be looking at when they wonder what happened to it.
+
+`discard_pending` rather than `discard_now`: the retention *value* is
+`discard_now`, and a status sharing its name would make "which one does this
+mean" a question at every call site.
+
+The UI renders `PRUNES <date>` only for `scheduled`, `PRUNED <date>` for
+`pruned`, and `PRUNES WHEN TRANSCRIBED` for `awaiting_transcript` — which also
+tells a person that pinning ahead of time is available and useful. Then *"the
+date the UI shows is the date the job uses"* holds **by construction** rather
+than by a test that compares two implementations, in the same way
+`audio.ProjectionWindow` already makes the interval one number.
 
 E8 is unbuilt, so this ticket's "UI" is a field on the memo's JSON plus the dry
 run's output. The shape is what matters; the rendering is E8's.
@@ -343,7 +374,9 @@ an hour is short enough to mean it and long enough that the query is free.
   is that ticket's decision, taken with a Mode C review, and it is a one-line
   change here by construction.
 
-## The rulings this needs
+## The rulings, settled 2026-08-29
+
+All accepted at the recommendations below.
 
 1. **The model floor set.** Recommendation: quality `small.en`, `medium.en`,
    `large-v3` — at or above the default, never `base`/`tiny` — and runner
