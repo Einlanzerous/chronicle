@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.4.0](https://github.com/Einlanzerous/chronicle/compare/v1.3.0...v1.4.0) (2026-08-29)
+
+
+### Features
+
+* **asr:** publish estate-asr on main and asr-v* tags (CHRN-82) ([#34](https://github.com/Einlanzerous/chronicle/issues/34)) ([4699a44](https://github.com/Einlanzerous/chronicle/commit/4699a44a67bc1e1c4137e7d12500b435ca70da29))
+
+
+### Code Refactoring
+
+* **asr:** move the service under asr/ and seal the boundary (CHRN-82) ([#32](https://github.com/Einlanzerous/chronicle/issues/32)) ([371c150](https://github.com/Einlanzerous/chronicle/commit/371c150ca46f69f41aa33f5f76eccdbc450f3d3a))
+
+
+### Maintenance
+
+* **main:** release asr 0.1.0 ([#35](https://github.com/Einlanzerous/chronicle/issues/35)) ([5e56cb9](https://github.com/Einlanzerous/chronicle/commit/5e56cb9c64d9e12f706a86f6dffbe708c64e82e4))
+* **release:** the asr package starts at 0.1.0, not 1.0.0 (CHRN-82) ([#36](https://github.com/Einlanzerous/chronicle/issues/36)) ([f746522](https://github.com/Einlanzerous/chronicle/commit/f7465224b40c214ec982d5b37589b7d6924bf445))
+
 ## [1.3.0](https://github.com/Einlanzerous/chronicle/compare/v1.2.0...v1.3.0) (2026-08-29)
 
 
