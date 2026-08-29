@@ -240,6 +240,15 @@ than by a test that compares two implementations, in the same way
 E8 is unbuilt, so this ticket's "UI" is a field on the memo's JSON plus the dry
 run's output. The shape is what matters; the rendering is E8's.
 
+**[impl] The JSON half is deferred, and this records it rather than leaving it
+to be noticed.** `store.RetentionStatus` ships and is tested — it is the shape,
+and it is the same clause the sweep evaluates. What does not ship is a field on
+a response, because **there is no `GET /memos/{id}`**: the only memo JSON today
+is the upload path's, where a memo has just been captured and its status is
+always `awaiting_transcript`. A per-upload query to render a constant is
+ceremony. The field is one line on the endpoint that will carry it, and E8 is
+the ticket that adds both.
+
 ### A late transcript prunes with no date ever shown, and that is accepted
 
 A memo transcribed on day 40 — held, then retranscribed — is eligible the moment
