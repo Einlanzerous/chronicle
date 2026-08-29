@@ -435,9 +435,14 @@ func TestAChildCrashRequeuesTheJobAndTheRetrySucceeds(t *testing.T) {
 	job := submitFor(t, s, "chronicle", "crashretry-00000001", "crashretry", "small.en")
 	startWorker(t, s, r, "r9700/test/1")
 
-	waitFor(t, "the job to come back to the queue", 60*time.Second, func() bool {
+	// `attempts`, not `queued`. The released job is back in the queue for only
+	// as long as it takes this same worker to claim it again — tens of
+	// milliseconds — so polling for the STATUS is polling for a state that is
+	// designed to be transient. The counter is the durable evidence that the
+	// job was released rather than failed.
+	waitFor(t, "the job to be released back for another attempt", 60*time.Second, func() bool {
 		got, err := s.Get(ctx, "chronicle", job.ID)
-		return err == nil && got.Status == StatusQueued && got.Attempts >= 1
+		return err == nil && got.Attempts >= 1
 	})
 
 	f.setMode(t, fakeOK)
@@ -453,6 +458,10 @@ func TestAChildCrashRequeuesTheJobAndTheRetrySucceeds(t *testing.T) {
 	}
 	if got.Partial == nil || *got.Partial {
 		t.Fatal("a completed retry was recorded as partial")
+	}
+	if got.Attempts < 1 {
+		t.Fatal("the job succeeded without the crash costing an attempt, so nothing here " +
+			"exercised the release path")
 	}
 	res, err := s.Result(ctx, "chronicle", job.ID)
 	if err != nil {

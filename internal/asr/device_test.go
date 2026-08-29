@@ -76,12 +76,24 @@ func TestADifferentDeviceIsADifferentLock(t *testing.T) {
 	}
 }
 
-// The key is stable across processes and versions. Go's maphash would not be —
-// it is seeded per process, so two asrd processes would take different locks
-// and both run, which is the exact failure this lock exists to prevent.
-func TestTheDeviceKeyIsStable(t *testing.T) {
-	if deviceLockKey("r9700") != deviceLockKey("r9700") {
-		t.Fatal("the same device hashed to two keys")
+// THE KEY IS PINNED, and the constant below is the point of the test.
+//
+// It has to be stable across processes AND ACROSS VERSIONS: a rolling redeploy
+// runs two asrd builds against one card for a few seconds, and if the newer one
+// hashes `r9700` differently the two do not exclude each other at all — they
+// both take a lock, both claim, and both run an inference on the device. That
+// is the exact failure this lock exists to prevent, arriving through a change
+// that looks like an implementation detail.
+//
+// So changing the hash is a BREAKING CHANGE that needs a drained deploy, and
+// this test is what says so. (Go's maphash would have failed it on the first
+// run: it is seeded per process.)
+func TestTheDeviceKeyIsPinned(t *testing.T) {
+	const r9700 = 6147738836272930545
+	if got := deviceLockKey("r9700"); got != r9700 {
+		t.Fatalf("deviceLockKey(\"r9700\") is %d, was %d. Two asrd versions overlapping "+
+			"during a redeploy would now take DIFFERENT locks and both run on the card. "+
+			"If this is deliberate, it needs a drained deploy rather than a rolling one.", got, r9700)
 	}
 	if deviceLockKey("r9700") == deviceLockKey("desktop") {
 		t.Fatal("two devices hashed to one key, so they would exclude each other")

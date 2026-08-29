@@ -158,12 +158,8 @@ func fakeWhisperMain() {
 			time.Sleep(fakeSleep(dir))
 		}
 
-		body, err := os.ReadFile(filepath.Join(dir, "response.json"))
-		if err != nil {
-			body = []byte(fakeTranscript)
-		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(body)
+		_, _ = w.Write([]byte(fakeTranscript))
 		appendEvent(dir, "answered")
 	})
 
@@ -405,12 +401,4 @@ func freeAddr(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return addr
-}
-
-// jsonResponse overrides what the fake answers with.
-func (f *fakeRunner) jsonResponse(t *testing.T, body string) {
-	t.Helper()
-	if err := os.WriteFile(filepath.Join(f.Dir, "response.json"), []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
 }
