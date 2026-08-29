@@ -537,7 +537,10 @@ func TestADurableTranscriptSkipsASR(t *testing.T) {
 
 	if _, err := h.store.RecordTranscript(h.ctx, store.TranscriptInput{
 		MemoID: memo.ID, Text: "said before", Partial: false,
-		Model: "small.en", Backend: "vulkan",
+		// The RUNNER-QUALIFIED string, which is what the ASR service actually
+		// stores and what CHRN-22's model floor reads. A bare "small.en" here
+		// would be a fixture that agrees with nothing.
+		Model: "whisper.cpp/small.en", Backend: "vulkan",
 	}); err != nil {
 		t.Fatal(err)
 	}

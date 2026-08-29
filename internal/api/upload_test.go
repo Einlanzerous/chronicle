@@ -157,6 +157,13 @@ func (f *uploadIngest) IngestMemo(_ context.Context, in store.Arrival) (store.In
 // SetMemoAudioInfo records what a probe found. internal/audio owns whether the
 // numbers are right; what is asserted HERE is that they reach the wire, which
 // is the gap TestACompletedUploadReportsTheMetadataItJustRecorded closes.
+// AudioPrunedFor is CHRN-22's re-delivery gate. Nothing in these API tests
+// prunes, so it always answers no — the split it guards is exercised in
+// internal/upload, where the shortcut it splits actually lives.
+func (f *uploadIngest) AudioPrunedFor(context.Context, uuid.UUID, string) (bool, error) {
+	return false, nil
+}
+
 func (f *uploadIngest) SetMemoAudioInfo(_ context.Context, id uuid.UUID, in store.AudioInfo) (store.Memo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -43,6 +43,11 @@ import (
 type Ingestor interface {
 	IngestMemo(ctx context.Context, in store.Arrival) (store.IngestResult, error)
 	SetMemoAudioInfo(ctx context.Context, id uuid.UUID, in store.AudioInfo) (store.Memo, error)
+
+	// AudioPrunedFor is CHRN-22's: a memo's audio is delivered once, so a
+	// rescan of a file whose recording the pruner has taken does not put it
+	// back on disk.
+	AudioPrunedFor(ctx context.Context, authorID uuid.UUID, contentHash string) (bool, error)
 }
 
 // Ledger is the tier-1 seen-ledger.
@@ -173,8 +178,12 @@ type Result struct {
 	Collapsed  int
 	Skipped    int // already in the ledger
 	Unsettled  int // still being written, or too recently touched
-	Failed     int
-	Reaped     int // ledger rows dropped for files that have left the inbox
+
+	// AudioPruned is a re-delivery of a memo whose audio the retention pruner
+	// has taken. CHRN-22 Ruling 2: audio is delivered once.
+	AudioPruned int
+	Failed      int
+	Reaped      int // ledger rows dropped for files that have left the inbox
 }
 
 // Run scans until ctx is cancelled.
@@ -390,6 +399,16 @@ func (w *Watcher) scanAccount(ctx context.Context, dir string, authorID uuid.UUI
 			// Not a failure. The file was still being written; it will be
 			// steady on some later scan and the ledger has not recorded it.
 			res.Unsettled++
+			return nil
+		}
+		if out.audioPruned {
+			// The memo exists and the retention pruner has taken its audio.
+			// Not a failure and not an ingest — a re-delivery of bytes this
+			// system has deliberately stopped keeping. Marked seen, so a
+			// rescan does not hash it again every sweep.
+			w.logger.Info("re-delivery of a memo whose audio was pruned; not re-copied",
+				"author_id", authorID)
+			res.AudioPruned++
 			return nil
 		}
 		res.Ingested++

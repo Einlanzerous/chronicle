@@ -1,6 +1,7 @@
 # CHRN-22 — The retention pruner (decision)
 
-Status: **accepted 2026-08-29 by magos, at the recommendations on every ruling.**
+Status: **accepted 2026-08-29 by magos, at the recommendations on every ruling,
+and IMPLEMENTED the same day.**
 Two amendments were owed at acceptance and are folded in, marked **[rev]**: §3's
 status enum had no `pruned` case, and §1's fixture hazard needed a test rather
 than a paragraph. The PR that follows is mechanical against this document, and

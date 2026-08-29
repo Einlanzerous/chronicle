@@ -19,6 +19,10 @@ type ingestOutcome struct {
 	collapsed           bool
 	changedWhileReading bool
 	hash                string
+
+	// audioPruned means this author already had this memo and the retention
+	// pruner has taken its audio. CHRN-22 Ruling 2: audio is delivered once.
+	audioPruned bool
 }
 
 // ingestFile copies one inbox file into the audio store and records the memo.
@@ -124,6 +128,26 @@ func (w *Watcher) ingestFile(ctx context.Context, path string, authorID uuid.UUI
 	}
 
 	out.hash = hex.EncodeToString(sum.Sum(nil))
+
+	// CHRN-22 Ruling 2, checked HERE — after the hash, because the hash is the
+	// memo's identity and nothing before this line knows which memo the file
+	// is. The temp copy is removed by the defer above, so nothing lands: a
+	// memo's audio is delivered once, and re-delivering it would resurrect a
+	// recording the next sweep would delete again, since captured_at cannot
+	// move.
+	//
+	// The window between this check and the rename is a concurrent prune, and
+	// it loses in the safe direction: the file lands as an orphan, which the
+	// storage report already counts and the pruner may retry.
+	pruned, err := w.ingest.AudioPrunedFor(ctx, authorID, out.hash)
+	if err != nil {
+		return out, fmt.Errorf("audio pruned check: %w", err)
+	}
+	if pruned {
+		out.audioPruned = true
+		return out, nil
+	}
+
 	ref := audio.Ref{AuthorID: authorID, ContentHash: out.hash}
 	final, err := w.audio.Path(ref)
 	if err != nil {

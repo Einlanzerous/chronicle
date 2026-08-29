@@ -215,7 +215,7 @@ jobs:
       # it is the only thing that creates a transcript, and a transcript is what
       # CHRN-22 gates audio deletion on. A bug that writes the wrong `partial`
       # here becomes deleted audio there.
-      sensitive_paths: '^(internal/store/|internal/asr/|internal/transcribe/|internal/api/(session|cfaccess|ratelimit|router|storage|upload|transcription)|internal/(invite|config|audio|watch|upload)/|cmd/(chronicle|asrd)/|migrations/|deploy/|scripts/|verify\.sh|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore)'
+      sensitive_paths: '^(internal/store/|internal/asr/|internal/transcribe/|internal/api/(session|cfaccess|ratelimit|router|storage|upload|transcription)|internal/(invite|config|audio|watch|upload|retention)/|cmd/(chronicle|asrd)/|migrations/|deploy/|scripts/|verify\.sh|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore)'
 
       # No `docs_skip_extra`: this repo commits no knowledge-graph cache, and
       # the one generated artifact it does carry is excluded outright in

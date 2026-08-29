@@ -83,6 +83,10 @@ type Sessions interface {
 type Ingestor interface {
 	IngestMemo(ctx context.Context, in store.Arrival) (store.IngestResult, error)
 	SetMemoAudioInfo(ctx context.Context, id uuid.UUID, in store.AudioInfo) (store.Memo, error)
+
+	// AudioPrunedFor is CHRN-22's: audio is delivered once, and a memo whose
+	// audio the pruner has taken does not get it back by re-uploading.
+	AudioPrunedFor(ctx context.Context, authorID uuid.UUID, contentHash string) (bool, error)
 }
 
 const (
@@ -327,6 +331,8 @@ type OpenRequest struct {
 //     offset its staging file reached.
 //  3. This author already holds these bytes ON DISK → the arrival is recorded
 //     and the memo returned, with nothing transferred.
+//  4. [CHRN-22] This author held them and the pruner has taken them → the same
+//     answer as 3, and still nothing transferred. Audio is delivered once.
 func (s *Service) Open(ctx context.Context, in OpenRequest) (Result, error) {
 	if in.ByteSize > s.maxBytes {
 		return Result{}, fmt.Errorf("%w: %d bytes, limit is %d", ErrTooLarge, in.ByteSize, s.maxBytes)
@@ -351,6 +357,35 @@ func (s *Service) Open(ctx context.Context, in OpenRequest) (Result, error) {
 		if err != nil {
 			return Result{}, err
 		}
+		return Result{Committed: committed}, nil
+	}
+
+	// Outcome 4, and it SPLITS the file-absent branch rather than replacing it.
+	// With no memo row, or a memo whose audio is merely missing, the code below
+	// runs exactly as it did and the client heals the gap by sending the bytes
+	// — which is also the crash-recovery path CHRN-20 built. With the audio
+	// PRUNED, the answer is the same as outcome 3: the memo exists, the
+	// transcript that let it be pruned still exists, and nothing is transferred.
+	//
+	// Resurrecting instead cannot work: captured_at is immutable, so a memo
+	// past its window would be re-pruned by the next sweep and the upload would
+	// have bought nothing. See CHRN-22 §5.
+	if pruned, err := s.ingest.AudioPrunedFor(ctx, in.AuthorID, in.ContentHash); err != nil {
+		return Result{}, err
+	} else if pruned {
+		committed, err := s.commit(ctx, store.Upload{
+			AuthorID:         in.AuthorID,
+			IdempotencyKey:   in.IdempotencyKey,
+			ContentHash:      in.ContentHash,
+			ByteSize:         in.ByteSize,
+			Retention:        in.Retention,
+			OriginalFilename: in.OriginalFilename,
+		}, "audio already pruned")
+		if err != nil {
+			return Result{}, err
+		}
+		s.logger.InfoContext(ctx, "re-delivery of a memo whose audio was pruned; nothing transferred",
+			"memo", committed.Memo.ID)
 		return Result{Committed: committed}, nil
 	}
 
@@ -792,20 +827,11 @@ func (s *Service) commit(ctx context.Context, u store.Upload, how string) (*Comm
 	// runs, so it made CHRN-21 invisible over HTTP.
 	memo := s.describe(ctx, res.Memo)
 
-	// A memo that had already been pruned and has just had its audio delivered
-	// again. The row still says pruned, so the storage report will count the
-	// file as an orphan until something clears audio_pruned_at — and clearing
-	// it is CHRN-22's column and CHRN-22's policy, not this ticket's to invent.
-	// Reported rather than silently left, so it is a line rather than a
-	// discrepancy somebody notices in a report weeks later.
-	if memo.AudioPruned() {
-		s.logger.Warn("audio was re-delivered for a memo whose audio is recorded as pruned; "+
-			"the file is on disk but the row still says pruned, so the storage report will count it as an orphan",
-			"memo_id", memo.ID,
-			"pruned_at", memo.AudioPrunedAt,
-			"owner", "CHRN-22 decides whether a re-upload clears audio_pruned_at")
-	}
-
+	// The warning that stood here — a memo whose audio was re-delivered after
+	// being pruned, left as an orphan because clearing `audio_pruned_at` was
+	// CHRN-22's policy to decide — is gone with the state it described. CHRN-22
+	// Ruling 2 settled it: audio is delivered once, so `Open` answers such a
+	// re-delivery as a duplicate and no bytes ever reach this function.
 	return &Committed{Memo: memo, Collapsed: res.Collapsed, Deliveries: res.Deliveries}, nil
 }
 

@@ -150,6 +150,9 @@ type fakeIngest struct {
 	// described counts SetMemoAudioInfo per memo, so a test can show the probe
 	// runs once rather than on every delivery.
 	described map[uuid.UUID]int
+
+	// pruned is CHRN-22's re-delivery gate, keyed author/hash.
+	pruned map[string]bool
 }
 
 func newFakeIngest() *fakeIngest {
@@ -158,6 +161,7 @@ func newFakeIngest() *fakeIngest {
 		byKey:     map[string]uuid.UUID{},
 		arrivals:  map[uuid.UUID]int{},
 		described: map[uuid.UUID]int{},
+		pruned:    map[string]bool{},
 	}
 }
 
@@ -236,6 +240,14 @@ func (f *fakeIngest) IngestMemo(_ context.Context, in store.Arrival) (store.Inge
 // SetMemoAudioInfo records what a probe found (CHRN-21). Kept on the same fake
 // as IngestMemo because it is the same interface: both ingest paths describe a
 // memo through the store they wrote it to.
+// AudioPrunedFor is CHRN-22's re-delivery gate. The fake answers from
+// `pruned`, which a test sets to put a memo in the state the pruner leaves.
+func (f *fakeIngest) AudioPrunedFor(_ context.Context, authorID uuid.UUID, hash string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.pruned[authorID.String()+"/"+hash], nil
+}
+
 func (f *fakeIngest) SetMemoAudioInfo(_ context.Context, id uuid.UUID, in store.AudioInfo) (store.Memo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1257,5 +1269,64 @@ func TestAnUnreadableRecordingStillBecomesAMemo(t *testing.T) {
 	// recording must not cost the recording.
 	if got := r.storedBytes(t, hashOf(content)); !bytes.Equal(got, content) {
 		t.Fatal("the stored recording does not match what was uploaded")
+	}
+}
+
+// --- CHRN-22 Ruling 2: audio is delivered once -----------------------------
+
+// A RE-UPLOAD OF A PRUNED MEMO TRANSFERS NOTHING. Resurrecting cannot work:
+// captured_at is immutable, so a memo past its window would be re-pruned by the
+// next sweep and the upload would have bought nothing.
+func TestReUploadingAPrunedMemoTransfersNothing(t *testing.T) {
+	r := newRig(t)
+	author := uuid.New()
+	body := []byte("pretend this is opus")
+	hash := hashOf(body)
+
+	// The memo exists and its audio has been pruned: no file on disk, and the
+	// row says so.
+	r.ingest.pruned[author.String()+"/"+hash] = true
+
+	res, err := r.svc.Open(context.Background(), OpenRequest{
+		AuthorID:       author,
+		IdempotencyKey: "prune-redelivery-0001",
+		ContentHash:    hash,
+		ByteSize:       int64(len(body)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Committed == nil {
+		t.Fatal("a re-delivery of a pruned memo opened a session; the client would send " +
+			"bytes this system has deliberately stopped keeping")
+	}
+	if res.Session != nil {
+		t.Fatal("a session was opened alongside the committed answer")
+	}
+}
+
+// AND THE HEALING PATH STILL HEALS. A memo whose audio is merely MISSING —
+// CHRN-23's one irrecoverable state, and the shape a crash between the rename
+// and the memo row leaves — must still be repaired by the client sending the
+// bytes. Ruling 2 splits this branch; it does not replace it.
+func TestAMemoWhoseAudioIsMissingIsStillHealed(t *testing.T) {
+	r := newRig(t)
+	author := uuid.New()
+	body := []byte("pretend this is opus")
+	hash := hashOf(body)
+
+	// Not pruned — just not on disk.
+	res, err := r.svc.Open(context.Background(), OpenRequest{
+		AuthorID:       author,
+		IdempotencyKey: "missing-heal-000001",
+		ContentHash:    hash,
+		ByteSize:       int64(len(body)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Session == nil {
+		t.Fatal("no session for a memo whose audio is missing; the self-healing path " +
+			"CHRN-20 built has been closed by CHRN-22's split")
 	}
 }

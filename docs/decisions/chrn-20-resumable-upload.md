@@ -178,13 +178,18 @@ author's directory.
 1. **`audio.StagingDir` is not corpus and is not the pruner's business.** The
    storage report counts it separately (`disk.staging` / `disk.staging_bytes`);
    the pruner should ignore the directory entirely.
-2. **Re-upload of a pruned memo is unresolved and is CHRN-22's to settle.** If a
-   person re-uploads a memo whose audio was pruned, the file lands and the row
-   still carries `audio_pruned_at`, so the storage report counts the recording as
-   an orphan. Chronicle **logs a warning naming the memo** and does not touch the
-   column — clearing `audio_pruned_at` is a retention policy decision, not
-   something an upload handler should invent. CHRN-22 decides whether a
-   re-delivery un-prunes.
+2. **[settled by CHRN-22, Ruling 2] Re-upload of a pruned memo is REFUSED, and
+   `audio_pruned_at` is monotone.** The question this item posed — does a
+   re-delivery un-prune? — is answered no. A memo's audio life is
+   `f(captured_at, retention, transcript)` and a re-delivery is not new
+   information about any of them; `captured_at` is immutable, so clearing the
+   column would put a file on disk that the next sweep deletes again.
+
+   So the file never lands: both arrival paths ask `AudioPrunedFor` first and
+   answer as a duplicate, transferring nothing. The warning this item described
+   is gone with the state it described. The file-absent branch still heals a
+   memo whose audio is merely **missing**, which is the crash-recovery path this
+   ticket built and which CHRN-22 deliberately split rather than replaced.
 3. **Expiry is measured from activity, never from creation.** A slow upload is
    not an abandoned one, and the case this endpoint exists for is precisely a
    long recording over a poor link. The same distinction applies to the pruner

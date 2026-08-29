@@ -203,13 +203,23 @@ func (s *Store) transcriptFor(ctx context.Context, memoID uuid.UUID, model strin
 //  1. It reads CHRONICLE, never the ASR service. That service answers 410 for a
 //     result older than seven days, and the pruner fires at thirty — so at the
 //     moment it runs, the job it would have to consult is routinely gone.
+//
 //  2. It is `NOT partial`, and nothing else. Never `covered_ms >=
 //     audio_duration_ms`: whisper emits segments only where there is speech, so
 //     an ordinary memo with trailing silence has covered_ms short of its
 //     duration on a perfectly complete run.
+//
 //  3. EMPTY TEXT COUNTS. There is deliberately no `AND text <> ”` here, and
 //     adding one would keep the audio of every silent memo forever while the
 //     UI's PRUNES label quietly became a lie for them.
+//
+//  4. [CHRN-22] It carries a MODEL FLOOR, and the floor is in HERE rather than
+//     beside it. The pump calls this same function to decide whether to skip
+//     ASR, so a second prunable-only predicate that could diverge gives one of
+//     two silent failures: the pump skips on a transcript the pruner refuses,
+//     so the audio is kept forever and the better pass never runs; or the
+//     pruner deletes on a transcript the pump would have replaced, so there is
+//     nothing left to transcribe. One predicate, both callers.
 //
 // Getting this wrong in the permissive direction deletes audio for a memo that
 // was never transcribed, which CLAUDE.md names as the single worst thing this
@@ -217,13 +227,53 @@ func (s *Store) transcriptFor(ctx context.Context, memoID uuid.UUID, model strin
 func (s *Store) HasDurableTranscript(ctx context.Context, memoID uuid.UUID) (bool, error) {
 	var ok bool
 	err := s.pool.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM tier2.transcripts WHERE memo_id = $1 AND NOT partial)`,
-		memoID).Scan(&ok)
+		`SELECT EXISTS (SELECT 1 FROM tier2.transcripts WHERE memo_id = $1 AND `+DurableClause+`)`,
+		memoID, SufficientRunners, SufficientModels).Scan(&ok)
 	if err != nil {
 		return false, fmt.Errorf("store: durable transcript check: %w", err)
 	}
 	return ok, nil
 }
+
+// The model floor, CHRN-22 Ruling 1. TWO AXES, and the reason there are two is
+// in the stored string: `tier2.transcripts.model` holds `whisper.cpp/small.en`,
+// not `small.en` — the ASR worker builds it as `"whisper.cpp/" + model`.
+//
+// QUALITY, from the name after the runner. A model is a property of the model
+// and not of the machine, and E3's own CPU fallback is `base.en` — server-run
+// and phone-grade — so a "ran on the server" rule would delete exactly the
+// transcript that should not be trusted.
+//
+// A KNOWN RUNNER, from the name before it. A quantised build this deployment
+// has never measured is not trusted to have produced what its model name
+// claims. That refuses a device transcript (CHRN-81) by default, which is what
+// that ticket asked for, and admits a second server-grade device (CHRN-80),
+// which is what that one needs.
+//
+// HARD-CODED, NEVER CONFIGURATION. Widening the set of transcripts that may
+// delete audio is a change to the worst thing this system can do; as a
+// constant it is reviewed at the expensive tier, because internal/store/ is in
+// `sensitive_paths`. As an environment variable it would be reviewed by nobody.
+var (
+	// SufficientModels is at or above the default. `base`, `base.en`, `tiny`
+	// and `tiny.en` are deliberately absent, wherever they ran.
+	SufficientModels = []string{"small.en", "medium.en", "large-v3"}
+
+	// SufficientRunners is what has been measured on this deployment. Adding
+	// one is a deliberate act with a Mode C review attached.
+	SufficientRunners = []string{"whisper.cpp"}
+)
+
+// DurableClause is the durable-transcript test, as SQL, in ONE PLACE.
+//
+// $2 is the runner allow-list and $3 the model allow-list. A stored value with
+// no `/` in it fails both halves: split_part returns the whole string for part
+// 1 and an empty string for part 2, and neither is in either list. That is the
+// right answer — an unqualified model name is a transcript written by something
+// this floor has never been shown.
+const DurableClause = `NOT partial
+	  AND split_part(model, '/', 1) = ANY($2)
+	  AND split_part(model, '/', 2) = ANY($3)`
 
 // PartialMemo is one memo whose only transcript is incomplete.
 type PartialMemo struct {
