@@ -151,7 +151,15 @@ func decodeToWAV(ctx context.Context, ffmpegBin, dir string, audio []byte, media
 		return "", 0, &ReleaseError{Reason: "worker_io", Detail: err.Error()}
 	}
 
-	wav := filepath.Join(dir, "in.wav")
+	// "out", not "in": audio/wav stages as in.wav, so a fixed in.wav output was
+	// the same path as its own input and ffmpeg refused the job outright —
+	// "Output ... same as Input #0 - exiting", returned as a terminal
+	// decode_failed that never retried. CHRN-84. Only wav collided, which is
+	// why it survived to a release: every other accepted type has an extension
+	// that differs from the output's. The output PATH is not a decode
+	// parameter, so the invocation this comment block calls byte-for-byte the
+	// harness's is still byte-for-byte the harness's.
+	wav := filepath.Join(dir, "out.wav")
 	decode := exec.CommandContext(ctx, ffmpegBin,
 		"-y", "-hide_banner", "-loglevel", "error",
 		"-i", src, "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wav)

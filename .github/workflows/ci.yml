@@ -148,6 +148,28 @@ jobs:
           fi
           echo "asr/ boundary holds in both directions."
 
+      # A REAL ffmpeg, because one test needs one and fails rather than skips
+      # here. Every other ASR test drives the fake shell script in
+      # fakewhisper_test.go, which copies a prepared WAV to its last argument
+      # and so could never have reproduced CHRN-84 -- a real ffmpeg refusing to
+      # write over its own input. TestEveryAdvertisedMediaTypeDecodes is the
+      # only guard against that recurring, and `go test` without -v prints no
+      # `--- SKIP` line, so an absent ffmpeg would have been green in exactly
+      # the way a pass is.
+      #
+      # Installed only when missing, so CHRN-83's move onto chronicle-runner --
+      # which carries ffmpeg already and would not want an apt-get against the
+      # host -- needs no change here.
+      - name: Provision ffmpeg
+        run: |
+          if command -v ffmpeg >/dev/null 2>&1; then
+            echo "ffmpeg already present."
+          else
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
+          fi
+          ffmpeg -version | head -1
+
       # -p 1 for the reason verify.sh gives at length: more than one package
       # resets the shared test database, and overlapped they drop tables out
       # from under each other, producing failures that read as migration bugs.

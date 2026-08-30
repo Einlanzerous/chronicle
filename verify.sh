@@ -140,6 +140,9 @@ fi
 if [ -z "${ASR_TEST_DATABASE_URL:-}" ]; then
   printf 'NOTE: ASR_TEST_DATABASE_URL unset — the ASR job tests were skipped, including the kill -9 lease test.\n'
 fi
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  printf 'NOTE: ffmpeg not on PATH — the advertised-media-type decode test was skipped (CHRN-84 has no guard here). CI fails rather than skips.\n'
+fi
 
 printf '\n'
 if [ "$fail" -eq 0 ]; then

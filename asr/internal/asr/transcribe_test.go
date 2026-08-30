@@ -2,8 +2,11 @@ package asr
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -196,5 +199,116 @@ func TestBackendAnnouncementWarnsWhenNoDeviceIsNamed(t *testing.T) {
 
 	if !strings.Contains(buf.String(), "may be running on the CPU") {
 		t.Fatalf("a startup that named no device was not flagged:\n%s", buf.String())
+	}
+}
+
+// EVERY ADVERTISED MEDIA TYPE MUST ACTUALLY DECODE. Two sets are supposed to be
+// one set — what GET /v1/models says it accepts, and what decodeToWAV can read
+// — and until CHRN-84 nothing checked that they were.
+//
+// audio/wav was advertised and failed 100% of the time. It stages as in.wav,
+// the decode output was also in.wav, and ffmpeg will not write over its own
+// input: "Output ... same as Input #0 - exiting". It reached a release because
+// only wav collides — .ogg, .webm, .mp3 and .m4a all differ from the output's
+// name — and it was silent in the field because decode_failed is terminal, so
+// the memo never retried and never came back. A .wav in the CHRN-19 inbox is
+// ordinary, not exotic.
+//
+// THE LOOP IS OVER AcceptedMediaTypes, not over a list written here. Adding a
+// type to the advertised set without teaching this test to build one fails
+// loudly rather than quietly widening the contract by one untested container.
+func TestEveryAdvertisedMediaTypeDecodes(t *testing.T) {
+	ffmpegBin, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		// IN CI THIS IS A FAILURE, NOT A SKIP, and the distinction is the whole
+		// value of the test. `go test` prints no `--- SKIP` line without -v, so
+		// an absent ffmpeg on a runner would be indistinguishable from a pass —
+		// and this is the ONLY guard against CHRN-84 recurring. Every other
+		// test in this package drives the fake ffmpeg in fakewhisper_test.go,
+		// which copies a prepared WAV to its last argument and therefore could
+		// never reproduce a path collision at all.
+		//
+		// Mode A rests the human's read on green CI. A green that means "the
+		// check did not run" is the failure that mode cannot survive, and
+		// ci.yml says the same thing about the tier-isolation DSN.
+		//
+		// On a laptop without ffmpeg, skipping is still the right answer.
+		requireRealFFmpeg(t, "ffmpeg is not on PATH")
+		t.Skip("ffmpeg is not on PATH")
+	}
+
+	// One second of audio in each advertised container. Keyed by media type so
+	// that a new entry in AcceptedMediaTypes has to land here too.
+	recipes := map[string]struct{ ext, codec string }{
+		"audio/ogg":  {".ogg", "libopus"},
+		"audio/webm": {".webm", "libopus"},
+		"audio/mpeg": {".mp3", "libmp3lame"},
+		"audio/mp4":  {".m4a", "aac"},
+		"audio/wav":  {".wav", "pcm_s16le"},
+	}
+
+	for _, mediaType := range AcceptedMediaTypes {
+		t.Run(mediaType, func(t *testing.T) {
+			recipe, ok := recipes[mediaType]
+			if !ok {
+				t.Fatalf("%s is advertised in AcceptedMediaTypes and this test cannot build one. "+
+					"Either add a recipe or stop advertising the type — the two sets are the "+
+					"same set, which is the whole point of this test", mediaType)
+			}
+
+			sample := filepath.Join(t.TempDir(), "sample"+recipe.ext)
+			gen := exec.Command(ffmpegBin, "-y", "-hide_banner", "-loglevel", "error",
+				"-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+				"-ac", "1", "-c:a", recipe.codec, sample)
+			if out, err := gen.CombinedOutput(); err != nil {
+				// Same rule as above: a build that cannot encode one of the five
+				// is a local limitation on a laptop and a hole in CI, because
+				// the type stays advertised either way.
+				requireRealFFmpeg(t, fmt.Sprintf("this ffmpeg build cannot encode %s: %v: %s", recipe.codec, err, out))
+				t.Skipf("this ffmpeg build cannot encode %s: %v: %s", recipe.codec, err, out)
+			}
+			audio, err := os.ReadFile(sample)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// A directory of its own, exactly as the worker hands one over —
+			// staged input and decode output share it, which is what made the
+			// collision reachable.
+			wav, durationMs, err := decodeToWAV(context.Background(), ffmpegBin, t.TempDir(), audio, mediaType)
+			if err != nil {
+				t.Fatalf("%s is advertised as accepted and did not decode: %v", mediaType, err)
+			}
+			// One second in, one second out, give or take the padding a lossy
+			// encoder adds. That it decoded at all is the claim here; the exact
+			// figure is wavDurationMs's business and is tested above.
+			if durationMs < 900 || durationMs > 1300 {
+				t.Fatalf("%s decoded to %d ms, want roughly 1000", mediaType, durationMs)
+			}
+			if _, err := os.Stat(wav); err != nil {
+				t.Fatalf("the decode reported success and left no file behind: %v", err)
+			}
+		})
+	}
+}
+
+// requireRealFFmpeg turns a skip into a failure when CI is set.
+//
+// The repo already states the principle, in ci.yml above
+// CHRONICLE_TEST_TIER1_DATABASE_URL: a test that skips for want of an
+// environment is "a silent hole in the one check the doctrine rests on". The
+// DSNs express it by being set; a binary on PATH cannot, so it is expressed
+// here.
+//
+// CI rather than a named variable of our own, deliberately: a variable a future
+// workflow forgets to set reopens the hole silently, which is the exact defect
+// being closed. CI is set by GitHub Actions without anyone remembering to, and
+// it holds equally on the self-hosted runner CHRN-83 moves these jobs to.
+func requireRealFFmpeg(t *testing.T, reason string) {
+	t.Helper()
+	if os.Getenv("CI") != "" {
+		t.Fatalf("%s — in CI this must fail rather than skip: this test is the only "+
+			"guard against CHRN-84 (audio/wav advertised and undecodable), and a skip "+
+			"is invisible in a `go test` run without -v", reason)
 	}
 }
