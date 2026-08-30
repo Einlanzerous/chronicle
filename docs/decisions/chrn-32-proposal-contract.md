@@ -1,14 +1,22 @@
 # CHRN-32 — The proposal contract (decision)
 
-Status: **proposed 2026-08-30.** Three rulings open at the end of this document.
+Status: **proposed 2026-08-29.** Four rulings open at the end of this document.
 Ticket: CHRN-32 (Phase P2, parent CHRN-4). Tier `opus`, so Mode B: this document
 is the review artefact and the PR that follows it is mechanical.
 Decision owner: magos.
 Read by: **CHRN-30** (the prompt must emit exactly this), **CHRN-31** (the
 catalogue is what §5 validates against), **CHRN-33** (the batch API's unit),
 **CHRN-34** (HOLD and DISCARD), **CHRN-35** (the TICKET route's inputs),
-**CHRN-36** (the eval set grades this shape), and later **CHRN-55** (the triage
-screen) and **CHRN-67** (the MCP write tool).
+**CHRN-36** (the eval set grades this shape), **CHRN-52** (§1.1 hands it a
+decision), and later **CHRN-55** (the triage screen) and **CHRN-67** (the MCP
+write tool).
+
+**Revised 2026-08-29 after review.** One blocking finding and five smaller ones,
+marked **[rev]**. The blocking one was in §1, and it was the good kind: the
+section's argument survives intact, but the sentence carrying its enforcement
+mechanism described a role that cannot read Scribe's input and that nothing runs
+as today. That is now §1.1 and ruling **R4**. None of the four load-bearing
+positions moved, and no ruling changed direction.
 
 ## Context
 
@@ -25,9 +33,10 @@ contains `triaged`, `held` and `discarded`; transcripts (CHRN-27) in
 with one destination and no confidence.
 
 What does not exist: the page tree (CHRN-37, **E5**), the note model (CHRN-38,
-**E5**) and threads (CHRN-43, **E6**). Two of this contract's five destinations
-therefore have nowhere to land yet. §6 settles what the contract does about
-that, because the alternative is discovering it inside CHRN-33's diff.
+**E5**) and threads (CHRN-43, **E6**). Two of this contract's four proposable
+destinations therefore have nowhere to land yet. §6 settles what the contract
+does about that, because the alternative is discovering it inside CHRN-33's
+diff.
 
 `CLAUDE.md` names the thing this document must not get wrong, and names it in
 the sentence that lists what tier 1 is:
@@ -42,15 +51,18 @@ rest.
 ## Decision
 
 1. A proposal is a **tier-1 row**, not a tier-2 row and not a transient value.
-2. Its identity is `(memo_id, proposer)`, on `tier2.transcripts`'s pattern.
+2. **[rev]** Its identity is `(memo_id, proposer)`, on `tier2.transcripts`'s
+   pattern, and it carries a **`generation`** and the **`transcript_id`** it was
+   derived from.
 3. The payload is a **discriminated union on `destination`**, validated in two
    stages that fail differently.
 4. **`reason` is required, non-empty, and schema-level.**
-5. **Scribe may propose `DISCARD`. Scribe may never propose `HOLD`.**
+5. **Scribe may propose `DISCARD`. Scribe may never propose `HOLD`.** **[rev]**
+   And `DISCARD` is never pre-acceptable, by contract rather than by threshold.
 6. **`nearest_page` ships now, nullable, validated against a catalogue whose
    page half is empty until E5** — the shape is final, the constraint tightens.
 7. A proposal that will not validate becomes a **recorded failure**, never a
-   silent absence.
+   silent absence — and **[rev]** never displaces a payload that was valid.
 8. The contract **carries confidence and does not interpret it**. The threshold
    is CHRN-36's and lives in configuration.
 
@@ -70,18 +82,18 @@ This has a consequence worth stating plainly, because it is the line CHRN-52's
 isolation test will be drawn along:
 
 > **The proposal is a tier-1 write. The acceptance is a tier-2 write. They are
-> different code paths reaching different schemas through different roles.**
+> different code paths reaching different schemas.**
 
-Scribe runs as `chronicle_tier1` and writes proposals all day. It cannot write
-`tier2.memos`, so it cannot mark a memo `triaged` — that transition belongs to
-the acceptance path, which runs as `chronicle` and is driven by a person. A
+Scribe writes proposals all day and never marks a memo `triaged` — that
+transition belongs to the acceptance path, and it is driven by a person. A
 router that could route *and* commit would be a tier-1 process authoring tier-2
 state, which is the fabrication the tier split exists to prevent.
 
 It also disposes of a question CHRN-33 would otherwise have to answer: what
 happens if Scribe re-runs while an operator has the triage screen open. The
 proposal is regenerable and the memo's state is not, so a re-run rewrites tier 1
-and touches nothing the operator has decided.
+and touches no memo state the operator has decided. (It can still change a
+proposal out from under them, which is §2's `generation`.)
 
 ### Why a row and not a transient value
 
@@ -101,6 +113,102 @@ It is wrong for three reasons, in increasing order of severity:
 - **CHRN-36 could not exist.** The eval set grades proposals against labels, and
   compares runs against each other. A proposal that was never written down is a
   proposal that cannot be scored, diffed, or blamed for a regression.
+
+## 1.1 · [rev] Which role Scribe runs as — and the grant that has to move
+
+**The first draft of §1 said "Scribe runs as `chronicle_tier1` and writes
+proposals all day." That sentence was false twice, and review caught it.**
+
+`migrations/0001_init.up.sql:36` is `REVOKE ALL ON SCHEMA tier2 FROM
+chronicle_tier1`, and the comment above it says the role "cannot see tier 2 at
+all." Scribe's *input* is `tier2.transcripts`, joined to `tier2.memos` to know
+which memos are `transcribed` and untriaged. **A role with no `USAGE` on schema
+tier2 cannot `SELECT` either one.** As designed, the role cannot run Scribe.
+
+And nothing runs as it today. `internal/config/config.go` carries exactly one
+DSN, `CHRONICLE_DATABASE_URL`; `CHRONICLE_TEST_TIER1_DATABASE_URL` exists only
+so `verify.sh` can run the isolation test. E3's worker writes `tier1.memo_jobs`
+*and* `tier2.transcripts`, so it necessarily connects as `chronicle`. The role
+is a grant target with no process attached, and **CHRN-52 — P3, a different
+epic — is the ticket that decides how a process gets those credentials.**
+
+So this was an enforcement mechanism asserted rather than described. It is
+exactly the cross-epic edge §6 exists to surface, and §1 had missed its own.
+
+### The deeper problem: 0001's grant is stricter than the doctrine it enforces
+
+This is not a Scribe-specific inconvenience to be worked around. `CLAUDE.md`
+defines tier 1 as the estate's account of what exists **"plus whatever
+Chronicle derives from its own corpus: Scribe proposals, extracted entities,
+search indexes."**
+
+Every one of those three derives *from tier 2*. Proposals derive from
+transcripts. Extracted entities derive from notes and transcripts. CHRN-41's
+search index covers "notes and transcripts" by its own title. **You cannot
+derive from a corpus you cannot read.** A tier-1 role with no read on tier 2
+makes the entire second half of the tier-1 definition unimplementable.
+
+E4 is simply the first ticket to touch it. CHRN-41 and CHRN-42 hit it harder,
+and they hit it in E5.
+
+Note also what the invariant actually requires. `CLAUDE.md`: *"a test proving no
+tier-1 **write path** can reach a tier-2 table is the proof."* The doctrine is
+about writes. 0001's comment — "cannot see tier 2 at all" — is strictly stronger
+than the invariant it cites, and it is the stronger half that breaks.
+
+### The two options
+
+**(a) Grant the tier-1 role read on exactly its inputs.**
+
+```sql
+GRANT USAGE ON SCHEMA tier2 TO chronicle_tier1;
+GRANT SELECT ON tier2.memos, tier2.transcripts TO chronicle_tier1;
+```
+
+`SELECT` only, on two named tables, never `ALTER DEFAULT PRIVILEGES` — so a
+tier-2 table added later is unreadable until someone grants it deliberately.
+Notably **not** `tier2.users` or `tier2.user_tokens`, which 0002 revokes by name
+and which are the tables whose exposure would matter most.
+
+The invariant survives verbatim: no tier-1 **write** path reaches a tier-2
+table, and CHRN-52's test is unchanged in what it must prove. What changes is
+0001's comment, which has to stop claiming the role cannot see tier 2 and start
+saying which two tables it can read and why.
+
+**One correction to the review here, because it changes this option's risk.**
+The review warned that a loosened grant would not surface in `schema.sql`,
+citing 0002's comment. That comment says the opposite, and says so because
+CHRN-78 corrected exactly this claim: *"pg_dump emits only non-default ACLs, so
+revoking a privilege the role never held leaves nothing to emit … **A loosened
+GRANT is a non-default ACL and shows up in the diff on its own.**"* So CHRN-77's
+generated-schema guard **does** catch a later widening from `SELECT` to
+`INSERT`. That is the difference between a deliberate narrow grant and an
+un-guarded hole, and it is why (a) is safe to take.
+
+**(b) Scribe runs as `chronicle`; the boundary is a code-path guarantee for
+now.** `internal/scribe` is given a store interface with no method that writes
+any `tier2.*` table, proven by test, and CHRN-52 later moves it onto the role
+once it decides how credentials are issued.
+
+Honest about what exists and requires no migration. Weaker: a code-path
+guarantee is the thing the doctrine explicitly says is *not* the enforcement
+mechanism ("A separate database and role is the enforcement mechanism").
+
+### Recommendation
+
+**(a)**, recorded as a deliberate amendment to 0001 in a new migration rather
+than an edit to it, with 0001's comment corrected in the same change, and
+flagged to CHRN-52 so its test is written against the grant that exists rather
+than the one 0001 describes.
+
+The reason to prefer it over (b) is not Scribe's convenience. It is that (b)
+leaves a known-wrong grant in place for another epic and a half, during which
+CHRN-41 and CHRN-42 will each have to route around it, and each will be tempted
+to route around it by running as `chronicle` — at which point the role has no
+users at all and the enforcement mechanism is decorative.
+
+**Ruling R4.** This is a change outside E4, so under the working agreement it is
+magos's to take and not mine.
 
 ## 2 · Identity is `(memo_id, proposer)`, and a re-run supersedes rather than mutates
 
@@ -140,6 +248,46 @@ proposal the model ever made is a table that grows without a reader. One
 generation is enough to answer "did the prompt change do what I thought", which
 is the only question anyone asks.
 
+### [rev] The third axis: which transcript it was derived from
+
+The identity argument above names two inputs, model and prompt. **There is a
+third, and review caught it: which transcript.**
+
+`tier2.transcripts` is unique on `(memo_id, model)`, so a memo can carry several
+— and the retranscribe path that produces them is real, not hypothetical
+(`chronicle retranscribe`, CHRN-27). A `medium.en` transcript arriving for a
+memo that already has `small.en`, followed by a Scribe re-run under the *same*
+proposer, produces a superseded payload that CHRN-36 cannot attribute: the model
+did not change and the prompt did not change, so the diff looks like
+nondeterminism when in fact the input text changed.
+
+So the row records **`transcript_id`**. Not in the key — one proposal per memo
+per proposer is still the right identity, and adding the transcript to the key
+would let two transcripts of one memo each carry their own proposal, which is a
+triage screen showing the same memo twice.
+
+**Which transcript Scribe reads**, when there are several: the same predicate
+the pump and pruner already share — `HasDurableTranscript` and CHRN-22's
+two-axis model floor — and, among those that qualify, the highest-quality model.
+Stating it because it was unstated, and because a router silently reading the
+`small.en` transcript of a memo that has a `large-v3` one is a routing error
+nobody would ever trace to its cause.
+
+### [rev] `generation`, and the drift §1 argued against
+
+§1 rejects transient proposals partly because they would drift under the
+operator's cursor. Review's finding: supersede-in-place reintroduces exactly
+that. An operator who taps ACCEPT on the proposal they are looking at, while a
+re-run has just replaced it, accepts a proposal **they never saw**.
+
+The row carries a **`generation`** — a counter, incremented on every supersede.
+`GET` hands it to the client; an accept must send it back; and §5's stage 2 at
+acceptance **refuses a mismatch** rather than accepting silently. The memo goes
+back to the operator with the new proposal shown.
+
+The column is this contract's. The 409 and how the batch reports it are
+CHRN-33's.
+
 ## 3 · The payload, as a discriminated union
 
 One JSONB column validated against a schema, rather than fifteen nullable
@@ -155,8 +303,14 @@ every row is NULL and no constraint can say which two thirds.
 | `destination` | enum | yes | `NOTE` \| `TICKET` \| `DISCUSSION` \| `DISCARD`. **Not `HOLD`** — see §4. |
 | `confidence` | number | yes | `0.0 … 1.0` inclusive. Carried, not interpreted — §8. |
 | `reason` | string | yes | Non-empty after trimming, ≤ 400 chars. See §4. |
-| `title` | string | yes | Imperative, ≤ 100 chars. The salvaged prompt's rule, unchanged. |
-| `nearest_page` | string \| null | yes, may be null | A page path. §6. |
+| `title` | string | yes, **[rev]** except on `DISCARD` | Imperative, ≤ 100 chars. The salvaged prompt's rule, unchanged. |
+| `nearest_page` | string \| null | yes, may be null | Advisory. A page path. §6, and §5 for what a bad one does. |
+
+**[rev] `title` is optional on `DISCARD`.** Review's point: the prompt would
+otherwise have to invent an imperative title for something being thrown away,
+which is a fabrication the operator has no use for. The batch row labels a
+discarded memo with its transcript's first line instead — CHRN-33's display
+choice, noted here so it is not read as a missing field.
 
 ### `destination: "TICKET"` additionally
 
@@ -181,8 +335,25 @@ API (CHRN-33) must surface as *needs input* rather than as *failed*. Ruling R2.
 
 | field | type | required | notes |
 |---|---|---|---|
-| `page_path` | string \| null | yes, may be null | Where the note should live. Null until E5 — §6. |
+| `page_path` | string \| null | yes, may be null | Where the note should live. **[rev]** May name a page that does not exist; its nearest existing ancestor must be live. Null until E5 — §6. |
 | `body` | string | yes | The cleaned-up note text. |
+
+**[rev] `page_path` may propose a new page.** Review found that requiring
+`page_path` to be live would pre-decide that a note can only ever land on a page
+that already exists — a real constraint on E5, decided here by accident, and one
+that would make `page_path` and `nearest_page` redundant for NOTE.
+
+They are different fields doing different jobs. `nearest_page` is **advisory**:
+it feeds the reason line the canvas shows (*"Nearest existing page is
+`storage/amber`"*) and is never a landing target. `page_path` is the **target**,
+and it may name a page that does not exist yet, provided its nearest existing
+ancestor is in the catalogue — which is what stops `a/b/c/d/e` being invented
+whole.
+
+Today the behaviour is identical either way, because no page exists and no
+ancestor can be live, so every non-null `page_path` is cleared. The shape is
+fixed now because §6's whole argument is that the shape gets fixed now; E5 keeps
+the right to tighten the ancestor rule.
 
 ### `destination: "DISCUSSION"` additionally
 
@@ -245,6 +416,28 @@ So: `HOLD` is an **operator action** on the batch API (CHRN-34), available on
 every item regardless of what was proposed, and it is not a value the model can
 emit. Ruling R1.
 
+### [rev] DISCARD is never pre-acceptable, and that is a contract rule
+
+Review's corollary to R1, and it is right.
+
+`discarded` is **terminal** in the memo state machine, written down where it can
+be read: `0003_memos.up.sql` lists it only ever as a transition *target* and
+never as a source, and the comment says that is how terminal is expressed. There
+is no `discarded>` anything.
+
+§8's single `CHRONICLE_SCRIBE_PREACCEPT_MIN` cannot express "this destination is
+never in ACCEPT ALL", because a confident wrong DISCARD is exactly the case that
+clears any threshold. A `DISCARD` at 0.92 swept up by ACCEPT ALL is a memo that
+can never be re-routed.
+
+It is not data destruction — the transcript is tier 2 and survives, and CHRN-22
+prunes only audio, only behind a durable transcript. But it is **the one accept
+that cannot be undone**, and it should cost a deliberate tap.
+
+So, by contract and not by threshold: **a `DISCARD` proposal is never
+pre-accepted, at any confidence.** It is displayed, with its reason, and it
+requires an explicit per-item action. CHRN-33 and CHRN-34 inherit this.
+
 ## 5 · Two-stage validation, and the two stages fail differently
 
 The `Done when` names two distinct checks and they are worth keeping distinct,
@@ -268,7 +461,8 @@ CHRN-31 assembles what Scribe is allowed to route to, freshly, per run. Stage 2
 checks the proposal's targets against it:
 
 - `project_key` is non-empty ⇒ it must be a **live** Switchyard project key.
-- `page_path` or `nearest_page` is non-null ⇒ it must be a **live** page path.
+- `page_path` is non-null ⇒ its nearest existing ancestor must be **live**.
+- `nearest_page` is non-null ⇒ it must be a **live** page path.
 
 This is what the `Done when`'s "a destination outside the live catalogue is
 rejected rather than displayed" and "a hallucinated page path cannot be
@@ -282,15 +476,33 @@ acceptance. Not belt-and-braces: a proposal generated on Tuesday evening and
 accepted on Thursday morning has had two days for a project to be archived or a
 page to be renamed. Validating only at write time would let CHRN-33 create a
 ticket in a project that no longer takes them. The second check is cheap and the
-catalogue is already being assembled for the batch.
+catalogue is already being assembled for the batch. **[rev]** The acceptance
+check also verifies §2's `generation`.
 
-### What a stage-2 failure does, and does not do
+### [rev] A bad target blocks; a bad advisory field does not
 
-It **does not** discard the proposal. It clears the offending field and marks
-the proposal as needing input, keeping `destination`, `confidence` and `reason`
-— which are still the model's honest answer and still useful. A proposal whose
-project was archived is a proposal that needs a new project, not a memo that has
-to be re-routed from scratch.
+The first draft cleared the offending field and marked the proposal
+`needs_input` uniformly. Review found that this makes the primary surface worse
+for nothing, and the fix is to split the fields by what they do.
+
+**Targets — `project_key`, `page_path`.** Clearing one leaves the proposal
+unable to land. Status becomes `needs_input`; the operator must supply the
+missing target. `destination`, `confidence` and `reason` are kept, because they
+are still the model's honest answer: a proposal whose project was archived needs
+a new project, not a re-route from scratch.
+
+**Advisory — `nearest_page`.** It feeds the reason line and nothing else. A
+hallucinated one is **cleared, and the status does not change** — an otherwise
+perfectly acceptable TICKET does not become an item the operator has to touch
+because the model invented a page name in a sentence.
+
+The `Done when` still holds strictly: a cleared field cannot be accepted, so a
+hallucinated page path cannot be accepted.
+
+**Every clearing is recorded** on the row, not silently dropped, so CHRN-36 can
+report a hallucination rate per proposer. A model that invents a page in one
+proposal out of three is a fact about the prompt, and it is only visible if the
+clearing leaves a trace.
 
 ## 6 · `nearest_page` ships now, empty, and tightens when E5 lands
 
@@ -322,11 +534,12 @@ accuracy*, and accuracy is measured against labels, not against landed notes.
 the live catalogue — whose page half is simply empty until CHRN-37 fills it.**
 
 Under (c) the behaviour today is: any non-null `page_path` or `nearest_page` is
-rejected by stage 2, because it is not in the catalogue. The `Done when`'s "a
-hallucinated page path cannot be accepted" is satisfied — strictly, and by the
-general mechanism rather than a special case. As CHRN-37 lands, the catalogue
-fills and the same check starts admitting real paths with no code change and no
-migration. The constraint tightens; the contract does not move.
+cleared by stage 2, because no page and no ancestor is in the catalogue. The
+`Done when`'s "a hallucinated page path cannot be accepted" is satisfied —
+strictly, and by the general mechanism rather than a special case. As CHRN-37
+lands, the catalogue fills and the same check starts admitting real paths with
+no code change and no migration. The constraint tightens; the contract does not
+move.
 
 CHRN-30's prompt is told the page list is empty in the same way it is told the
 project list — the catalogue is a runtime slot, and an empty slot is a valid
@@ -356,16 +569,32 @@ be between 0 and 1, got 1.5` usually fixes it, and this costs one completion
 rather than an operator's attention.
 
 **Then record the failure.** After three attempts the proposal row is written
-with `status = 'invalid'`, no payload, the validation error, and the **raw model
-output kept verbatim** for CHRN-30 to read. It is tier 1 and disposable; a
-truncated field here would hide the only evidence of why the prompt failed.
+with `status = 'invalid'`, the validation error, and the **raw model output kept
+verbatim** for CHRN-30 to read. It is tier 1 and disposable; a truncated field
+here would hide the only evidence of why the prompt failed.
 
 **The memo stays untriaged and stays visible.** It appears in the triage batch
 carrying its error instead of a proposal, which is a memo the operator can route
 by hand. It is not skipped, not filtered, not silently deferred.
 
 `status` on the proposal row: `valid` | `needs_input` | `invalid`.
-`needs_input` is §3's empty project key and §5's cleared field.
+`needs_input` is §3's empty project key and §5's cleared target.
+
+### [rev] A failed re-run never displaces a valid payload
+
+Review's finding, and it is the same class as §2's drift: a memo that had a
+perfectly good proposal on Monday, re-run on Tuesday under a bumped prompt
+version that fails validation three times, would have had its payload replaced
+by nothing. The operator loses a usable proposal to a prompt regression.
+
+So a re-run that ends `invalid` **keeps the existing payload and its status**,
+and records the failure alongside it — the error and the raw output are written,
+`generation` does not advance, and the proposal the operator can see is still
+the one that validated. The row carries the fact that the latest attempt failed;
+it does not carry the failure *instead of* the proposal.
+
+An `invalid` row with no payload therefore means one thing only: no run has ever
+produced a valid proposal for this memo under this proposer.
 
 ## 8 · Confidence is carried, not interpreted
 
@@ -383,6 +612,10 @@ It lives in configuration — `CHRONICLE_SCRIBE_PREACCEPT_MIN`, env-only and
 contract, the prompt or a handler.** A threshold compiled into three surfaces is
 a threshold that will be changed in two of them.
 
+**[rev]** The threshold is a floor and not the only gate: §4's DISCARD exclusion
+sits above it, and no value of `CHRONICLE_SCRIBE_PREACCEPT_MIN` admits a DISCARD
+to ACCEPT ALL.
+
 Corollary, and the reason the epic cares: `ACCEPT ALL` is licensed by
 calibration, not by accuracy. This contract's job is to make sure the number is
 present, in range, and attributable to a named proposer so that CHRN-36 can
@@ -390,15 +623,41 @@ decide what it is worth.
 
 ## Surface
 
-Nothing in E4 is public yet; these are the shapes CHRN-33 builds on.
+Nothing in E4 is public yet; these are the shapes CHRN-33 builds on. **[rev]**
+`generation`, `transcript_id` and the cleared-field record are new; `raw_output`
+is now kept on every row.
 
 ```
 tier1.memo_proposals
-    id, memo_id, proposer, status, payload JSONB,
-    superseded_payload JSONB, error TEXT, raw_output TEXT,
+    id              UUID PRIMARY KEY
+    memo_id         UUID NOT NULL          -- NO FOREIGN KEY into tier2.memos
+    transcript_id   UUID NOT NULL          -- NO FOREIGN KEY either; §2
+    proposer        TEXT NOT NULL          -- ollama/gemma4:31b@v1
+    generation      INTEGER NOT NULL       -- §2; an accept must echo it
+    status          TEXT NOT NULL          -- valid | needs_input | invalid
+    payload         JSONB
+    superseded_payload JSONB
+    cleared_fields  JSONB                  -- §5; what stage 2 removed, and why
+    error           TEXT
+    raw_output      TEXT                   -- every row, not only failures
     created_at, updated_at
     UNIQUE (memo_id, proposer)
 ```
+
+**[rev] No foreign key into tier 2, on either column, and that is not an
+oversight.** 0004 established the rule, 0005 repeated it and 0006 states it on
+`tier1.memo_jobs` in as many words: *a tier-1 table referencing tier 2 would be
+the cross-schema path the doctrine exists to forbid.* The consequence is the
+same one `memo_jobs` carries — a proposal row can outlive its memo — and the
+same answer applies: a sweep collects the orphans. Stated here because §1 is
+where CHRN-52's line is being drawn, and a reader who finds no FK should find
+the reason next to it.
+
+**[rev] `raw_output` on every row, not only on `invalid`.** Review's point: it
+is tier 1, it is cheap, and it is what lets CHRN-36 diff two runs of the same
+prompt. Keeping it only on failures means the successful runs — the ones the
+eval set actually scores — are the ones with no evidence of what the model
+literally said.
 
 `internal/scribe/` — the package. Contract types, the two validators, and the
 proposer string. Not `internal/api/`: CHRN-67 exposes routing as an MCP tool,
@@ -416,37 +675,54 @@ reimplemented for the agent surface.
 
 ## What each ticket inherits
 
-- **CHRN-30** — emit exactly §3, including `reason`. Never `HOLD` (§4). The
-  prompt version is part of the proposer string (§2), so a prompt change is a
-  version bump and not a silent overwrite.
+- **CHRN-30** — emit exactly §3, including `reason`. Never `HOLD` (§4). No
+  `title` needed on `DISCARD` (§3). The prompt version is part of the proposer
+  string (§2), so a prompt change is a version bump and not a silent overwrite.
 - **CHRN-31** — the catalogue is what §5 stage 2 validates against, and its page
   half is legitimately empty until E5 (§6). Live per run, never cached across.
 - **CHRN-33** — the unit is a proposal row; `needs_input` is not `invalid`
-  (§3, §7); stage 2 runs again at acceptance (§5); and §6 names the NOTE /
-  DISCUSSION question it must settle in writing.
+  (§3, §7); stage 2 runs again at acceptance and **an accept must echo §2's
+  `generation`, with a mismatch reported as re-show rather than accepted**;
+  **DISCARD is never in ACCEPT ALL** (§4); and §6 names the NOTE / DISCUSSION
+  question it must settle in writing.
 - **CHRN-34** — `HOLD` is an operator action on any item, not a proposable
-  destination (§4). `DISCARD` marks; CHRN-22's pruner deletes.
+  destination (§4). `DISCARD` marks; CHRN-22's pruner deletes. **[rev]** Two
+  state-machine facts it should not have to rediscover: `held` exits only to
+  `queued` or `discarded` — there is no `held>transcribed`, so a memo released
+  from hold re-enters E3's worker, which skips ASR because it already has a
+  durable transcript; and `discarded` is genuinely terminal, so the ticket's
+  "reversible for a window" is **the pruner's window on the audio, not a memo
+  state that can be walked back**. That tension is CHRN-34's to resolve, and
+  this is the line it will be resolved against.
 - **CHRN-35** — inherits `project_key`, `ticket_type` and `description` from
   §3, and inherits the rule that an empty project key is completed by a person.
-- **CHRN-36** — grades §3's shape; sets §8's threshold; and depends on §2's
-  proposer string to attribute a regression to a prompt or to a model.
+- **CHRN-36** — grades §3's shape; sets §8's threshold; depends on §2's
+  proposer string to attribute a regression to a prompt or to a model, and on
+  §2's `transcript_id` to attribute one to a re-transcription; and can report a
+  hallucination rate from §5's `cleared_fields`.
+- **CHRN-52** — **[rev]** §1.1 is a decision it inherits. Its isolation test
+  should be written against the grant R4 settles, not against 0001's comment.
 
 ## What this does not decide
 
 - **The prompt.** CHRN-30.
 - **How the catalogue is assembled or cached within a run.** CHRN-31.
-- **Batch semantics, partial failure, idempotent accepts.** CHRN-33.
+- **Batch semantics, partial failure, idempotent accepts, the generation 409.**
+  CHRN-33.
 - **The threshold's value.** CHRN-36.
 - **Where a NOTE or DISCUSSION actually lands.** E5 and E6; §6 flags it for
   CHRN-33.
-- **The eval corpus.** Decided separately with magos on 2026-08-30: hybrid and
+- **How a process obtains tier-1 credentials.** CHRN-52; §1.1 hands it the
+  grant question and R4's answer.
+- **The eval corpus.** Decided separately with magos on 2026-08-29: hybrid and
   stratified, ~15 real memos held out for scoring plus ~25 synthesised for
   destination coverage, reported per stratum.
 
-## The three rulings
+## The four rulings
 
 **R1 · May Scribe propose `DISCARD`, and is `HOLD` correctly withheld?**
-Recommendation: **yes to DISCARD, and yes, HOLD is withheld** (§4). DISCARD is a
+Recommendation: **yes to DISCARD, and yes, HOLD is withheld** (§4), **with
+DISCARD excluded from pre-acceptance by contract** (§4, [rev]). DISCARD is a
 judgement about content that `reason` makes checkable; HOLD is a claim about the
 operator's intent that a model cannot hold, and that would become the abstention
 default that makes the router unmeasurable. If you would rather Scribe never
@@ -469,14 +745,39 @@ tier 1 is explicitly disposable. If CHRN-36 turns out to want run-over-run
 history, it should own that table and its retention rather than growing this
 one.
 
+**R4 · [rev] Does `chronicle_tier1` gain `SELECT` on `tier2.memos` and
+`tier2.transcripts`?** Recommendation: **yes — option (a) in §1.1**, in a new
+migration that also corrects 0001's comment, flagged to CHRN-52.
+
+This is the blocking finding from review and it is outside E4, so it is yours to
+take. The short version: 0001 grants the tier-1 role *less* than the doctrine
+requires it to have. `CLAUDE.md` defines tier 1 to include "whatever Chronicle
+derives from its own corpus", and every example it gives — proposals, extracted
+entities, search indexes — derives from tier 2. A role that cannot read tier 2
+cannot derive anything from it. E4 is the first ticket to hit this; CHRN-41 and
+CHRN-42 hit it harder and hit it in E5.
+
+The invariant is untouched, because the invariant is about writes: *"no tier-1
+write path can reach a tier-2 table."* `SELECT` on two named tables is not a
+write path, `tier2.users` and `tier2.user_tokens` stay revoked, and CHRN-77's
+schema guard does catch a later widening — a loosened `GRANT` is a non-default
+ACL and appears in the diff on its own, which is the correction CHRN-78 already
+made to 0002's comment.
+
+If you would rather not move a grant this epic, option (b) is honest and
+cheap: Scribe runs as `chronicle`, the boundary is a code-path guarantee proven
+by test, and CHRN-52 moves it later. The cost is that the role stays unused
+through E5, where two more tickets will have to route around it the same way.
+
 ## Done when
 
 The `Done when` on the ticket, mapped to this document:
 
 - *every proposal that reaches the API is schema-valid* — §5 stage 1, with §7
   guaranteeing that a proposal which cannot be made valid is recorded as invalid
-  rather than dropped.
+  rather than dropped, and never at the cost of a payload that was valid.
 - *a destination outside the live catalogue is rejected rather than displayed* —
   §5 stage 2, run at write **and** at acceptance.
 - *a hallucinated page path cannot be accepted* — §5 stage 2 against §6's
-  catalogue, which today admits no page at all.
+  catalogue, which today admits no page at all; a cleared field cannot be
+  accepted whether or not it moved the status.
