@@ -63,18 +63,29 @@ epic that argues for linked-not-copied.
 **And reproducibility does not need them.** What makes a run reproducible is
 knowing the input did not change, and `tier2.memos.content_hash` already gives
 that: immutable, computed over the bytes exactly as they arrived, never
-recomputed. If the hash matches, the transcript scored is the transcript
-labelled. The file is not the versioning mechanism; the hash is.
+recomputed. The file is not the versioning mechanism; the hash is.
+
+**[rev] With one correction the first draft missed: the hash identifies the
+audio, not the transcript.** A memo can carry several transcripts — they are
+unique on `(memo_id, model)`, and `chronicle retranscribe` makes that ordinary —
+and §8's harness pulls through `TranscriptForScribe`, which returns the
+best-ranked one *at query time*. A `large-v3` pass over the corpus would change
+the text every memo is scored from while every hash still matched, and 0007's
+`transcript_id` comment names this failure exactly: *CHRN-36 reads it as
+nondeterminism when the input text simply changed.* So the label records the
+transcript it was assigned against (`labelled_against`, §4), and §2's run log
+records the transcript each run actually scored. The hash proves the memo did
+not move; the transcript identity is what makes run N comparable to run N−1.
 
 So, committed:
 
 ```
-docs/eval/routing-v1.yaml     labels, reasons, ambiguity, strata, content hashes
+docs/eval/routing-v1.yaml     labels, reasons, ambiguity, strata, hashes, transcript pins
 docs/eval/synthetic/*.md      the synthetic transcripts (see below)
 internal/scribe/eval/         the harness
 ```
 
-Not committed: real transcript text, and audio.
+Not committed: real transcript text — whisper's or Google's, §6 — and audio.
 
 **One exception, and it is principled rather than convenient: the synthetic
 stratum is committed in full.** Nobody said those — they are fixtures written to
@@ -123,8 +134,11 @@ the gap rather than to close it.
 change the prompt because of what you saw, score again, and it has quietly
 become a development set — the tuning just happened through a human instead of a
 loop. So: **every scoring run against `real` is recorded in the doc** with its
-date, proposer string and result. Not ceremony; it is the only way to notice
-that the number stopped meaning what it did on the first run.
+date, proposer string, result, **[rev] and the transcript each memo was scored
+from** — model and id, as `TranscriptForScribe` served them, since a
+ranking-driven input change would otherwise read as prompt drift (§1). Not
+ceremony; it is the only way to notice that the number stopped meaning what it
+did on the first run.
 
 Ruling R1 asks whether n=17 is even enough to hold out.
 
@@ -154,8 +168,9 @@ around it.
 | At a Glance | 217 | `TICKET` | **no** | **cross-reference**, §7; addendum to Smart Calendar |
 | Automatic Improvements | 317 | `TICKET` spike | **no** | capability idea, could be doctrine |
 
-Roughly **11 TICKET, 3 NOTE, 1 DISCUSSION, 1 DISCARD**, with five where a second
-labeller could reasonably disagree.
+**12 TICKET, 3 NOTE, 1 DISCUSSION, 1 DISCARD** — [rev] counted rather than
+"roughly", because the first draft's eleven did not sum to seventeen — with five
+where a second labeller could reasonably disagree.
 
 ### What is missing, and why it is worth four more recordings
 
@@ -178,6 +193,7 @@ is two-thirds TICKET grades mostly the half that already worked.
 ```yaml
 - hash: 2ec3cf5b…          # tier2.memos.content_hash — the identity
   stratum: real
+  labelled_against: whisper.cpp/small.en   # [rev] the transcript the labeller read — §1
   destination: DISCUSSION
   ticket_type: null
   confident: true
@@ -226,6 +242,13 @@ bins on forty items measures binning, not calibration. So:
 - Report the **count of confident-and-wrong** items explicitly, since those are
   what ACCEPT ALL would actually ship.
 
+**[rev] Calibration pools both strata to reach its n, and that is said here
+because §2 forbids exactly this for accuracy.** What is pooled is the
+confidence–correctness relationship, not a score — no blended accuracy falls out
+of it — and each bucket reports its per-stratum n beside the total, so the
+pooling stays inspectable rather than becoming §2's averaging through a side
+door.
+
 A single summary number is deliberately not specified. At this n it would invite
 comparisons it cannot support.
 
@@ -257,20 +280,43 @@ the MCP side but it's definitely worth investigating"* — and that clause is
 exactly what separates an unresolved DISCUSSION from a decided TICKET. Two
 transcripts of one memo can carry different amounts of the deciding signal.
 
-**Google's text is not stored in `tier2.transcripts`.** It would be rejected by
-the durable floor as an unmeasured runner — correctly — and those memos' audio
-would then never prune while the pump kept retrying them. It lives beside the
-eval set as reference data.
+### [rev] Where Google's text lives — which the first draft got wrong
+
+Not `tier2.transcripts`: the durable floor rejects an unmeasured runner,
+correctly. And not the repo, which is what the first draft's "beside the eval
+set" meant — §1's own test forbids it. Google's transcript renders exactly the
+same speech as whisper's, and *did a person say this into a recorder* does not
+care which ASR listened. Committing it would carry the full text of every real
+memo into git through a side door, the two R3 memos included, and §1's argument
+would be over.
+
+So it lives with the other irreplaceable things: a flat directory inside
+Chronicle's data volume — `eval/reference/<content_hash>.google-recorder.txt` —
+referenced from the label file by hash, inside the boundary **CHRN-68**'s drill
+covers. The drill must name it, or a restore quietly drops the control. (That is
+a requirement CHRN-68 inherits if this section is accepted, and is recorded
+there at that point, not before.)
+
+Right now that text exists only inside Google Recorder — an external service
+that owes it nothing. **Capturing it out is this section's time-sensitive act**,
+and it outranks the prune deadline: the control needs the two texts, not the
+audio, so once Google's is home the control survives 2026-09-29. What does not
+survive it is re-transcription — see *What this does not decide*.
 
 ## 7 · Two cases the contract does not handle, labelled as such
 
 Found by reading the corpus, and both would otherwise be scored as router
 failures for doing the only thing they can.
 
-**An idea arriving in more than one pass.** At least four memos refer back to
-earlier thinking — *"this is probably an add-on to the smart calendar"*,
-*"building off the city Maps thing"*, *"I reference that in that calendar note
-too"*.
+**An idea arriving in more than one pass.** Two memos refer back to earlier
+thinking: *At a Glance* — *"this is probably an add-on to the smart calendar"*
+and *"I referenced that in that calendar note too"*, two references in one memo,
+both to the Smart Calendar note — and *Cafe Passport*, *"building off the city
+Maps thing"*. **[rev] The first draft said "at least four", and the corpus says
+otherwise:** a phrase sweep over the whisper transcripts finds refer-back
+language in exactly these two, which is what §3's table marked all along; the
+four came from reading one memo's references as separate memos. With *Home SRE
+Agent* below, the unhandled count is **three of seventeen**.
 
 The first draft of this section called these "cross-references" and said nothing
 resolves *"the smart calendar one"* to a **prior memo**. That framing was wrong,
@@ -302,14 +348,21 @@ candidate page additionally needs retrieval over the corpus, which is
 
 The safety rule follows from the epic's own thesis and should not wait for
 either ticket: **Scribe proposes a target and a verb; a person confirms. Nothing
-appends to authored text unattended.**
+appends to authored text unattended — not from the batch API, and not from an
+MCP write tool.** [rev] The two exclusions are load-bearing rather than
+examples, and the batch one is stated as policy now: an `append` or `supersede`
+is never in ACCEPT ALL, exactly as CHRN-32 §4 already holds for DISCARD.
+CHRN-39's revision log makes an errant append recoverable where a DISCARD is
+not — but recoverable-by-forensics is not a bar ACCEPT ALL gets to clear. The
+CHRN-39 comment of 2026-08-30 carries this same rule with the same exclusions;
+they are one rule, not two drifting copies.
 
-**One consequence for §3's labels.** The proposed destinations for these four
+**One consequence for §3's labels.** The proposed destinations for these three
 are provisional in a deeper way than the others. *At a Glance* is labelled
 `TICKET`, but if the corpus can express "append to the Smart Calendar page" it
 may well be a `NOTE` with a verb — and the honest answer is that its correct
 label depends on a capability that does not exist. That is what `unhandled:`
-records, and it is why these four are scored apart rather than counted wrong.
+records, and it is why these three are scored apart rather than counted wrong.
 
 **Dedup against existing work.** *Home SRE Agent* opens *"I think I've talked
 about it, but I'm pretty sure I don't have a ticket for it."* That is a memo
@@ -319,8 +372,10 @@ Nothing in the contract does that.
 Both are recorded in `unhandled:` on the label, **excluded from the headline
 accuracy, and reported as their own line**. They are not defects in CHRN-30 and
 tuning a prompt against them would be tuning against a missing feature. The
-count is the useful output: *four of seventeen real memos want a capability the
-contract does not have* is a finding for E4 and E5, not a score.
+count is the useful output: *three of seventeen real memos want a capability the
+contract does not have* is a finding for E4 and E5, not a score. [rev] A sixth
+of the corpus rather than the first draft's quarter — smaller, and the finding
+stands.
 
 ## 8 · The harness
 
@@ -353,10 +408,13 @@ Two things to know before anyone tries:
 - **Whether the contract should handle §7's two cases.** E4 and E5.
 - **Retention of the corpus audio.** Currently `days_30`, so these prune around
   **2026-09-29**; and once pruned, `internal/watch/ingest.go:146` refuses
-  re-ingestion, so §6's control and any re-transcription become impossible after
-  that date. There is no supported way to pin a memo after capture — the
-  per-memo permanent pin IDEA-21 locked in has no implementation. Flagged here
-  because this ticket is the thing that would lose by it.
+  re-ingestion. [rev] The first draft said this kills §6's control too, and it
+  does not: the control needs only the two texts, and survives the prune once
+  Google's is captured to the home §6 names. What dies with the audio is
+  re-transcription — a `large-v3` pass over the corpus, or a third transcript
+  for §6's comparison. There is no supported way to pin a memo after capture —
+  the per-memo permanent pin IDEA-21 locked in has no implementation. Flagged
+  here because this ticket is the thing that would lose by it.
 
 ## The four rulings
 
@@ -375,10 +433,26 @@ that covers four destinations and one that covers two.
 **R3 · What happens to the two memos with personal content?** *Server Doctor*
 (a local medical model for his own health data) and *Sextant Improvements*
 (resume and job-hunting). Both are legitimate corpus and neither is a secret.
-Recommendation: **keep them as memos, exclude them from the committed labels**,
-and mark them `stratum: real, committed: false` so the count stays honest. The
-label file is the only part that lands in git; excluding two costs the scored
-set very little and does not require deciding anything about the corpus.
+They stay memos under either ruling — nothing here touches the corpus.
+
+[rev] The first draft recommended excluding their labels from git while naming
+both memos and describing their content in its own first sentence — a
+half-measure that discloses more than the label lines it withholds. The real
+question is whether personal *topics* may appear in this repo at all, and either
+answer is coherent where the middle is not:
+
+- **Yes** — commit their labels like the other fifteen, with reasons as terse as
+  the table's. The set stays at seventeen, and nothing lands in git that this
+  document has not already said.
+- **No** — mark them `stratum: real, committed: false`, and scrub this document
+  to match: §3's two rows and this ruling's own parentheticals reduce to their
+  hashes.
+
+Recommendation: **the first — commit the labels.** The repo is private, the
+descriptive sentence already exists in a committed decision doc, and §6's
+correction keeps the actual transcript text out of git under either ruling. If
+the repo's audience ever widens the scrub has to happen then regardless, and it
+is two rows and two parentheticals in both worlds.
 
 **R4 · Does the threshold ship at all if calibration is flat?** Recommendation:
 **no — leave `CHRONICLE_SCRIBE_PREACCEPT_MIN` at its 1.01 default, which admits
