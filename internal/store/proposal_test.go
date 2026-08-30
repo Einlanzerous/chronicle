@@ -529,3 +529,47 @@ func TestClearedFieldsAccumulateAcrossBothStageTwoRuns(t *testing.T) {
 		t.Fatalf("cleared fields %v, want nearest_page and project_key", fields)
 	}
 }
+
+// CHRN-36's label identity resolves to a memo. The eval harness reads the
+// corpus as derived work does, so the lookup lives on Tier1Store beside the
+// transcript query it is always paired with.
+func TestMemoByHashResolvesTheEvalSetsIdentity(t *testing.T) {
+	s, ctx := newTestStore(t)
+	memoID, _ := seedMemoWithTranscript(t, s, ctx, strings.Repeat("c1", 32), "whisper.cpp/small.en")
+
+	got, err := derived(s).MemoByHash(ctx, strings.Repeat("c1", 32))
+	if err != nil {
+		t.Fatalf("MemoByHash: %v", err)
+	}
+	if got.ID != memoID {
+		t.Fatalf("memo = %s, want %s", got.ID, memoID)
+	}
+
+	if _, err := derived(s).MemoByHash(ctx, strings.Repeat("c2", 32)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a hash the corpus does not have: err = %v, want ErrNotFound", err)
+	}
+}
+
+// The uniqueness constraint is on (author_id, content_hash), so one hash can
+// name two memos. That is REFUSED rather than resolved: an eval run that
+// silently picked one of them would score a memo the labeller never read, and
+// no field on the label could say which. It cannot happen on a single-author
+// estate, which is exactly why it would otherwise be found the hard way.
+func TestMemoByHashRefusesAHashThatNamesTwoMemos(t *testing.T) {
+	s, ctx := newTestStore(t)
+	hash := strings.Repeat("d3", 32)
+	seedMemoWithTranscript(t, s, ctx, hash, "whisper.cpp/small.en")
+
+	other := newAuthor(t, s, ctx, "second@example.test")
+	if _, err := s.IngestMemo(ctx, Arrival{
+		AuthorID: other, ContentHash: hash, ByteSize: 1024,
+		Source: "copyparty", SourceRef: "/inbox/again.opus",
+	}); err != nil {
+		t.Fatalf("IngestMemo: %v", err)
+	}
+
+	_, err := derived(s).MemoByHash(ctx, hash)
+	if err == nil || !strings.Contains(err.Error(), "does not identify one") {
+		t.Fatalf("err = %v, want a refusal naming the ambiguity", err)
+	}
+}

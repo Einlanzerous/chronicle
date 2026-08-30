@@ -1,0 +1,569 @@
+# CHRN-36 — the routing eval set, v1.
+#
+# THE LABELS ARE HERE. THE REAL TRANSCRIPTS ARE NOT, and that is the decision
+# rather than an omission: they are tier 2, their home is `tier2.transcripts`
+# behind the boundary migration 0007 draws, and this repository is public.
+# A real label names its memo by `tier2.memos.content_hash` and nothing else.
+#
+# The consequence, stated in the decision and repeated here because this is the
+# file where it bites: a reviewer reading `<hash> -> NOTE, because it argues a
+# principle` cannot check that from the repo alone. They need the corpus. The
+# `# NNs` comment on each real entry is its duration, which is what makes this
+# file checkable against the table in §3 of the decision without naming
+# anything the decision does not already name.
+#
+# The synthetic stratum IS committed in full, and the test that settles why is
+# one question: did a person say this into a recorder? Nobody said these. They
+# are fixtures written to test a router, so they are not authored corpus and
+# they have no other home.
+#
+#   decision:  docs/decisions/chrn-36-routing-eval-set.md
+#   harness:   internal/scribe/eval
+#   run:       chronicle eval --dry-run           (resolution, no model needed)
+#              chronicle eval --stratum synthetic (development)
+#              chronicle eval --stratum real      (held out — log every run, §2)
+#
+# `confident` and `also_defensible` are load-bearing. Where two labels are both
+# defensible, the router picking the other one is not a failure — it is the
+# ceiling on what any router can score here, and the harness refuses a
+# `confident: false` that names no alternative.
+
+version: 1
+
+labels:
+
+  # ------------------------------------------------------------------------
+  # STRATUM `real` — 21 memos magos recorded on 2026-08-30, transcribed on the
+  # R9700. HELD OUT: CHRN-30 develops against `synthetic` and never against
+  # these, and every scoring run over them is recorded in §2's run log,
+  # because a held-out set degrades each time it is looked at.
+  #
+  # 12 TICKET · 3 NOTE · 3 DISCUSSION · 3 DISCARD, five of them arguable.
+  # ------------------------------------------------------------------------
+
+  - hash: a7f69c42f2a3acc2a3de28872f615ea09a1365e6b038316b7bd2cd410939a1c6  # 3s
+    stratum: real
+    labelled_against: whisper.cpp/small.en
+    destination: DISCARD
+    confident: true
+    reason: Two words into a microphone. Nothing was said.
+    also_defensible: []
+    unhandled: []
+
+  - hash: 0c9f33828f38991da76fa3381418abb5a593e72ef5df2ac4f684cfe9711fc03e  # 10s
+    stratum: real
+    labelled_against: whisper.cpp/small.en
+    destination: DISCARD
+    confident: true
+    reason: >
+      Talks himself out of it in nine seconds. The memo reaches its own
+      conclusion and the conclusion is no.
+    also_defensible: []
+    unhandled: []
+
+  - hash: 86dba197edca9e48bb269630815f2e3e2fe6f86a236db71e097ba9ffb4d9a74d  # 11s
+    stratum: real
+    labelled_against: whisper.cpp/small.en
+    destination: DISCARD
+    confident: true
+    reason: >
+      "Actually, no, never mind. No, cancel." A retraction of a recording that
+      never started. Also the one memo Google Recorder returned nothing for, so
+      §6's paired control covers 20 of 21 — and the miss landed on exactly the
+      short low-content class DISCARD is made of.
+    also_defensible: []
+    unhandled: []
+
+  - hash: 2ec3cf5b2cbefc4f3a09add012894f58625e843ba810f0cf8596ad632a147c9f  # 35s
+    stratum: real
+    labelled_against: whisper.cpp/small.en
+    destination: DISCUSSION
+    confident: true
+    reason: >
+      An open question with the tension stated and no decision reached. Leans
+      toward MCP but says explicitly it is worth investigating — and that
+      closing clause is the one whisper captured and Google's rendering does
+      not surface, which is what separates an unresolved DISCUSSION from a
+      decided TICKET.
+    also_defensible: []
+    unhandled: []
+
+  - hash: cfdae2bbd56c2ff7273508e6d2c82deb942f585e6ed515b90b37d44cd60764b4  # 44s
+    stratum: real
+    labelled_against: whisper.cpp/small.en
+    destination: TICKET
+    ticket_type: task
+    confident: true
+    reason: Concrete and scoped. A discrete piece of work with an end state.
+    also_defensible: []
+    unhandled: []
+
+  - hash: 9f58d44cba34c574bc29afedbb9438e6de52bf652661b89840ebb761dfc402b0  # 48s
+    stratum: real
+    labelled_against: whisper.cpp/small.en
+    destination: TICKET
+    ticket_type: task
+    confident: true
+    reason: Carries a real deadline, which is not a thing a note does.
+    also_defensible: []
+    unhandled: []
+
+  - hash: 326bfea82c2e6c8b32f104c779bf0383d9a012196683abeab4ca32aa88683c08  # 59s
+    stratum: real
+    labelled_against: whisper.cpp/small.en
+    destination: NOTE
+    confident: false
+    reason: >
+      Direction rather than work: states the underlying theme everything on the
+      platform should obey, names no deliverable and no owner. Defensible as an
+      epic instead, because the direction implies a lot of children.
+    also_defensible:
+      - destination: TICKET
+        ticket_type: epic
+    unhandled: []
+
+  - hash: 65b286f357f9e1c4e866c5022dab5e7380deebb98ed16fc2998d5a8d7f4d9750  # 61s
+    stratum: real
+    labelled_against: whisper.cpp/small.en
+    destination: DISCUSSION
+    confident: true
+    reason: >
+      "I want to have like a general discussion" — and says explicitly it is
+      not to be built yet. States its tension and reaches no decision.
+    also_defensible: []
+    unhandled: []
+
+  - hash: 1789ae0b4a3243a9ff2cecde50c6b0197cfe259610fb6c340eb1bbfc9f853f20  # 66s
+    stratum: real
+    labelled_against: whisper.cpp/small.en
+    destination: TICKET
+    ticket_type: task
+    confident: true
+    reason: A named capability to add to a named service. Ordinary work.
+    also_defensible: []
+    unhandled: []
+
+  - hash: 9f94db49925d6b624ea89670320bb22425a53c1db203da5deae9f5ded68825b4  # 70s
+    stratum: real
+    labelled_against: whisper.cpp/small.en
+    destination: TICKET
+    ticket_type: task
+    confident: true
+    reason: >
+      Concrete improvements to an existing tool. Personal content — ruling R3
+      settled that the label is committed like the other twenty and the reason
+      stays as terse as §3's row.
+    also_defensible: []
+    unhandled: []
+
+  - hash: 399de6bb2c12bc17f736f15b9099716a363cd868e736406b60114c81c25357a2  # 84s
+    stratum: real
+    labelled_against: whisper.cpp/small.en
+    destination: NOTE
+    confident: true
+    reason: >
+      Says of itself that it is not a plan and not something to go build
+      tomorrow. Personal content — ruling R3, as above.
+    also_defensible: []
+    unhandled: []
+
+  - hash: a4f387e23e88213581155bdfa34f45b096a37c65ca48c28fbfdec8db510597cf  # 93s
+    stratum: real
+    labelled_against: whisper.cpp/small.en
+    destination: DISCUSSION
+    confident: true
+    reason: >
+      Opens by naming itself a good thing to discuss and ends on an open
+      question. Personal content — ruling R3, as above.
+    also_defensible: []
+    unhandled: []
+
+  - hash: 53a793d334d2573e638cd9d5ac3f6b395ca68188d2077d7b361297904d5df66a  # 105s
+    stratum: real
+    labelled_against: whisper.cpp/small.en
+    destination: TICKET
+    ticket_type: spike
+    confident: false
+    reason: >
+      "Curious about the viability" — the outcome wanted is learning rather
+      than shipped code, which is what spike means. Equally defensible as a
+      note: it is one person being annoyed at a tool and describing a better
+      one, with nobody committed to finding out.
+    also_defensible:
+      - destination: NOTE
+    unhandled: []
+
+  - hash: 138881e9931a35f55a1585f5008ece90aea4bdfd1ee881d23edc49b5cc5b6ff1  # 119s
+    stratum: real
+    labelled_against: whisper.cpp/small.en
+    destination: NOTE
+    confident: false
+    reason: >
+      Mostly a reflection on his own tool use and what he is paying for.
+      Defensible as a discussion — it ends on an unresolved question about
+      where the capability should live — and defensible as a spike, since it
+      asks how reasonable a local model would be for the job.
+    also_defensible:
+      - destination: DISCUSSION
+      - destination: TICKET
+        ticket_type: spike
+    unhandled: []
+
+  - hash: d5cdf80d5b1194d937af57193102933f6cd4508652e003a89ca9589dfee39756  # 119s
+    stratum: real
+    labelled_against: whisper.cpp/small.en
+    destination: TICKET
+    ticket_type: task
+    confident: true
+    reason: A new integration, described concretely enough to start on.
+    also_defensible: []
+    unhandled: []
+
+  - hash: b2709faf9dd73cea4fce7e939b29788f6c6294508ddf5dda1dcd7bc86c3adfd3  # 120s
+    stratum: real
+    labelled_against: whisper.cpp/small.en
+    destination: TICKET
+    ticket_type: task
+    confident: true
+    reason: A new project, wanted rather than wondered about.
+    also_defensible: []
+    unhandled: []
+
+  - hash: ed9b983266aa5a2055fd7489aeff8c51be1c4e269842844a1195466b898f3a9f  # 142s
+    stratum: real
+    labelled_against: whisper.cpp/small.en
+    destination: TICKET
+    ticket_type: spike
+    confident: true
+    reason: >
+      Wants an agent that fixes things and reports, and the outcome asked for
+      is learning whether that is viable. Opens by asking whether a ticket
+      already exists for it, which nothing in the contract can check — see
+      `unhandled`.
+    also_defensible: []
+    unhandled:
+      - dedup
+
+  - hash: 0cd7dc6728323f35b8f4654337ff026475c4cd738b6c2d00e3f817ade5cfb931  # 160s
+    stratum: real
+    labelled_against: whisper.cpp/small.en
+    destination: TICKET
+    ticket_type: task
+    confident: true
+    reason: >
+      A concrete thing to build. Opens by placing itself against earlier
+      thinking — "building off the city Maps thing" — which the contract
+      cannot express: see `unhandled`.
+    also_defensible: []
+    unhandled:
+      - page_verb
+
+  - hash: 6a47664c20638ca51c949d4a4e100b75d6aee7be4c701fec5eeeafe021a2d559  # 168s
+    stratum: real
+    labelled_against: whisper.cpp/small.en
+    destination: TICKET
+    ticket_type: spike
+    confident: true
+    reason: Says "we need to investigate" in as many words. That is a spike.
+    also_defensible: []
+    unhandled: []
+
+  - hash: dbefd14ac9032db3d7570c86ab83f72f19e54d6fbce8145f04d0a768cc1158a6  # 217s
+    stratum: real
+    labelled_against: whisper.cpp/small.en
+    destination: TICKET
+    ticket_type: task
+    confident: false
+    reason: >
+      A substantial thing to build, and also an addendum: it refers back twice
+      to an earlier memo's page and says so. If the corpus could express
+      "append to that page" this would likely be a NOTE carrying a verb, which
+      is why the label is provisional in a deeper way than the others — its
+      correct answer depends on a capability that does not exist.
+    also_defensible:
+      - destination: NOTE
+    unhandled:
+      - page_verb
+
+  - hash: c74b8fe3453e399a95a91224e932386ef8c5ddd2b90030389dae671f5cb28cd1  # 318s
+    stratum: real
+    labelled_against: whisper.cpp/small.en
+    destination: TICKET
+    ticket_type: spike
+    confident: false
+    reason: >
+      A capability idea, sprawling across several related ones, with the
+      outcome wanted being whether the shape works at all. Defensible as
+      doctrine instead — much of it is a statement about how agents and tools
+      should relate rather than a thing to build.
+    also_defensible:
+      - destination: NOTE
+    unhandled: []
+
+  # ------------------------------------------------------------------------
+  # STRATUM `synthetic` — fixtures, committed in full. Development material:
+  # CHRN-30 may look at these freely, and their score is reported separately
+  # and NEVER averaged with the real stratum's.
+  #
+  # They are written to cover the destination space rather than to mirror the
+  # real corpus, which is deliberately two-thirds TICKET. The gap between the
+  # two strata's scores is the honest measurement: prompt work happens against
+  # material that is systematically easier than production, and the real
+  # stratum's job is to reveal that gap rather than to close it.
+  #
+  # 9 TICKET · 6 NOTE · 5 DISCUSSION · 5 DISCARD.
+  # ------------------------------------------------------------------------
+
+  - file: synthetic/argosy-resume-drift.md
+    stratum: synthetic
+    destination: TICKET
+    ticket_type: bug
+    confident: true
+    reason: Something works incorrectly and the memo says how to reproduce it.
+    also_defensible: []
+    unhandled: []
+
+  - file: synthetic/lyceum-kindle-delivery-status.md
+    stratum: synthetic
+    destination: TICKET
+    ticket_type: task
+    confident: true
+    reason: >
+      Reads as a bug — a silent failure — but what is asked for is a feature
+      that does not exist yet: a delivery record. Discrete work, so a task.
+    also_defensible: []
+    unhandled: []
+
+  - file: synthetic/signet-rotate-dry-run.md
+    stratum: synthetic
+    destination: TICKET
+    ticket_type: task
+    confident: true
+    reason: A named flag on a named command, with its acceptance rule stated.
+    also_defensible: []
+    unhandled: []
+
+  - file: synthetic/centrifuge-score-reasons.md
+    stratum: synthetic
+    destination: TICKET
+    ticket_type: task
+    confident: true
+    reason: A field to add and a reason to add it. Ordinary scoped work.
+    also_defensible: []
+    unhandled: []
+
+  - file: synthetic/switchyard-archived-project-picker.md
+    stratum: synthetic
+    destination: TICKET
+    ticket_type: bug
+    confident: true
+    reason: Wrong behaviour with a reproduction and a known cause.
+    also_defensible: []
+    unhandled: []
+
+  - file: synthetic/purser-deprovision-order.md
+    stratum: synthetic
+    destination: TICKET
+    ticket_type: spike
+    confident: false
+    reason: >
+      Wants to know what each connector does on failure before committing to
+      an ordering, which is a spike. Defensible as a discussion instead: the
+      memo argues both sides and settles nothing.
+    also_defensible:
+      - destination: DISCUSSION
+    unhandled: []
+
+  - file: synthetic/cta-watch-second-phase.md
+    stratum: synthetic
+    destination: TICKET
+    ticket_type: epic
+    confident: true
+    reason: >
+      Explicitly several pieces with dependencies between them, and says so:
+      a parent with children rather than one ticket.
+    also_defensible: []
+    unhandled: []
+
+  - file: synthetic/probably-already-a-ticket.md
+    stratum: synthetic
+    destination: TICKET
+    ticket_type: task
+    confident: true
+    reason: >
+      Concrete work, and the synthetic half of §7's dedup case: it asks for a
+      check against existing tickets before one is filed, which the contract
+      cannot do. Here so CHRN-30 can see the shape without touching the
+      held-out stratum.
+    also_defensible: []
+    unhandled:
+      - dedup
+
+  - file: synthetic/unnamed-tool-idea.md
+    stratum: synthetic
+    destination: TICKET
+    ticket_type: task
+    confident: true
+    reason: >
+      Real work whose project genuinely cannot be told from the transcript,
+      and the memo says not to guess. Exercises the contract's own rule: an
+      empty project_key is a correct answer that needs a person, not a
+      failure — the proposal should reach `needs_input` rather than `invalid`.
+    also_defensible: []
+    unhandled: []
+
+  - file: synthetic/linked-never-copied.md
+    stratum: synthetic
+    destination: NOTE
+    confident: true
+    reason: Argues a principle, names no owner and no deliverable. Doctrine.
+    also_defensible: []
+    unhandled: []
+
+  - file: synthetic/more-on-the-colour-rule.md
+    stratum: synthetic
+    destination: NOTE
+    confident: true
+    reason: >
+      Doctrine, and the synthetic half of §7's other case: it says outright
+      that it is adding to an earlier note rather than starting one. The
+      contract carries `page_path` but no verb, so nothing can express
+      "append to that page".
+    also_defensible: []
+    unhandled:
+      - page_verb
+
+  - file: synthetic/one-binary-per-service.md
+    stratum: synthetic
+    destination: NOTE
+    confident: true
+    reason: A house rule stated as settled. Nothing to build and nothing to decide.
+    also_defensible: []
+    unhandled: []
+
+  - file: synthetic/reviewing-agent-work.md
+    stratum: synthetic
+    destination: NOTE
+    confident: false
+    reason: >
+      Mostly an argument about where review leverage is, which is doctrine.
+      Defensible as a discussion: it ends admitting it does not know where the
+      line falls, and that is an open question rather than a stated position.
+    also_defensible:
+      - destination: DISCUSSION
+    unhandled: []
+
+  - file: synthetic/secrets-never-in-compose.md
+    stratum: synthetic
+    destination: NOTE
+    confident: true
+    reason: A rule with its reason. Already decided, so there is nothing to discuss.
+    also_defensible: []
+    unhandled: []
+
+  - file: synthetic/what-disposable-means.md
+    stratum: synthetic
+    destination: NOTE
+    confident: true
+    reason: >
+      A distinction being drawn and written down. It corrects a word rather
+      than proposing work.
+    also_defensible: []
+    unhandled: []
+
+  - file: synthetic/shared-postgres-or-per-service.md
+    stratum: synthetic
+    destination: DISCUSSION
+    confident: true
+    reason: >
+      Both sides argued at length, ends on "I don't have a strong feeling".
+      Unresolved by construction.
+    also_defensible: []
+    unhandled: []
+
+  - file: synthetic/mcp-tokens-per-agent.md
+    stratum: synthetic
+    destination: DISCUSSION
+    confident: true
+    reason: >
+      Names itself a question to think about out loud, floats a third option
+      and does not take it.
+    also_defensible: []
+    unhandled: []
+
+  - file: synthetic/how-long-to-keep-transit-history.md
+    stratum: synthetic
+    destination: DISCUSSION
+    confident: false
+    reason: >
+      States a real tension and says it cannot be resolved without knowing
+      more. Defensible as a note: most of it is a considered position on
+      retention that could stand as written.
+    also_defensible:
+      - destination: NOTE
+    unhandled: []
+
+  - file: synthetic/who-gets-the-gpu-at-night.md
+    stratum: synthetic
+    destination: DISCUSSION
+    confident: true
+    reason: >
+      Names the two options, names which one fails badly, and asks to talk it
+      through before adding a third consumer.
+    also_defensible: []
+    unhandled: []
+
+  - file: synthetic/should-eidolon-speak-first.md
+    stratum: synthetic
+    destination: DISCUSSION
+    confident: true
+    reason: >
+      Leans one way and immediately doubts the lean. An open question about a
+      product decision, not work.
+    also_defensible: []
+    unhandled: []
+
+  - file: synthetic/mic-check.md
+    stratum: synthetic
+    destination: DISCARD
+    confident: true
+    reason: Somebody testing their microphone.
+    also_defensible: []
+    unhandled: []
+
+  - file: synthetic/false-start.md
+    stratum: synthetic
+    destination: DISCARD
+    confident: true
+    reason: Abandoned mid-sentence and deferred. There is no content to route.
+    also_defensible: []
+    unhandled: []
+
+  - file: synthetic/pocket-recording.md
+    stratum: synthetic
+    destination: DISCARD
+    confident: true
+    reason: Half of an unrelated conversation, recorded by accident.
+    also_defensible: []
+    unhandled: []
+
+  - file: synthetic/talked-myself-out-of-it.md
+    stratum: synthetic
+    destination: DISCARD
+    confident: false
+    reason: >
+      Reaches its own conclusion and the conclusion is no, which is the same
+      shape as the real corpus's clearest DISCARD. Defensible as a note: the
+      rule it arrives at — do not optimise without a measurement — outlives
+      the idea it rejected.
+    also_defensible:
+      - destination: NOTE
+    unhandled: []
+
+  - file: synthetic/wrong-note-app.md
+    stratum: synthetic
+    destination: DISCARD
+    confident: true
+    reason: A shopping list, in the wrong application, and it notices.
+    also_defensible: []
+    unhandled: []

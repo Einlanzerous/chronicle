@@ -1,0 +1,1 @@
+I was going to say we should add a caching layer in front of the wiki render because it feels slow sometimes, but actually now that I say it out loud I've never measured it, and the last two times I did this the slow part turned out to be something else entirely. So no. Not until there's a number. Forget I said anything.
