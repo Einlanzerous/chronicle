@@ -169,10 +169,18 @@ around it.
 | Opportunistic Agent Cycling | 167 | `TICKET` spike | yes | "we need to investigate" |
 | At a Glance | 217 | `TICKET` | **no** | **cross-reference**, §7; addendum to Smart Calendar |
 | Automatic Improvements | 317 | `TICKET` spike | **no** | capability idea, could be doctrine |
+| **[rev 3] — R2's four, recorded 2026-08-30** | | | | |
+| Testing testing | 3 | `DISCARD` | yes | two words |
+| Never mind | 11 | `DISCARD` | yes | *"actually, no, never mind. No, cancel."* — **no Google text**, §6 |
+| Home lessons at work | 60 | `DISCUSSION` | yes | *"I want to have like a general discussion"*; explicitly not to build yet |
+| How far with Sextant | 93 | `DISCUSSION` | yes | opens *"a good thing to discuss"*, ends on an open question; personal, R3 |
 
-**12 TICKET, 3 NOTE, 1 DISCUSSION, 1 DISCARD** — [rev] counted rather than
-"roughly", because the first draft's eleven did not sum to seventeen — with five
-where a second labeller could reasonably disagree.
+**[rev 3] 12 TICKET, 3 NOTE, 3 DISCUSSION, 3 DISCARD — twenty-one**, with five
+where a second labeller could reasonably disagree. (Seventeen at first
+acceptance: 12/3/1/1, counted rather than "roughly" because the first draft's
+eleven did not sum.) **R2 is discharged**: DISCUSSION and DISCARD are n=3
+apiece, so neither is graded on a single example any more, and the destination
+that cannot be undone is no longer the thinnest.
 
 ### What is missing, and why it is worth four more recordings
 
@@ -182,9 +190,10 @@ excluded from pre-acceptance precisely because it cannot be undone. Grading the
 one irreversible accept entirely on synthetic data is the weakest part of this
 set.
 
-Recommended before scoring: **two more DISCUSSION** (an open question with the
-tension stated and no decision), **two more DISCARD** (a false start, a
-mis-tap). One more clear `NOTE` would help but is less urgent — there are three.
+**[rev 3] Done — recorded 2026-08-30 and in the table above.** Both DISCUSSION
+memos state their tension and reach no decision; both DISCARD memos are genuine
+rather than staged. One more clear `NOTE` would still help but remains the least
+urgent — there are three, and none of them is the irreversible destination.
 
 This is not padding. TICKET is the path vox-dictate already proved end to end;
 what E4 adds is that TICKET is one destination among several, and a corpus that
@@ -298,6 +307,27 @@ referenced from the label file by hash, inside the boundary **CHRN-68**'s drill
 covers. The drill must name it, or a restore quietly drops the control. (That is
 a requirement CHRN-68 inherits if this section is accepted, and is recorded
 there at that point, not before.)
+
+### [rev 3] The control covers twenty of twenty-one, and the gap is itself a finding
+
+*Never mind* has **no Google transcript at all** — the service returned nothing
+for it — while whisper produced a clean one: *"Oh, actually, no, never mind. No,
+cancel. I don't want this. Just go away."* So the paired comparison runs on 20
+of 21.
+
+The miss is worth more than the pair would have been. This section was framed
+around *wording* differences between two ASRs; the sharper failure is one ASR
+returning **nothing** where the other returns usable text. Had Chronicle been
+built on Google's output, that memo would have entered the corpus silently
+empty — no transcript, no error, and CHRN-22's durable gate would have held its
+audio forever without anyone knowing why.
+
+And the miss is not random. It landed on an **11-second, low-content memo** —
+which is exactly the `DISCARD` class. If short throwaway recordings are
+systematically what a second ASR drops, then the control has a blind spot
+precisely where the eval set is thinnest and where the one irreversible accept
+lives. Recorded so that a future comparison reports coverage per destination
+rather than a single 20/21.
 
 Capturing that text out of Google Recorder — an external service that owes it
 nothing — was this section's time-sensitive act, and **it is done**: all
