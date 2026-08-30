@@ -11,6 +11,13 @@ catalogue is what §5 validates against), **CHRN-33** (the batch API's unit),
 decision), and later **CHRN-55** (the triage screen) and **CHRN-67** (the MCP
 write tool).
 
+**Revised twice on 2026-08-29 after review.** `[rev 2]` folds in three
+at-acceptance amendments from the second pass, in CHRN-22's manner: who connects
+as the tier-1 role in E4 (§1.1), `raw_output`'s pairing with `payload` (§7), and
+`generation` moving on every payload mutation rather than only on a supersede
+(§2). Plus the transcript-ranking correction in §2. None of them moved a
+position.
+
 **Revised 2026-08-29 after review.** One blocking finding and five smaller ones,
 marked **[rev]**. The blocking one was in §1, and it was the good kind: the
 section's argument survives intact, but the sentence carrying its enforcement
@@ -148,8 +155,13 @@ search index covers "notes and transcripts" by its own title. **You cannot
 derive from a corpus you cannot read.** A tier-1 role with no read on tier 2
 makes the entire second half of the tier-1 definition unimplementable.
 
-E4 is simply the first ticket to touch it. CHRN-41 and CHRN-42 hit it harder,
-and they hit it in E5.
+E4 is simply the first ticket to touch it. **[rev 2]** CHRN-41 hits it harder
+and hits it in E5: its title is "full-text search over notes **and
+transcripts**", so its index cannot be built at all without reading tier 2.
+(The first draft named CHRN-42 alongside it. Review is right that it does not
+belong — backlinks and tags are *authored*, which its own ticket calls "the one
+kind of link that is stored". CHRN-41 carries the argument alone, and it is
+enough.)
 
 Note also what the invariant actually requires. `CLAUDE.md`: *"a test proving no
 tier-1 **write path** can reach a tier-2 table is the proof."* The doctrine is
@@ -201,11 +213,24 @@ than an edit to it, with 0001's comment corrected in the same change, and
 flagged to CHRN-52 so its test is written against the grant that exists rather
 than the one 0001 describes.
 
+**[rev 2] (a) includes a second DSN and a second pool, in E4.**
+`CHRONICLE_TIER1_DATABASE_URL`, and `internal/scribe` gets its own pool opened
+as `chronicle_tier1` — Scribe does **not** keep running as `chronicle` until
+CHRN-52 issues credentials. Review is right that the alternative would ship E4
+with the enforcement decorative, which is the precise argument §1.1 makes
+against option (b): a role nothing connects as is a role that enforces nothing.
+
+This is a config-surface change and so it is stated rather than implied. It
+falls back to `CHRONICLE_DATABASE_URL` when unset, which keeps a single-DSN
+deployment working and makes the tier-1 pool an addition rather than a
+prerequisite. **CHRN-52 owns how deploy actually issues the credential** —
+Signet, compose, and whether the fallback is allowed to survive in production.
+
 The reason to prefer it over (b) is not Scribe's convenience. It is that (b)
 leaves a known-wrong grant in place for another epic and a half, during which
-CHRN-41 and CHRN-42 will each have to route around it, and each will be tempted
-to route around it by running as `chronicle` — at which point the role has no
-users at all and the enforcement mechanism is decorative.
+CHRN-41 will have to route around it, and will be tempted to route around it by
+running as `chronicle` — at which point the role has no users at all and the
+enforcement mechanism is decorative.
 
 **Ruling R4.** This is a change outside E4, so under the working agreement it is
 magos's to take and not mine.
@@ -273,6 +298,23 @@ Stating it because it was unstated, and because a router silently reading the
 `small.en` transcript of a memo that has a `large-v3` one is a routing error
 nobody would ever trace to its cause.
 
+**[rev 2] The predicate is shared; the ranking is new, and it diverges from the
+one helper that exists.** Review is right to make the distinction.
+`store.SufficientModels` is an unranked *set* — `{small.en, medium.en,
+large-v3}` — and says nothing about which is better. `store.GetTranscript`
+orders by `partial ASC, transcribed_at DESC`: **most recent complete, not
+highest quality.** So Scribe cannot reuse it, and a memo re-transcribed *down*
+to `small.en` after a `large-v3` run would hand Scribe the worse text.
+
+The rank is therefore a new thing this contract introduces, and it lives
+**hard-coded beside `SufficientModels`, never in configuration** — that
+constant's own comment gives the reason and it applies unchanged: the file is in
+`sensitive_paths`, so a constant is reviewed at the expensive tier and an
+environment variable is reviewed by nobody. Scribe's selector is
+`HasDurableTranscript`'s clause plus that rank, and it is a distinct helper from
+`GetTranscript` rather than a change to it — `GetTranscript` serves display,
+where most-recent is the right answer.
+
 ### [rev] `generation`, and the drift §1 argued against
 
 §1 rejects transient proposals partly because they would drift under the
@@ -280,10 +322,21 @@ operator's cursor. Review's finding: supersede-in-place reintroduces exactly
 that. An operator who taps ACCEPT on the proposal they are looking at, while a
 re-run has just replaced it, accepts a proposal **they never saw**.
 
-The row carries a **`generation`** — a counter, incremented on every supersede.
-`GET` hands it to the client; an accept must send it back; and §5's stage 2 at
-acceptance **refuses a mismatch** rather than accepting silently. The memo goes
-back to the operator with the new proposal shown.
+The row carries a **`generation`** — a counter, incremented on **every payload
+mutation**, not only on a supersede. `GET` hands it to the client; an accept
+must send it back; and §5's stage 2 at acceptance **refuses a mismatch** rather
+than accepting silently. The memo goes back to the operator with the new
+proposal shown.
+
+**[rev 2] "Every mutation" and not "every re-run", because a supersede is not
+the only door.** Review found the second one: stage 2 at acceptance can itself
+change the payload — a project archived between Tuesday and Thursday clears
+`project_key` and sets `needs_input` — and no Scribe run was involved. Under
+"increments on supersede" the counter would not move, and the client's next
+accept would echo a generation that still matched a payload that had changed.
+Same drift, different door. So the rule is the payload's, not the run's: if the
+bytes an operator could be looking at are not the bytes on the row, the
+generation has moved.
 
 The column is this contract's. The 409 and how the batch reports it are
 CHRN-33's.
@@ -588,13 +641,26 @@ version that fails validation three times, would have had its payload replaced
 by nothing. The operator loses a usable proposal to a prompt regression.
 
 So a re-run that ends `invalid` **keeps the existing payload and its status**,
-and records the failure alongside it — the error and the raw output are written,
-`generation` does not advance, and the proposal the operator can see is still
-the one that validated. The row carries the fact that the latest attempt failed;
-it does not carry the failure *instead of* the proposal.
+and records the failure alongside it — `generation` does not advance, and the
+proposal the operator can see is still the one that validated. The row carries
+the fact that the latest attempt failed; it does not carry the failure *instead
+of* the proposal.
 
 An `invalid` row with no payload therefore means one thing only: no run has ever
 produced a valid proposal for this memo under this proposer.
+
+### [rev 2] `raw_output` pairs with `payload`; a failed attempt goes elsewhere
+
+Review caught the consequence: if the failed attempt's raw output overwrote
+`raw_output` while the previous payload stayed, then `raw_output` would be
+attempt N's junk beside attempt N−1's proposal — and CHRN-36, which the Surface
+section keeps `raw_output` on every row *precisely* to diff what the model
+literally said, would read the wrong pair.
+
+**`raw_output` always holds the output that produced the payload sitting beside
+it.** A failed attempt writes `error` and **`last_attempt_raw`**, and touches
+neither `payload` nor `raw_output`. The invariant is one line and worth stating
+as one: *`raw_output` is the text `payload` was parsed from, always.*
 
 ## 8 · Confidence is carried, not interpreted
 
@@ -638,8 +704,9 @@ tier1.memo_proposals
     payload         JSONB
     superseded_payload JSONB
     cleared_fields  JSONB                  -- §5; what stage 2 removed, and why
-    error           TEXT
-    raw_output      TEXT                   -- every row, not only failures
+    error           TEXT                   -- the latest attempt's failure, if any
+    raw_output      TEXT                   -- ALWAYS the text `payload` was parsed from
+    last_attempt_raw TEXT                  -- §7; a failed re-run's output, kept apart
     created_at, updated_at
     UNIQUE (memo_id, proposer)
 ```
@@ -668,6 +735,7 @@ reimplemented for the agent surface.
 
 | var | meaning |
 |---|---|
+| `CHRONICLE_TIER1_DATABASE_URL` | **[rev 2]** §1.1. The tier-1 pool Scribe connects on. Falls back to `CHRONICLE_DATABASE_URL`; CHRN-52 owns how deploy issues it. |
 | `CHRONICLE_SCRIBE_MODEL` | e.g. `gemma4:31b`. Qualified to `ollama/…@vN` for the proposer string. |
 | `CHRONICLE_SCRIBE_OLLAMA_URL` | Ollama's base URL. |
 | `CHRONICLE_SCRIBE_PREACCEPT_MIN` | §8. Set by CHRN-36, not by this ticket. |
@@ -702,6 +770,9 @@ reimplemented for the agent surface.
   hallucination rate from §5's `cleared_fields`.
 - **CHRN-52** — **[rev]** §1.1 is a decision it inherits. Its isolation test
   should be written against the grant R4 settles, not against 0001's comment.
+  **[rev 2]** E4 adds `CHRONICLE_TIER1_DATABASE_URL` with a fallback to the main
+  DSN; CHRN-52 owns how deploy issues the credential and whether that fallback
+  may survive in production.
 
 ## What this does not decide
 
@@ -747,15 +818,18 @@ one.
 
 **R4 · [rev] Does `chronicle_tier1` gain `SELECT` on `tier2.memos` and
 `tier2.transcripts`?** Recommendation: **yes — option (a) in §1.1**, in a new
-migration that also corrects 0001's comment, flagged to CHRN-52.
+migration that also corrects 0001's comment, flagged to CHRN-52 — and **[rev 2]
+including `CHRONICLE_TIER1_DATABASE_URL` and a second pool in E4**, so Scribe
+actually connects as the role being granted to rather than leaving the
+enforcement decorative for another epic and a half.
 
 This is the blocking finding from review and it is outside E4, so it is yours to
 take. The short version: 0001 grants the tier-1 role *less* than the doctrine
 requires it to have. `CLAUDE.md` defines tier 1 to include "whatever Chronicle
 derives from its own corpus", and every example it gives — proposals, extracted
 entities, search indexes — derives from tier 2. A role that cannot read tier 2
-cannot derive anything from it. E4 is the first ticket to hit this; CHRN-41 and
-CHRN-42 hit it harder and hit it in E5.
+cannot derive anything from it. E4 is the first ticket to hit this; CHRN-41 hits it
+harder and hits it in E5, since its index covers notes *and transcripts*.
 
 The invariant is untouched, because the invariant is about writes: *"no tier-1
 write path can reach a tier-2 table."* `SELECT` on two named tables is not a
@@ -767,7 +841,7 @@ made to 0002's comment.
 If you would rather not move a grant this epic, option (b) is honest and
 cheap: Scribe runs as `chronicle`, the boundary is a code-path guarantee proven
 by test, and CHRN-52 moves it later. The cost is that the role stays unused
-through E5, where two more tickets will have to route around it the same way.
+through E5, where CHRN-41 will have to route around it the same way.
 
 ## Done when
 
