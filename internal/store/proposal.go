@@ -9,9 +9,51 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Einlanzerous/chronicle/internal/scribe"
 )
+
+// Tier1Store is how derived work reaches the database, and it is a SEPARATE
+// TYPE rather than a second pool hidden inside Store on purpose.
+//
+// Ruling R4 grants chronicle_tier1 SELECT on tier2.memos and tier2.transcripts
+// and no write anywhere in tier 2. That grant is the enforcement mechanism
+// CLAUDE.md names — but a grant enforces nothing unless something connects on
+// it, which is the whole argument §1.1 makes against leaving Scribe on the main
+// role until CHRN-52.
+//
+// Being a distinct type buys a second, cheaper guarantee that holds even on a
+// deployment where the DSN has not been split yet: THERE IS NO METHOD HERE THAT
+// WRITES TIER 2. Not "there is one nobody calls" — there is none to call. The
+// grant is the outer wall and the type is the inner one, and CHRN-52's test
+// checks the wall rather than taking this comment's word for it.
+//
+// Every proposal method lives here and none on Store, so "proposals are reached
+// through the tier-1 store" is a rule with no exceptions to remember.
+type Tier1Store struct {
+	pool *pgxpool.Pool
+}
+
+// NewTier1 wraps a pool opened as the tier-1 role. It does not verify the role;
+// Role reports it, and cmd/chronicle logs what it finds, because an operator
+// who points this at the wrong DSN should be told rather than reassured.
+func NewTier1(pool *pgxpool.Pool) *Tier1Store { return &Tier1Store{pool: pool} }
+
+// Role reports the database role this pool actually connects as.
+//
+// It exists because the boot warning it feeds used to be a lie waiting to
+// happen: it reported whether CHRONICLE_TIER1_DATABASE_URL was SET, so setting
+// it to any DSN at all silenced the warning whether or not the DSN belonged to
+// chronicle_tier1. Asking the database is the only answer that cannot drift
+// from the truth.
+func (s *Tier1Store) Role(ctx context.Context) (string, error) {
+	var role string
+	if err := s.pool.QueryRow(ctx, `SELECT current_user`).Scan(&role); err != nil {
+		return "", fmt.Errorf("store: tier-1 role: %w", err)
+	}
+	return role, nil
+}
 
 // Proposal is one row of tier1.memo_proposals: what Scribe said a memo should
 // become, plus everything needed to attribute it and to notice it has moved.
@@ -98,7 +140,7 @@ func scanProposal(row pgx.Row) (Proposal, error) {
 
 // GetProposal returns a memo's proposal under one proposer. ErrNotFound when
 // Scribe has never run over it.
-func (s *Store) GetProposal(ctx context.Context, memoID uuid.UUID, proposer string) (Proposal, error) {
+func (s *Tier1Store) GetProposal(ctx context.Context, memoID uuid.UUID, proposer string) (Proposal, error) {
 	p, err := scanProposal(s.pool.QueryRow(ctx,
 		`SELECT `+proposalColumns+` FROM tier1.memo_proposals
 		  WHERE memo_id = $1 AND proposer = $2`, memoID, proposer))
@@ -128,7 +170,7 @@ func (s *Store) GetProposal(ctx context.Context, memoID uuid.UUID, proposer stri
 // a valid proposal for this memo under this proposer. Migration 0007's
 // proposals_invalid_iff_no_payload constraint holds the same line in the
 // database, so a future writer that forgets this comment still cannot break it.
-func (s *Store) SaveProposal(ctx context.Context, memoID, transcriptID uuid.UUID, proposer string, out scribe.Outcome) (Proposal, error) {
+func (s *Tier1Store) SaveProposal(ctx context.Context, memoID, transcriptID uuid.UUID, proposer string, out scribe.Outcome) (Proposal, error) {
 	if out.Proposal == nil {
 		return s.saveFailedProposal(ctx, memoID, transcriptID, proposer, out)
 	}
@@ -171,7 +213,7 @@ func (s *Store) SaveProposal(ctx context.Context, memoID, transcriptID uuid.UUID
 	return p, nil
 }
 
-func (s *Store) saveFailedProposal(ctx context.Context, memoID, transcriptID uuid.UUID, proposer string, out scribe.Outcome) (Proposal, error) {
+func (s *Tier1Store) saveFailedProposal(ctx context.Context, memoID, transcriptID uuid.UUID, proposer string, out scribe.Outcome) (Proposal, error) {
 	msg := ""
 	if out.Err != nil {
 		msg = out.Err.Error()
@@ -203,7 +245,15 @@ func (s *Store) saveFailedProposal(ctx context.Context, memoID, transcriptID uui
 // counter that only moved on a supersede would sit still while the bytes
 // changed, and the client's next accept would echo a generation that still
 // matched a payload that had moved. Same drift, different door.
-func (s *Store) BumpProposalGeneration(ctx context.Context, memoID uuid.UUID, proposer string, p *scribe.Proposal, cleared []scribe.ClearedField, status scribe.Status) (Proposal, error) {
+// cleared is APPENDED to whatever the write-time run already recorded, not
+// substituted for it. Review found the trace that makes the difference: a
+// proposal whose advisory nearest_page was cleared at write time, then accepted
+// two days later against an archived project, re-runs Reconcile on the STORED
+// payload — where NearestPage is already nil, so nothing re-reports it — and a
+// replace would drop the hallucination on the floor. 0007 states the column's
+// purpose as the hallucination rate CHRN-36 reports, and nearest_page is the
+// one field that rate is about.
+func (s *Tier1Store) BumpProposalGeneration(ctx context.Context, memoID uuid.UUID, proposer string, p *scribe.Proposal, cleared []scribe.ClearedField, status scribe.Status) (Proposal, error) {
 	payload, err := json.Marshal(p)
 	if err != nil {
 		return Proposal{}, fmt.Errorf("store: encode proposal payload: %w", err)
@@ -219,7 +269,7 @@ func (s *Store) BumpProposalGeneration(ctx context.Context, memoID uuid.UUID, pr
 		    SET generation     = generation + 1,
 		        status         = $3,
 		        payload        = $4,
-		        cleared_fields = $5
+		        cleared_fields = COALESCE(cleared_fields, '[]'::jsonb) || COALESCE($5::jsonb, '[]'::jsonb)
 		  WHERE memo_id = $1 AND proposer = $2
 		 RETURNING `+proposalColumns, memoID, proposer, status, payload, clearedJSON))
 	if err != nil && !errors.Is(err, ErrNotFound) {
@@ -255,7 +305,7 @@ var ScribeModelRank = []string{"small.en", "medium.en", "large-v3"}
 // correct answer rather than a gap: a memo whose only transcript is partial, or
 // came from a model this deployment has never measured, is a memo there is
 // nothing trustworthy to route from.
-func (s *Store) TranscriptForScribe(ctx context.Context, memoID uuid.UUID) (Transcript, error) {
+func (s *Tier1Store) TranscriptForScribe(ctx context.Context, memoID uuid.UUID) (Transcript, error) {
 	t, err := scanTranscript(s.pool.QueryRow(ctx,
 		`SELECT `+transcriptColumns+` FROM tier2.transcripts
 		  WHERE memo_id = $1 AND `+DurableClause+`

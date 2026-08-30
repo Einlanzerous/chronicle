@@ -148,6 +148,53 @@ func runServe(args []string) error {
 
 	st := store.New(pool)
 
+	// THE TIER-1 POOL (CHRN-32 §1.1, ruling R4). Derived work — Scribe now,
+	// CHRN-41's index later — reaches the database through this and not through
+	// `pool`, because migration 0007 grants chronicle_tier1 SELECT on
+	// tier2.memos and tier2.transcripts and no write anywhere in tier 2.
+	//
+	// Opened HERE rather than by the first ticket that calls Scribe, so that a
+	// wrong DSN is a boot-time complaint instead of a runtime one, and so the
+	// warning below can report what actually happened rather than what was
+	// configured.
+	tier1Pool := pool
+	if cfg.Tier1IsSeparate() {
+		tier1Pool, err = store.ConnectWithRetry(ctx, cfg.Tier1DatabaseURL, 30*time.Second)
+		if err != nil {
+			return fmt.Errorf("tier-1 pool: %w", err)
+		}
+		defer tier1Pool.Close()
+	}
+	// CHRN-30 hands this to the Scribe runner. It is built here so the DSN is
+	// validated at boot rather than at first use.
+	tier1 := store.NewTier1(tier1Pool)
+
+	// ASK THE DATABASE WHICH ROLE IT IS, rather than inferring it from whether a
+	// variable was set. The first version of this warning reported only that
+	// CHRONICLE_TIER1_DATABASE_URL had a value, so an operator who followed its
+	// own remedy and pointed it at the wrong DSN would silence the warning
+	// without moving the boundary — a config that changes nothing and looks
+	// like it worked. current_user cannot drift from the truth.
+	role, err := tier1.Role(ctx)
+	if err != nil {
+		return fmt.Errorf("tier-1 pool: %w", err)
+	}
+	switch {
+	case role == "chronicle_tier1":
+		logger.Info("derived writers are isolated", "role", role,
+			"reads", "tier2.memos, tier2.transcripts", "writes", "tier1 only")
+	case cfg.Tier1IsSeparate():
+		logger.Warn("CHRONICLE_TIER1_DATABASE_URL is set but connects as the wrong role, so the "+
+			"tier boundary is granted and nothing stands behind it",
+			"role", role, "want", "chronicle_tier1",
+			"remedy", "point CHRONICLE_TIER1_DATABASE_URL at a DSN for the chronicle_tier1 role")
+	default:
+		logger.Warn("CHRONICLE_TIER1_DATABASE_URL is unset: derived writers run as the main role, "+
+			"which can write tier 2. The tier boundary is granted and nothing stands behind it",
+			"role", role,
+			"remedy", "set CHRONICLE_TIER1_DATABASE_URL to a DSN for the chronicle_tier1 role")
+	}
+
 	// The owner row is seeded by migration 0002 with a placeholder identity;
 	// this is where CHRONICLE_OWNER_EMAIL / _NAME actually land, and where the
 	// first human gets a way in.
@@ -191,22 +238,6 @@ func runServe(args []string) error {
 	if !cfg.SecureCookies {
 		logger.Warn("CHRONICLE_COOKIE_SECURE is off: the session cookie will be sent over plain HTTP. " +
 			"This is only appropriate for a LAN install.")
-	}
-
-	// CHRN-32 §1.1, ruling R4. The tier-1 role exists so that derived writers
-	// -- Scribe, and later CHRN-41's index -- read the corpus and cannot write
-	// it, and migration 0007 grants exactly that. But a grant enforces nothing
-	// unless something connects on it: falling back to the main DSN means
-	// derived work runs as `chronicle`, which can write every tier-2 table.
-	//
-	// A warning and not a refusal, for the reason the fallback exists at all:
-	// a single-DSN deployment should keep working, and this lands ahead of the
-	// construct-server change that supplies the second one. CHRN-52 decides
-	// whether it may survive in production.
-	if !cfg.Tier1IsSeparate() {
-		logger.Warn("CHRONICLE_TIER1_DATABASE_URL is unset: derived writers will run as the main "+
-			"role, which can write tier 2. The tier boundary is granted but nothing stands behind it",
-			"remedy", "set CHRONICLE_TIER1_DATABASE_URL to a DSN for the chronicle_tier1 role")
 	}
 
 	var watcher *watch.Watcher

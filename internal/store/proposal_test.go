@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -14,6 +15,16 @@ import (
 )
 
 const testProposer = "ollama/gemma4:31b@v1"
+
+// derived builds the tier-1 surface over the test pool. Proposals are reached
+// through Tier1Store and never through Store, so the tests reach them the same
+// way production does.
+//
+// The pool here connects as `chronicle`, which is deliberate: these cases are
+// about the TYPE-level guarantee (there is no tier-2 write method to call) and
+// about the store's own logic. The ROLE-level guarantee has its own tests
+// above, against the real chronicle_tier1 DSN.
+func derived(s *Store) *Tier1Store { return NewTier1(s.Pool()) }
 
 // seedMemoWithTranscript gives a memo one durable transcript and returns both
 // ids, which is the state Scribe actually finds a memo in.
@@ -185,7 +196,7 @@ func TestSaveProposalSupersedesAndAdvancesTheGeneration(t *testing.T) {
 	s, ctx := newTestStore(t)
 	memoID, trID := seedMemoWithTranscript(t, s, ctx, strings.Repeat("c", 64), "whisper.cpp/small.en")
 
-	first, err := s.SaveProposal(ctx, memoID, trID, testProposer, validOutcome(0.5))
+	first, err := derived(s).SaveProposal(ctx, memoID, trID, testProposer, validOutcome(0.5))
 	if err != nil {
 		t.Fatalf("SaveProposal: %v", err)
 	}
@@ -193,7 +204,7 @@ func TestSaveProposalSupersedesAndAdvancesTheGeneration(t *testing.T) {
 		t.Fatalf("generation %d on a first write, want 1", first.Generation)
 	}
 
-	second, err := s.SaveProposal(ctx, memoID, trID, testProposer, validOutcome(0.9))
+	second, err := derived(s).SaveProposal(ctx, memoID, trID, testProposer, validOutcome(0.9))
 	if err != nil {
 		t.Fatalf("SaveProposal: %v", err)
 	}
@@ -217,7 +228,7 @@ func TestAFailedRerunNeverDisplacesAValidPayload(t *testing.T) {
 	s, ctx := newTestStore(t)
 	memoID, trID := seedMemoWithTranscript(t, s, ctx, strings.Repeat("d", 64), "whisper.cpp/small.en")
 
-	good, err := s.SaveProposal(ctx, memoID, trID, testProposer, validOutcome(0.86))
+	good, err := derived(s).SaveProposal(ctx, memoID, trID, testProposer, validOutcome(0.86))
 	if err != nil {
 		t.Fatalf("SaveProposal: %v", err)
 	}
@@ -227,7 +238,7 @@ func TestAFailedRerunNeverDisplacesAValidPayload(t *testing.T) {
 		Status: scribe.StatusInvalid,
 		Err:    errors.New("destination: must be one of [NOTE TICKET DISCUSSION DISCARD]"),
 	}
-	after, err := s.SaveProposal(ctx, memoID, trID, testProposer, failed)
+	after, err := derived(s).SaveProposal(ctx, memoID, trID, testProposer, failed)
 	if err != nil {
 		t.Fatalf("SaveProposal: %v", err)
 	}
@@ -262,7 +273,7 @@ func TestInvalidMeansNoRunHasEverSucceeded(t *testing.T) {
 	memoID, trID := seedMemoWithTranscript(t, s, ctx, strings.Repeat("e", 64), "whisper.cpp/small.en")
 
 	out := scribe.Outcome{Raw: []byte(`{}`), Status: scribe.StatusInvalid, Err: errors.New("empty")}
-	p, err := s.SaveProposal(ctx, memoID, trID, testProposer, out)
+	p, err := derived(s).SaveProposal(ctx, memoID, trID, testProposer, out)
 	if err != nil {
 		t.Fatalf("SaveProposal: %v", err)
 	}
@@ -280,12 +291,12 @@ func TestASuccessfulRunClearsAnEarlierFailure(t *testing.T) {
 	s, ctx := newTestStore(t)
 	memoID, trID := seedMemoWithTranscript(t, s, ctx, strings.Repeat("f", 64), "whisper.cpp/small.en")
 
-	_, err := s.SaveProposal(ctx, memoID, trID, testProposer,
+	_, err := derived(s).SaveProposal(ctx, memoID, trID, testProposer,
 		scribe.Outcome{Raw: []byte(`{}`), Status: scribe.StatusInvalid, Err: errors.New("empty")})
 	if err != nil {
 		t.Fatalf("SaveProposal: %v", err)
 	}
-	p, err := s.SaveProposal(ctx, memoID, trID, testProposer, validOutcome(0.7))
+	p, err := derived(s).SaveProposal(ctx, memoID, trID, testProposer, validOutcome(0.7))
 	if err != nil {
 		t.Fatalf("SaveProposal: %v", err)
 	}
@@ -303,7 +314,7 @@ func TestGenerationMovesWhenAcceptanceMutatesThePayload(t *testing.T) {
 	s, ctx := newTestStore(t)
 	memoID, trID := seedMemoWithTranscript(t, s, ctx, strings.Repeat("1", 64), "whisper.cpp/small.en")
 
-	before, err := s.SaveProposal(ctx, memoID, trID, testProposer, validOutcome(0.9))
+	before, err := derived(s).SaveProposal(ctx, memoID, trID, testProposer, validOutcome(0.9))
 	if err != nil {
 		t.Fatalf("SaveProposal: %v", err)
 	}
@@ -314,7 +325,7 @@ func TestGenerationMovesWhenAcceptanceMutatesThePayload(t *testing.T) {
 	mutated.ProjectKey = &empty
 	cleared := []scribe.ClearedField{{Field: "project_key", Value: "CHRN", Reason: "no such live Switchyard project"}}
 
-	after, err := s.BumpProposalGeneration(ctx, memoID, testProposer, &mutated, cleared, scribe.StatusNeedsInput)
+	after, err := derived(s).BumpProposalGeneration(ctx, memoID, testProposer, &mutated, cleared, scribe.StatusNeedsInput)
 	if err != nil {
 		t.Fatalf("BumpProposalGeneration: %v", err)
 	}
@@ -334,7 +345,7 @@ func TestGenerationMovesWhenAcceptanceMutatesThePayload(t *testing.T) {
 func TestAProposalCannotBeReattributed(t *testing.T) {
 	s, ctx := newTestStore(t)
 	memoID, trID := seedMemoWithTranscript(t, s, ctx, strings.Repeat("2", 64), "whisper.cpp/small.en")
-	if _, err := s.SaveProposal(ctx, memoID, trID, testProposer, validOutcome(0.5)); err != nil {
+	if _, err := derived(s).SaveProposal(ctx, memoID, trID, testProposer, validOutcome(0.5)); err != nil {
 		t.Fatalf("SaveProposal: %v", err)
 	}
 
@@ -349,10 +360,10 @@ func TestAProposalCannotBeReattributed(t *testing.T) {
 func TestGenerationMayNotDecrease(t *testing.T) {
 	s, ctx := newTestStore(t)
 	memoID, trID := seedMemoWithTranscript(t, s, ctx, strings.Repeat("3", 64), "whisper.cpp/small.en")
-	if _, err := s.SaveProposal(ctx, memoID, trID, testProposer, validOutcome(0.5)); err != nil {
+	if _, err := derived(s).SaveProposal(ctx, memoID, trID, testProposer, validOutcome(0.5)); err != nil {
 		t.Fatalf("SaveProposal: %v", err)
 	}
-	if _, err := s.SaveProposal(ctx, memoID, trID, testProposer, validOutcome(0.6)); err != nil {
+	if _, err := derived(s).SaveProposal(ctx, memoID, trID, testProposer, validOutcome(0.6)); err != nil {
 		t.Fatalf("SaveProposal: %v", err)
 	}
 
@@ -370,7 +381,7 @@ func TestAnUnqualifiedProposerIsRefused(t *testing.T) {
 	memoID, trID := seedMemoWithTranscript(t, s, ctx, strings.Repeat("4", 64), "whisper.cpp/small.en")
 
 	for _, bad := range []string{"gemma4:31b", "ollama/gemma4:31b", "gemma4:31b@v1"} {
-		_, err := s.SaveProposal(ctx, memoID, trID, bad, validOutcome(0.5))
+		_, err := derived(s).SaveProposal(ctx, memoID, trID, bad, validOutcome(0.5))
 		if err == nil {
 			t.Errorf("proposer %q was accepted; it names no runner or no prompt version", bad)
 		}
@@ -408,7 +419,7 @@ func TestTranscriptForScribePrefersQualityOverRecency(t *testing.T) {
 	}
 
 	// Scribe picks the best.
-	got, err := s.TranscriptForScribe(ctx, memoID)
+	got, err := derived(s).TranscriptForScribe(ctx, memoID)
 	if err != nil {
 		t.Fatalf("TranscriptForScribe: %v", err)
 	}
@@ -441,7 +452,80 @@ func TestTranscriptForScribeRefusesWhatTheFloorRefuses(t *testing.T) {
 		t.Fatalf("RecordTranscript: %v", err)
 	}
 
-	if _, err := s.TranscriptForScribe(ctx, res.Memo.ID); !errors.Is(err, ErrNotFound) {
+	if _, err := derived(s).TranscriptForScribe(ctx, res.Memo.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound — base.en is below the floor the pruner shares", err)
+	}
+}
+
+// END TO END ON THE REAL ROLE: the grant has to cover the table Scribe writes,
+// not only the two it reads. A migration that granted the tier-2 reads and
+// forgot tier1.memo_proposals would pass every other test in this file and fail
+// the first time Scribe ran.
+//
+// It also demonstrates the shape production takes: one Tier1Store, connected as
+// chronicle_tier1, reading a transcript and writing a proposal.
+func TestTier1RoleCanRunScribeEndToEnd(t *testing.T) {
+	s, ctx := newTestStore(t)
+	memoID, trID := seedMemoWithTranscript(t, s, ctx, strings.Repeat("7", 64), "whisper.cpp/small.en")
+
+	pool := tier1Pool(t, ctx)
+	defer pool.Close()
+	t1 := NewTier1(pool)
+
+	if _, err := t1.TranscriptForScribe(ctx, memoID); err != nil {
+		t.Fatalf("chronicle_tier1 could not read the transcript to route from: %v", err)
+	}
+	p, err := t1.SaveProposal(ctx, memoID, trID, testProposer, validOutcome(0.86))
+	if err != nil {
+		t.Fatalf("chronicle_tier1 could not write a proposal: %v", err)
+	}
+	if p.Status != scribe.StatusValid || p.Payload == nil {
+		t.Fatalf("proposal did not land: %+v", p)
+	}
+}
+
+// The append rule. A proposal whose advisory page was cleared at write time and
+// whose project is archived by acceptance must end up carrying BOTH clearings —
+// re-running Reconcile on the stored payload cannot re-report the first, since
+// the field it complained about is already gone, so a replace would drop the
+// hallucination CHRN-36's rate is about.
+func TestClearedFieldsAccumulateAcrossBothStageTwoRuns(t *testing.T) {
+	s, ctx := newTestStore(t)
+	memoID, trID := seedMemoWithTranscript(t, s, ctx, strings.Repeat("8", 64), "whisper.cpp/small.en")
+
+	// Write time: the model invented a page, which was cleared without blocking.
+	out := validOutcome(0.9)
+	out.Cleared = []scribe.ClearedField{
+		{Field: "nearest_page", Value: "storage/amber", Reason: "no such page in the live catalogue"},
+	}
+	if _, err := derived(s).SaveProposal(ctx, memoID, trID, testProposer, out); err != nil {
+		t.Fatalf("SaveProposal: %v", err)
+	}
+
+	// Acceptance, two days later: the project has been archived.
+	stored, err := derived(s).GetProposal(ctx, memoID, testProposer)
+	if err != nil {
+		t.Fatalf("GetProposal: %v", err)
+	}
+	mutated := *stored.Payload
+	empty := ""
+	mutated.ProjectKey = &empty
+	after, err := derived(s).BumpProposalGeneration(ctx, memoID, testProposer, &mutated,
+		[]scribe.ClearedField{{Field: "project_key", Value: "CHRN", Reason: "no such live Switchyard project"}},
+		scribe.StatusNeedsInput)
+	if err != nil {
+		t.Fatalf("BumpProposalGeneration: %v", err)
+	}
+
+	if len(after.Cleared) != 2 {
+		t.Fatalf("cleared_fields = %+v, want both clearings — the write-time one is what "+
+			"CHRN-36's hallucination rate counts", after.Cleared)
+	}
+	var fields []string
+	for _, c := range after.Cleared {
+		fields = append(fields, c.Field)
+	}
+	if !slices.Contains(fields, "nearest_page") || !slices.Contains(fields, "project_key") {
+		t.Fatalf("cleared fields %v, want nearest_page and project_key", fields)
 	}
 }
