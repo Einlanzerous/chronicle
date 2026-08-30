@@ -2,8 +2,10 @@ package asr
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -196,5 +198,77 @@ func TestBackendAnnouncementWarnsWhenNoDeviceIsNamed(t *testing.T) {
 
 	if !strings.Contains(buf.String(), "may be running on the CPU") {
 		t.Fatalf("a startup that named no device was not flagged:\n%s", buf.String())
+	}
+}
+
+// EVERY ADVERTISED MEDIA TYPE MUST ACTUALLY DECODE. Two sets are supposed to be
+// one set — what GET /v1/models says it accepts, and what decodeToWAV can read
+// — and until CHRN-84 nothing checked that they were.
+//
+// audio/wav was advertised and failed 100% of the time. It stages as in.wav,
+// the decode output was also in.wav, and ffmpeg will not write over its own
+// input: "Output ... same as Input #0 - exiting". It reached a release because
+// only wav collides — .ogg, .webm, .mp3 and .m4a all differ from the output's
+// name — and it was silent in the field because decode_failed is terminal, so
+// the memo never retried and never came back. A .wav in the CHRN-19 inbox is
+// ordinary, not exotic.
+//
+// THE LOOP IS OVER AcceptedMediaTypes, not over a list written here. Adding a
+// type to the advertised set without teaching this test to build one fails
+// loudly rather than quietly widening the contract by one untested container.
+func TestEveryAdvertisedMediaTypeDecodes(t *testing.T) {
+	ffmpegBin, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg is not on PATH; the image always has it")
+	}
+
+	// One second of audio in each advertised container. Keyed by media type so
+	// that a new entry in AcceptedMediaTypes has to land here too.
+	recipes := map[string]struct{ ext, codec string }{
+		"audio/ogg":  {".ogg", "libopus"},
+		"audio/webm": {".webm", "libopus"},
+		"audio/mpeg": {".mp3", "libmp3lame"},
+		"audio/mp4":  {".m4a", "aac"},
+		"audio/wav":  {".wav", "pcm_s16le"},
+	}
+
+	for _, mediaType := range AcceptedMediaTypes {
+		t.Run(mediaType, func(t *testing.T) {
+			recipe, ok := recipes[mediaType]
+			if !ok {
+				t.Fatalf("%s is advertised in AcceptedMediaTypes and this test cannot build one. "+
+					"Either add a recipe or stop advertising the type — the two sets are the "+
+					"same set, which is the whole point of this test", mediaType)
+			}
+
+			sample := filepath.Join(t.TempDir(), "sample"+recipe.ext)
+			gen := exec.Command(ffmpegBin, "-y", "-hide_banner", "-loglevel", "error",
+				"-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+				"-ac", "1", "-c:a", recipe.codec, sample)
+			if out, err := gen.CombinedOutput(); err != nil {
+				t.Skipf("this ffmpeg build cannot encode %s: %v: %s", recipe.codec, err, out)
+			}
+			audio, err := os.ReadFile(sample)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// A directory of its own, exactly as the worker hands one over —
+			// staged input and decode output share it, which is what made the
+			// collision reachable.
+			wav, durationMs, err := decodeToWAV(context.Background(), ffmpegBin, t.TempDir(), audio, mediaType)
+			if err != nil {
+				t.Fatalf("%s is advertised as accepted and did not decode: %v", mediaType, err)
+			}
+			// One second in, one second out, give or take the padding a lossy
+			// encoder adds. That it decoded at all is the claim here; the exact
+			// figure is wavDurationMs's business and is tested above.
+			if durationMs < 900 || durationMs > 1300 {
+				t.Fatalf("%s decoded to %d ms, want roughly 1000", mediaType, durationMs)
+			}
+			if _, err := os.Stat(wav); err != nil {
+				t.Fatalf("the decode reported success and left no file behind: %v", err)
+			}
+		})
 	}
 }
