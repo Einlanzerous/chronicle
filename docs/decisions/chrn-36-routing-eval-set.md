@@ -267,12 +267,49 @@ eval set as reference data.
 Found by reading the corpus, and both would otherwise be scored as router
 failures for doing the only thing they can.
 
-**Cross-references.** At least four memos refer to other memos — *"this is
-probably an add-on to the smart calendar"*, *"building off the city Maps
-thing"*, *"I reference that in that calendar note too"*. CHRN-32's contract lets
-a NOTE name a `page_path`, but there is no append-versus-create distinction and
-nothing resolves "the smart calendar one" to a prior memo. The router cannot
-express what these memos are.
+**An idea arriving in more than one pass.** At least four memos refer back to
+earlier thinking — *"this is probably an add-on to the smart calendar"*,
+*"building off the city Maps thing"*, *"I reference that in that calendar note
+too"*.
+
+The first draft of this section called these "cross-references" and said nothing
+resolves *"the smart calendar one"* to a **prior memo**. That framing was wrong,
+and magos corrected it: **the target is a page in the corpus, not a memo.** Memos
+are captures; notes are the durable thing. So the question is never "which memo
+did you mean" — it is *which page does this belong to, and what should it do to
+what is already there?*
+
+And the shape that matters is not linking. It is **an idea getting richer over
+time**: a vague high-level thought, then a trade-show conversation, a video, a
+session with Claude, and a second memo carrying a far more concrete version of
+the same idea. What should happen to the first note is a real question with more
+than one defensible answer — append, supersede, or stand beside it as something
+related.
+
+Which means the missing piece is a **verb**, not a reference. CHRN-32's contract
+already carries `page_path`, and §6 of that decision already allows it to name a
+page that does not exist yet. What it cannot say is *create* versus *append*
+versus *supersede*.
+
+**That verb is not this ticket's to define, and deliberately not CHRN-32's
+either.** It belongs to **CHRN-39** (append-only revisions and soft delete),
+which is Mode C precisely because it governs what may happen to authored text —
+its own description already names the hazard: *"the revision log is what makes
+that recoverable when the model does something confidently wrong at 3 a.m."* An
+auto-append to the wrong note is that failure exactly. Resolving a memo to a
+candidate page additionally needs retrieval over the corpus, which is
+**CHRN-41**.
+
+The safety rule follows from the epic's own thesis and should not wait for
+either ticket: **Scribe proposes a target and a verb; a person confirms. Nothing
+appends to authored text unattended.**
+
+**One consequence for §3's labels.** The proposed destinations for these four
+are provisional in a deeper way than the others. *At a Glance* is labelled
+`TICKET`, but if the corpus can express "append to the Smart Calendar page" it
+may well be a `NOTE` with a verb — and the honest answer is that its correct
+label depends on a capability that does not exist. That is what `unhandled:`
+records, and it is why these four are scored apart rather than counted wrong.
 
 **Dedup against existing work.** *Home SRE Agent* opens *"I think I've talked
 about it, but I'm pretty sure I don't have a ticket for it."* That is a memo
