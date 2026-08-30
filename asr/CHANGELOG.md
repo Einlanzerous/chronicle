@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/Einlanzerous/chronicle/compare/asr-v0.1.0...asr-v0.1.1) (2026-08-30)
+
+
+### Bug Fixes
+
+* **asr:** decode wav by not overwriting its own input (CHRN-84) ([#39](https://github.com/Einlanzerous/chronicle/issues/39)) ([2a1cb88](https://github.com/Einlanzerous/chronicle/commit/2a1cb887e28a1b7233e7d138bf5a02615e4fc28b))
+
 ## 0.1.0 (2026-08-29)
 
 
