@@ -46,10 +46,105 @@ jobs:
           # The job's own token. Publishing needs no secret of its own — that is
           # what `permissions: packages: write` above is for.
           password: ${{ secrets.GITHUB_TOKEN }}
+      - id: ver
+        # Resolve, ONCE and from the ref, the version this build may claim.
+        # The shape purser and lyceum share (SERV-154, LYCM-121).
+        #
+        # `stamp` is the version `type=semver` below will put in the image's
+        # org.opencontainers.image.version label — on a RELEASE. The binary is
+        # stamped from this and the label comes from the same condition, so
+        # `chronicle version` and the label agree by construction there. The
+        # delivery ledger compares them with STRICT EQUALITY, and a disagreement
+        # is a permanently unresolvable row.
+        #
+        # It is NOT "empty means no label". metadata-action emits
+        # org.opencontainers.image.version unconditionally, from the
+        # highest-priority tag that matched, so on a main build the label says
+        # the moving tag `latest` while the binary honestly reports `dev`. Those
+        # two do not agree and are not meant to: `latest` is not an identity, and
+        # the ledger would file it as a mismatch if it ever observed :latest. The
+        # by-construction claim is about the release path, which is the one the
+        # ledger is comparing.
+        #
+        # `on.push.tags: ["v*"]` accepts more than releases, so `ref_type ==
+        # 'tag'` is not the same test as "this has a version":
+        #
+        #   (push to main)  -> ""            no version to claim -> `dev`
+        #   v1.4.0          -> 1.4.0         a release
+        #   v1.5.0-rc.1     -> 1.5.0-rc.1    prerelease. type=semver DOES match
+        #                                    and labels the image, so the binary
+        #                                    must say the same thing. Rejecting
+        #                                    it would stamp `dev` into an image
+        #                                    labelled 1.5.0-rc.1.
+        #   vnext           -> ""            not semver; type=semver does not
+        #                                    match, so there is no label to
+        #                                    agree with, and :sha-<short> below
+        #                                    turns back on so the build still
+        #                                    has a tag to push.
+        #
+        # NOTE: publish-asr.yml answers this same point by REJECTING a
+        # non-conforming tag outright, and that is right there rather than here
+        # because it captures its version with an unanchored `type=match` — its
+        # validator and its tag pattern have to agree exactly. This file uses
+        # `type=semver`, which matches prereleases on its own, so a validator
+        # that rejected them would forbid a tag metadata-action would happily
+        # label. Same bug, two tag schemes, two correct answers.
+        #
+        # Inputs arrive by env, not by ${{ }} interpolation into the script: a
+        # run block that pastes a ref name inline executes whatever it contains.
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          stamp=""
+          # The SemVer 2.0.0 regex from semver.org, translated to POSIX ERE
+          # (`(?:` -> `(`, `\d` -> `[0-9]`), because this has to agree with
+          # node-semver EXACTLY and a looser pattern reopens the bug in a
+          # narrower band: a shape this accepts but `semver.valid()` rejects sets
+          # `stamp`, which turns the :sha-<short> fallback OFF, while
+          # metadata-action emits no tag at all — and build-push-action cannot
+          # push an empty tag list. `v01.2.3`, `v1.02.3`, `v1.2.3-01`,
+          # `v1.2.3-a..b` and `v1.2.3+a..b` are all in that band for the obvious
+          # `[0-9]+\.[0-9]+\.[0-9]+` version of this. Leading zeros in a numeric
+          # identifier and empty dot-separated identifiers are the two rules that
+          # do the work.
+          SEMVER='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$'
+          if [ "$REF_TYPE" = tag ]; then
+            candidate="${REF_NAME#v}"
+            if printf '%s' "$candidate" | grep -qE "$SEMVER"; then
+              # Build metadata is dropped rather than stamped. A Docker tag cannot
+              # contain `+`, so metadata-action emits `1.2.3` for `v1.2.3+build.5`
+              # — stamping the `+build.5` form would disagree with the label it is
+              # compared against.
+              stamp="${candidate%%+*}"
+            else
+              echo "::warning::tag $REF_NAME is not semver; publishing :sha-<short> and stamping no version"
+            fi
+          fi
+          echo "stamp=$stamp" >> "$GITHUB_OUTPUT"
       - id: meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/einlanzerous/chronicle
+          # SERV-154. `latest=auto` (the default) emits :latest BY ITSELF on any
+          # type=semver match, independently of the type=raw entry below. A
+          # release commit is pushed to main AND then tagged, so BOTH runs of
+          # this workflow published :latest — the main build (VERSION blank,
+          # binary reporting `dev`) and the tag build (VERSION the bare semver).
+          # Two runs, two digests, one moving tag, no ordering between them; the
+          # runner that finished last won. It fired on purser with the bad
+          # outcome (SERV-108), and this file's header has always said what the
+          # contract is — "`main` publishes :latest ... release-please's v* tags
+          # publish the semver tags" — so `latest=auto` was a deviation from the
+          # documented behaviour rather than a second opinion about it.
+          #
+          # With latest=false the type=raw line is the ONLY thing that can emit
+          # :latest. One writer: the main build, always. Polarity matches
+          # publish-asr.yml, which took the same answer for the same reason; the
+          # estate-wide question is still open (see SERV-154's note on SERV-108).
+          flavor: |
+            latest=false
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             # is_default_branch, NOT the default `enable=true`. Release-please
@@ -62,7 +157,12 @@ jobs:
             # failure the VERSION comment below exists to prevent, arriving by a
             # different door. compose reads ${CHRONICLE_TAG:-latest}, so pinning
             # a sha tag is expected usage rather than hypothetical.
-            type=sha,format=short,enable={{is_default_branch}}
+            # Gated on the VALIDATED version rather than on is_default_branch:
+            # the two agree on main (stamp empty) and on a release (stamp set),
+            # and differ only on a hand-cut non-semver tag — where
+            # is_default_branch left NO tags at all (raw off, sha off, type=semver
+            # no match) and build-push-action cannot push an empty tag list.
+            type=sha,format=short,enable=${{ steps.ver.outputs.stamp == '' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
       - uses: docker/build-push-action@v6
@@ -74,23 +174,29 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           # Build identity, read back by `chronicle version` and /healthz.
           #
-          # VERSION is passed ONLY on a tag build. On a push to main
-          # `steps.meta.outputs.version` is the literal string `latest`, and
-          # `latest` names a moving target rather than a build: stamping it
-          # would put "latest" into the delivery ledger as an identity, to be
-          # compared against whatever the image label says and disagree for
-          # ever. Blank instead, which cmd/chronicle's buildVersion() maps to
-          # "dev" — the honest answer for a build no release cut. Note the
-          # Dockerfile defaults both ARGs to empty for the same reason: an image
-          # built outside this workflow must not be able to claim a release.
+          # VERSION is the validated `stamp` from the `ver` step, NOT
+          # `steps.meta.outputs.version`. That output is just the highest-
+          # priority tag that matched, so it silently becomes `latest` or
+          # `sha-<short>` depending on which entries above fired — and stamping
+          # either puts a moving tag into the delivery ledger as an identity, to
+          # be compared against whatever the image label says and disagree for
+          # ever. `github.ref_type == 'tag'` was the guard that kept `latest` out
+          # of it, and it let `sha-<short>` in by the other door: on a non-semver
+          # tag it is true, and `version` is then the sha tag.
           #
-          # On a tag build metadata-action's `version` output is the BARE semver
-          # (`0.2.0`), matching the image label character for character.
+          # On a push to main `stamp` is the empty string, which cmd/chronicle's
+          # buildVersion() maps to "dev" — the honest answer for a build no
+          # release cut. Note the Dockerfile defaults both ARGs to empty for the
+          # same reason: an image built outside this workflow must not be able to
+          # claim a release.
+          #
+          # On a release `stamp` is the BARE semver (`1.4.0`), matching the image
+          # label character for character. That agreement is the whole point.
           #
           # GIT_SHA is passed on both paths — a main build has a real commit and
           # should say so, it just has no release to name.
           build-args: |
-            VERSION=${{ github.ref_type == 'tag' && steps.meta.outputs.version || '' }}
+            VERSION=${{ steps.ver.outputs.stamp }}
             GIT_SHA=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
