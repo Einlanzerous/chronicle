@@ -1,6 +1,8 @@
 # CHRN-36 — The routing eval set, and what a score is allowed to mean (decision)
 
-Status: **proposed 2026-08-30.** Four rulings open at the end.
+Status: **accepted 2026-08-30**, all four rulings at their recommendations.
+R3's stated reason was corrected before acceptance — see the ruling; its
+conclusion is magos's and stands, the premise it originally rested on did not.
 Ticket: CHRN-36 (Phase P2, parent CHRN-4). Tier `opus`, so Mode B: this document
 is the review artefact and the PR that follows it is mechanical.
 Decision owner: magos.
@@ -297,10 +299,14 @@ covers. The drill must name it, or a restore quietly drops the control. (That is
 a requirement CHRN-68 inherits if this section is accepted, and is recorded
 there at that point, not before.)
 
-Right now that text exists only inside Google Recorder — an external service
-that owes it nothing. **Capturing it out is this section's time-sensitive act**,
-and it outranks the prune deadline: the control needs the two texts, not the
-audio, so once Google's is home the control survives 2026-09-29. What does not
+Capturing that text out of Google Recorder — an external service that owes it
+nothing — was this section's time-sensitive act, and **it is done**: all
+seventeen were exported with the audio on 2026-08-30 and placed in the home
+above, keyed by `content_hash`, 80 KB in total.
+
+It outranked the prune deadline and no longer competes with it: the control
+needs the two *texts*, not the audio, and whisper's half is tier 2 and
+permanent. So **the control now survives 2026-09-29 outright.** What does not
 survive it is re-transcription — see *What this does not decide*.
 
 ## 7 · Two cases the contract does not handle, labelled as such
@@ -448,11 +454,31 @@ answer is coherent where the middle is not:
   to match: §3's two rows and this ruling's own parentheticals reduce to their
   hashes.
 
-Recommendation: **the first — commit the labels.** The repo is private, the
-descriptive sentence already exists in a committed decision doc, and §6's
-correction keeps the actual transcript text out of git under either ruling. If
-the repo's audience ever widens the scrub has to happen then regardless, and it
-is two rows and two parentheticals in both worlds.
+Recommendation: **the first — commit the labels.**
+
+**[rev 2] The first version of this recommendation opened "The repo is private."
+It is not.** `Einlanzerous/chronicle` is public, so the descriptive sentences
+were already world-readable in this PR's diff before the ruling was settled, and
+the branch's history keeps them reachable by SHA whatever is edited later — a
+scrub decides future exposure, not past.
+
+**The conclusion survives the correction and is magos's, taken 2026-08-30 with
+the true premise in front of him:** the exposure is topic-level — no health
+detail, no dates, no identifiers — and not worth the asymmetry the alternative
+buys. Recorded this way round because a decision document is read for its
+reasons, and the next reader must not inherit "the repo is private" as an
+estate fact.
+
+The rest of the original reasoning is unaffected and still holds: the
+descriptive sentence already exists in this document either way, §6's correction
+keeps the actual transcript text out of git under both rulings, and the scrub is
+two rows and two parentheticals in both worlds.
+
+**One thing it does change, and in this document's favour.** §1 argued the
+transcripts stay out of git from the tier doctrine alone. A world-readable repo
+is a second, independent argument for the same line — and it makes §6's
+correction load-bearing rather than tidy, since "beside the eval set" would have
+carried the full text of every real memo into a public repository.
 
 **R4 · Does the threshold ship at all if calibration is flat?** Recommendation:
 **no — leave `CHRONICLE_SCRIBE_PREACCEPT_MIN` at its 1.01 default, which admits
