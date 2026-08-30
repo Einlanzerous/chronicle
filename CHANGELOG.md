@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.5.0](https://github.com/Einlanzerous/chronicle/compare/v1.4.0...v1.5.0) (2026-08-30)
+
+
+### Features
+
+* **scribe:** the proposal contract, and the grant that lets tier 1 read its own corpus (CHRN-32) ([#42](https://github.com/Einlanzerous/chronicle/issues/42)) ([f6f30a9](https://github.com/Einlanzerous/chronicle/commit/f6f30a910823dd107f7331fe4ba673fe077b9316))
+
+
+### Bug Fixes
+
+* **asr:** decode wav by not overwriting its own input (CHRN-84) ([#39](https://github.com/Einlanzerous/chronicle/issues/39)) ([2a1cb88](https://github.com/Einlanzerous/chronicle/commit/2a1cb887e28a1b7233e7d138bf5a02615e4fc28b))
+* **publish:** one writer for :latest, and gate the sha tag on a validated version (SERV-154) ([#37](https://github.com/Einlanzerous/chronicle/issues/37)) ([4e4f732](https://github.com/Einlanzerous/chronicle/commit/4e4f7328029d13a1ed551c5a6eb1efe614c64d7e))
+
+
+### Maintenance
+
+* **main:** release asr 0.1.1 ([#41](https://github.com/Einlanzerous/chronicle/issues/41)) ([086acf8](https://github.com/Einlanzerous/chronicle/commit/086acf8d2540d85102ae1de686561c502f8841c2))
+
 ## [1.4.0](https://github.com/Einlanzerous/chronicle/compare/v1.3.0...v1.4.0) (2026-08-29)
 
 
