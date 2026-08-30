@@ -95,10 +95,22 @@ func TestMigrateRoundTrip(t *testing.T) {
 	}
 }
 
-// TestTierRoleCannotReachTier2 is the doctrine, asserted. CHRN-52 owns the
-// full isolation proof; this is the cheap version that fails the moment a
-// grant is loosened.
-func TestTierRoleCannotReachTier2(t *testing.T) {
+// TestTierRoleGrantsAreExactlyWhatWasDecided is the doctrine, asserted. CHRN-52
+// owns the full isolation proof; this is the cheap version that fails the moment
+// a grant moves without a decision behind it — which is precisely what it did
+// when 0007 landed, and why it is worth having.
+//
+// IT USED TO ASSERT NO USAGE ON tier2 AT ALL. CHRN-32's ruling R4 changed that
+// deliberately: CLAUDE.md defines tier 1 to include what Chronicle "derives from
+// its own corpus", every example of which derives from tier 2, so a role with no
+// read on tier 2 could not implement the definition. 0007 grants USAGE on the
+// schema plus SELECT on two named tables.
+//
+// The doctrine is unmoved, because the doctrine is about WRITES. So the table
+// below now pins the shape of the compromise rather than a flat denial: schema
+// USAGE yes, schema CREATE no, and — the part that stops this becoming a
+// rubber stamp — no write privilege on either table, on any table.
+func TestTierRoleGrantsAreExactlyWhatWasDecided(t *testing.T) {
 	dsn := testDSN(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -119,7 +131,10 @@ func TestTierRoleCannotReachTier2(t *testing.T) {
 	}{
 		{"tier1", "USAGE", true},
 		{"tier1", "CREATE", true},
-		{"tier2", "USAGE", false},
+		// R4. Reading the corpus is what a derived writer is for.
+		{"tier2", "USAGE", true},
+		// And nothing more than reading it. CREATE would let a tier-1 process
+		// add a tier-2 table and then own it outright.
 		{"tier2", "CREATE", false},
 		{"public", "CREATE", false},
 	} {
@@ -132,6 +147,44 @@ func TestTierRoleCannotReachTier2(t *testing.T) {
 		}
 		if got != tc.want {
 			t.Errorf("chronicle_tier1 %s on %s = %v, want %v", tc.priv, tc.schema, got, tc.want)
+		}
+	}
+
+	// Schema USAGE on its own grants nothing on a table, so the assertions
+	// above would still pass if 0007 had handed over every privilege on every
+	// table. THIS is the part that fails when a grant is loosened.
+	for _, tc := range []struct {
+		table string
+		priv  string
+		want  bool
+	}{
+		{"tier2.memos", "SELECT", true},
+		{"tier2.transcripts", "SELECT", true},
+
+		// Not granted, and the standing proof that 0007 used no ALTER DEFAULT
+		// PRIVILEGES: a tier-2 table it did not name is unreachable, so one
+		// added tomorrow stays unreachable until somebody decides otherwise.
+		{"tier2.memo_arrivals", "SELECT", false},
+		{"tier2.users", "SELECT", false},
+		{"tier2.user_tokens", "SELECT", false},
+
+		// The line itself, on the two tables that ARE readable.
+		{"tier2.memos", "INSERT", false},
+		{"tier2.memos", "UPDATE", false},
+		{"tier2.memos", "DELETE", false},
+		{"tier2.transcripts", "INSERT", false},
+		{"tier2.transcripts", "UPDATE", false},
+		{"tier2.transcripts", "DELETE", false},
+	} {
+		var got bool
+		err := pool.QueryRow(ctx,
+			`SELECT has_table_privilege('chronicle_tier1', $1, $2)`,
+			tc.table, tc.priv).Scan(&got)
+		if err != nil {
+			t.Fatalf("has_table_privilege(%s, %s): %v", tc.table, tc.priv, err)
+		}
+		if got != tc.want {
+			t.Errorf("chronicle_tier1 %s on %s = %v, want %v", tc.priv, tc.table, got, tc.want)
 		}
 	}
 }

@@ -193,6 +193,22 @@ func runServe(args []string) error {
 			"This is only appropriate for a LAN install.")
 	}
 
+	// CHRN-32 §1.1, ruling R4. The tier-1 role exists so that derived writers
+	// -- Scribe, and later CHRN-41's index -- read the corpus and cannot write
+	// it, and migration 0007 grants exactly that. But a grant enforces nothing
+	// unless something connects on it: falling back to the main DSN means
+	// derived work runs as `chronicle`, which can write every tier-2 table.
+	//
+	// A warning and not a refusal, for the reason the fallback exists at all:
+	// a single-DSN deployment should keep working, and this lands ahead of the
+	// construct-server change that supplies the second one. CHRN-52 decides
+	// whether it may survive in production.
+	if !cfg.Tier1IsSeparate() {
+		logger.Warn("CHRONICLE_TIER1_DATABASE_URL is unset: derived writers will run as the main "+
+			"role, which can write tier 2. The tier boundary is granted but nothing stands behind it",
+			"remedy", "set CHRONICLE_TIER1_DATABASE_URL to a DSN for the chronicle_tier1 role")
+	}
+
 	var watcher *watch.Watcher
 	var uploads *upload.Service
 	var pruner *retention.Pruner

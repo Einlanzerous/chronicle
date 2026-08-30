@@ -584,10 +584,31 @@ func TestAuthorWithMemosCannotBeDeleted(t *testing.T) {
 	}
 }
 
-// Done when #12: the tier-1 role cannot read the corpus. CHRN-71 proved this
-// for credentials; this extends it to the table that actually holds what people
-// said. Skips without a tier-1 DSN rather than passing vacuously.
-func TestTier1RoleCannotReachMemos(t *testing.T) {
+// CHRN-18's Done-when #12 said "the tier-1 role cannot read the corpus", and
+// CHRN-32's ruling R4 SUPERSEDES THAT by decision, so this test now asserts the
+// line that replaced it rather than the one it was written for.
+//
+// Why the old line could not survive: CLAUDE.md defines tier 1 to include
+// "whatever Chronicle derives from its own corpus -- Scribe proposals,
+// extracted entities, search indexes", and all three derive FROM tier 2. A
+// tier-1 role that cannot read tier 2 makes the second half of tier 1's own
+// definition unimplementable. Migration 0007 grants SELECT on tier2.memos and
+// tier2.transcripts, and nothing else.
+//
+// The invariant is untouched, because the invariant is about writes: "no tier-1
+// write path can reach a tier-2 table". So this test now proves three things
+// where it used to prove one:
+//
+//  1. memos is READABLE           -- R4's grant is actually applied
+//  2. memos is NOT WRITABLE       -- the line, unchanged
+//  3. memo_arrivals is UNREACHABLE -- the grant is two tables and not a schema
+//
+// (3) is the one that would rot silently. 0007 deliberately uses no ALTER
+// DEFAULT PRIVILEGES, so a tier-2 table added later stays unreadable until
+// somebody grants it by name; memo_arrivals is the standing proof of that.
+//
+// Skips without a tier-1 DSN rather than passing vacuously.
+func TestTier1RoleReadsTheCorpusAndCannotWriteIt(t *testing.T) {
 	s, ctx := newTestStore(t)
 	author := newAuthor(t, s, ctx, "tier@x")
 	if _, err := s.IngestMemo(ctx, Arrival{
@@ -628,18 +649,29 @@ func TestTier1RoleCannotReachMemos(t *testing.T) {
 		t.Fatal("chronicle_tier1 cannot reach its own schema; the grants in 0001 are not applied")
 	}
 
-	// Every probe scans into `any`, so the refusal cannot come from a type
-	// mismatch instead of from privileges.
+	// (1) R4's grant. Scribe joins these two to find what to route, so a
+	// failure here is Scribe unable to run at all.
 	for _, q := range []string{
 		`SELECT count(*) FROM tier2.memos`,
 		`SELECT content_hash FROM tier2.memos LIMIT 1`,
+	} {
+		var got any
+		if err := pool.QueryRow(ctx, q).Scan(&got); err != nil {
+			t.Errorf("chronicle_tier1 could not run %q: %v — R4's grant is not applied", q, err)
+		}
+	}
+
+	// (3) And the grant stops at two tables. Every probe scans into `any`, so
+	// the refusal cannot come from a type mismatch instead of from privileges.
+	for _, q := range []string{
 		`SELECT count(*) FROM tier2.memo_arrivals`,
 		`SELECT idempotency_key FROM tier2.memo_arrivals LIMIT 1`,
 	} {
 		var got any
 		err := pool.QueryRow(ctx, q).Scan(&got)
 		if err == nil {
-			t.Errorf("chronicle_tier1 executed %q; the corpus is reachable from a tier-1 path", q)
+			t.Errorf("chronicle_tier1 executed %q; 0007 granted a schema where it should have "+
+				"granted two tables", q)
 			continue
 		}
 		// "relation does not exist" would also be non-nil, and would mean this
@@ -649,14 +681,19 @@ func TestTier1RoleCannotReachMemos(t *testing.T) {
 		}
 	}
 
-	// A tier-1 path must not be able to WRITE either. Reading is the sharper
-	// assertion, but doctrine is about write paths reaching tier-2 tables.
+	// (2) THE LINE. Doctrine is about write paths reaching tier-2 tables, and
+	// this is the assertion R4 was argued to leave untouched.
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO tier2.memos (author_id, content_hash, byte_size) VALUES ($1, $2, 1)`,
 		author, hashOf("forged")); err == nil {
 		t.Error("chronicle_tier1 wrote a memo; a tier-1 path reached a tier-2 table")
 	} else if !strings.Contains(err.Error(), "permission denied") {
 		t.Errorf("tier-1 write failed with %v; want a permission denial", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE tier2.memos SET state = 'triaged'`); err == nil {
+		t.Error("chronicle_tier1 marked a memo triaged; the acceptance is a tier-2 write and " +
+			"a router must not be able to make it")
 	}
 	_ = s
 }
