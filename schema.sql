@@ -47,6 +47,41 @@ COMMENT ON SCHEMA tier2 IS 'Tier 2 - authored and irreplaceable. What a person s
 
 
 --
+-- Name: memo_proposals_guard(); Type: FUNCTION; Schema: tier1; Owner: -
+--
+
+CREATE FUNCTION tier1.memo_proposals_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF TG_OP = 'UPDATE' THEN
+        -- On tier2.transcripts' pattern, which refuses to re-attribute a row
+        -- to another memo or model. Same reason: the identity is what makes
+        -- the row mean anything, and a re-attributed proposal is a proposal
+        -- credited to a model that never said it.
+        IF NEW.memo_id  IS DISTINCT FROM OLD.memo_id
+        OR NEW.proposer IS DISTINCT FROM OLD.proposer THEN
+            RAISE EXCEPTION 'a proposal may not be re-attributed to another memo or proposer'
+                USING ERRCODE = 'CH010';
+        END IF;
+
+        -- MONOTONE, like CHRN-22's audio_pruned_at. A generation that can go
+        -- backwards is a generation an accept can be replayed against, which
+        -- is the drift this column exists to close.
+        IF NEW.generation < OLD.generation THEN
+            RAISE EXCEPTION 'proposal generation may not decrease (% -> %)',
+                OLD.generation, NEW.generation
+                USING ERRCODE = 'CH011';
+        END IF;
+
+        NEW.updated_at := now();
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+
+--
 -- Name: memos_guard(); Type: FUNCTION; Schema: tier2; Owner: -
 --
 
@@ -186,6 +221,40 @@ CREATE TABLE tier1.memo_jobs (
 --
 
 COMMENT ON TABLE tier1.memo_jobs IS 'CHRN-27. Which ASR job a memo was submitted to, under which idempotency key. Tier 1 — regenerable, because Chronicle still holds the audio: losing a row costs one repeated GPU run and nothing else. Holds no transcript and no reference into tier 2.';
+
+
+--
+-- Name: memo_proposals; Type: TABLE; Schema: tier1; Owner: -
+--
+
+CREATE TABLE tier1.memo_proposals (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    memo_id uuid NOT NULL,
+    transcript_id uuid NOT NULL,
+    proposer text NOT NULL,
+    generation integer DEFAULT 1 NOT NULL,
+    status text DEFAULT 'valid'::text NOT NULL,
+    payload jsonb,
+    superseded_payload jsonb,
+    cleared_fields jsonb,
+    error text,
+    raw_output text,
+    last_attempt_raw text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT memo_proposals_generation_check CHECK ((generation >= 1)),
+    CONSTRAINT memo_proposals_proposer_check CHECK ((proposer ~ '^[^/@]+/[^/@]+@[^/@]+$'::text)),
+    CONSTRAINT memo_proposals_status_check CHECK ((status = ANY (ARRAY['valid'::text, 'needs_input'::text, 'invalid'::text]))),
+    CONSTRAINT proposals_invalid_iff_no_payload CHECK (((status = 'invalid'::text) = (payload IS NULL))),
+    CONSTRAINT proposals_raw_output_pairs_with_payload CHECK (((payload IS NULL) = (raw_output IS NULL)))
+);
+
+
+--
+-- Name: TABLE memo_proposals; Type: COMMENT; Schema: tier1; Owner: -
+--
+
+COMMENT ON TABLE tier1.memo_proposals IS 'Derived from tier2.transcripts by Scribe. Regenerable: delete and re-run. Never hand-edited.';
 
 
 --
@@ -364,6 +433,14 @@ ALTER TABLE ONLY tier1.memo_jobs
 
 
 --
+-- Name: memo_proposals memo_proposals_pkey; Type: CONSTRAINT; Schema: tier1; Owner: -
+--
+
+ALTER TABLE ONLY tier1.memo_proposals
+    ADD CONSTRAINT memo_proposals_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: memo_uploads memo_uploads_pkey; Type: CONSTRAINT; Schema: tier1; Owner: -
 --
 
@@ -457,6 +534,27 @@ CREATE INDEX memo_jobs_memo ON tier1.memo_jobs USING btree (memo_id);
 
 
 --
+-- Name: memo_proposals_memo; Type: INDEX; Schema: tier1; Owner: -
+--
+
+CREATE INDEX memo_proposals_memo ON tier1.memo_proposals USING btree (memo_id);
+
+
+--
+-- Name: memo_proposals_memo_proposer; Type: INDEX; Schema: tier1; Owner: -
+--
+
+CREATE UNIQUE INDEX memo_proposals_memo_proposer ON tier1.memo_proposals USING btree (memo_id, proposer);
+
+
+--
+-- Name: memo_proposals_needs_attention; Type: INDEX; Schema: tier1; Owner: -
+--
+
+CREATE INDEX memo_proposals_needs_attention ON tier1.memo_proposals USING btree (status, updated_at DESC) WHERE (status <> 'valid'::text);
+
+
+--
 -- Name: memo_uploads_activity; Type: INDEX; Schema: tier1; Owner: -
 --
 
@@ -534,6 +632,13 @@ CREATE UNIQUE INDEX users_single_owner ON tier2.users USING btree (is_owner) WHE
 
 
 --
+-- Name: memo_proposals memo_proposals_guard; Type: TRIGGER; Schema: tier1; Owner: -
+--
+
+CREATE TRIGGER memo_proposals_guard BEFORE UPDATE ON tier1.memo_proposals FOR EACH ROW EXECUTE FUNCTION tier1.memo_proposals_guard();
+
+
+--
 -- Name: memos memos_guard; Type: TRIGGER; Schema: tier2; Owner: -
 --
 
@@ -602,10 +707,24 @@ GRANT ALL ON SCHEMA tier1 TO chronicle_tier1;
 
 
 --
+-- Name: SCHEMA tier2; Type: ACL; Schema: -; Owner: -
+--
+
+GRANT USAGE ON SCHEMA tier2 TO chronicle_tier1;
+
+
+--
 -- Name: TABLE memo_jobs; Type: ACL; Schema: tier1; Owner: -
 --
 
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE tier1.memo_jobs TO chronicle_tier1;
+
+
+--
+-- Name: TABLE memo_proposals; Type: ACL; Schema: tier1; Owner: -
+--
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE tier1.memo_proposals TO chronicle_tier1;
 
 
 --
@@ -620,6 +739,20 @@ GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE tier1.memo_uploads TO chronicle_tier1
 --
 
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE tier1.watch_seen TO chronicle_tier1;
+
+
+--
+-- Name: TABLE memos; Type: ACL; Schema: tier2; Owner: -
+--
+
+GRANT SELECT ON TABLE tier2.memos TO chronicle_tier1;
+
+
+--
+-- Name: TABLE transcripts; Type: ACL; Schema: tier2; Owner: -
+--
+
+GRANT SELECT ON TABLE tier2.transcripts TO chronicle_tier1;
 
 
 --

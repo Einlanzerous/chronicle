@@ -216,7 +216,15 @@ jobs:
       # it is the only thing that creates a transcript, and a transcript is what
       # CHRN-22 gates audio deletion on. A bug that writes the wrong `partial`
       # here becomes deleted audio there.
-      sensitive_paths: '^(internal/store/|asr/|internal/transcribe/|internal/api/(session|cfaccess|ratelimit|router|storage|upload|transcription)|internal/(invite|config|audio|watch|upload|retention)/|cmd/chronicle/|migrations/|deploy/|scripts/|verify\.sh|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore)'
+      # internal/scribe/ is CHRN-32, and it is here because of what it GATES:
+      # PreAcceptable decides what ACCEPT ALL may pre-select, and it carries the
+      # rule that DISCARD is never pre-accepted at any confidence. `discarded`
+      # is terminal in the memo state machine, so a change that loosened that
+      # gate would make a confident wrong DISCARD sweepable in a batch, and the
+      # memo could never be re-routed. Added with the PR that creates the path
+      # rather than with CHRN-67, which exposes routing as an MCP tool: waiting
+      # would mean every diff in between was reviewed at the cheap tier.
+      sensitive_paths: '^(internal/store/|internal/scribe/|asr/|internal/transcribe/|internal/api/(session|cfaccess|ratelimit|router|storage|upload|transcription)|internal/(invite|config|audio|watch|upload|retention)/|cmd/chronicle/|migrations/|deploy/|scripts/|verify\.sh|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore)'
 
       # No `docs_skip_extra`: this repo commits no knowledge-graph cache, and
       # the one generated artifact it does carry is excluded outright in

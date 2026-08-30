@@ -25,6 +25,24 @@ const DefaultPort = 4009
 // reads, and pointing it at the pump would invert that.
 const DefaultASRMaxAttempts = 5
 
+// DefaultScribeMaxAttempts is CHRN-32 §7's retry ceiling: how many times one
+// memo's proposal is asked for before the failure is recorded instead. Three,
+// because attempts two and three carry the validation error back to the model,
+// and a model told "confidence must be between 0 and 1, got 1.5" usually fixes
+// it — one completion is cheaper than an operator's attention.
+const DefaultScribeMaxAttempts = 3
+
+// DefaultScribePreacceptMin is deliberately 1.01 — a threshold NO confidence
+// can clear, so nothing is pre-accepted until somebody sets this on purpose.
+//
+// CHRN-32 §8 gives the reasoning: the contract carries confidence and does not
+// interpret it, and the value that makes ACCEPT ALL safe is CHRN-36's to
+// measure. Defaulting to something plausible-looking like 0.8 would licence
+// batch acceptance on a number nobody has checked, which is the exact trade
+// the epic warns about — "a router at 70% that claims 0.9 confidence is worse
+// than no router, because it spends trust it has not earned".
+const DefaultScribePreacceptMin = 1.01
+
 // Config is the process-wide configuration.
 type Config struct {
 	DatabaseURL   string        // pgx DSN for Chronicle's own database
@@ -121,6 +139,60 @@ type Config struct {
 	// TranscribeInterval is how often the pump sweeps. Default in
 	// internal/transcribe.
 	TranscribeInterval time.Duration
+
+	// Tier1DatabaseURL is the pool Scribe and every other DERIVED writer
+	// connects on, as chronicle_tier1 (CHRN-32 §1.1, ruling R4).
+	//
+	// Migration 0007 grants that role SELECT on tier2.memos and
+	// tier2.transcripts and nothing else, so a process holding this DSN can
+	// read the corpus it derives from and cannot write a word of it. That is
+	// the enforcement mechanism CLAUDE.md names, and it only enforces anything
+	// if something actually connects on it — which is why this exists in E4
+	// rather than waiting for CHRN-52.
+	//
+	// FALLS BACK to DatabaseURL when unset, so a single-DSN deployment keeps
+	// working and the tier-1 pool is an addition rather than a prerequisite.
+	// Tier1IsSeparate reports whether the fallback was taken; boot warns when
+	// it was, because a tier-1 pool silently running as `chronicle` is
+	// enforcement that enforces nothing. CHRN-52 decides whether the fallback
+	// may survive in production at all.
+	Tier1DatabaseURL string
+
+	// CHRN-32 — Scribe. Empty ScribeOllamaURL disables routing entirely.
+	ScribeOllamaURL string
+
+	// ScribeModel is the Ollama model, e.g. `gemma4:31b`. It is qualified to
+	// `ollama/<model>@<promptversion>` for the proposer string, on
+	// tier2.transcripts.model's pattern — that column holds
+	// `whisper.cpp/small.en` rather than `small.en`, because a bare name says
+	// nothing about what ran it.
+	ScribeModel string
+
+	// ScribePreacceptMin is the confidence at or above which a proposal MAY be
+	// pre-selected for ACCEPT ALL. Owned by CHRN-36, which is the only thing
+	// that will ever know the right value; see DefaultScribePreacceptMin for
+	// why the default admits nothing.
+	//
+	// It is a floor and not the only gate: CHRN-32 §4 excludes DISCARD from
+	// pre-acceptance by contract, at any confidence, because `discarded` is
+	// terminal in the memo state machine and no threshold can express "never".
+	ScribePreacceptMin float64
+
+	// ScribeMaxAttempts is §7's ceiling before a failure is recorded.
+	ScribeMaxAttempts int
+}
+
+// ScribeEnabled reports whether Chronicle will produce routing proposals.
+func (c Config) ScribeEnabled() bool { return c.ScribeOllamaURL != "" }
+
+// Tier1IsSeparate reports whether the tier-1 pool has a DSN of its own rather
+// than falling back to the main one.
+//
+// False means derived writers are connecting as `chronicle`, which can read
+// and write tier 2 — so the role grant is in place and nothing is standing
+// behind it. Serving warns; CHRN-52 decides whether it should refuse.
+func (c Config) Tier1IsSeparate() bool {
+	return c.Tier1DatabaseURL != "" && c.Tier1DatabaseURL != c.DatabaseURL
 }
 
 // TranscriptionEnabled reports whether Chronicle will submit memos for
@@ -251,6 +323,49 @@ func Load() (Config, error) {
 	c.TranscribeInterval, err = optionalDuration("CHRONICLE_TRANSCRIBE_INTERVAL")
 	if err != nil {
 		return c, err
+	}
+
+	// The tier-1 pool. Falls back rather than erroring: see the field comment.
+	c.Tier1DatabaseURL = firstNonEmpty(
+		strings.TrimSpace(os.Getenv("CHRONICLE_TIER1_DATABASE_URL")), c.DatabaseURL)
+
+	c.ScribeOllamaURL = strings.TrimRight(strings.TrimSpace(os.Getenv("CHRONICLE_SCRIBE_OLLAMA_URL")), "/")
+	if c.ScribeOllamaURL != "" {
+		u, err := url.Parse(c.ScribeOllamaURL)
+		if err != nil || !u.IsAbs() || u.Host == "" {
+			return c, fmt.Errorf("config: CHRONICLE_SCRIBE_OLLAMA_URL %q is not an absolute http(s) URL", c.ScribeOllamaURL)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return c, fmt.Errorf("config: CHRONICLE_SCRIBE_OLLAMA_URL %q must be http or https, got scheme %q", c.ScribeOllamaURL, u.Scheme)
+		}
+	}
+
+	// Required alongside the URL. The proposer string is built from it and is
+	// the identity of every row Scribe writes -- CHRN-36 attributes a
+	// regression through it -- so there is no sensible default to invent, and
+	// guessing one would silently credit a model that never ran.
+	c.ScribeModel = strings.TrimSpace(os.Getenv("CHRONICLE_SCRIBE_MODEL"))
+	if (c.ScribeOllamaURL == "") != (c.ScribeModel == "") {
+		return c, fmt.Errorf("config: set both CHRONICLE_SCRIBE_OLLAMA_URL and CHRONICLE_SCRIBE_MODEL, or neither")
+	}
+
+	c.ScribePreacceptMin = DefaultScribePreacceptMin
+	if v := strings.TrimSpace(os.Getenv("CHRONICLE_SCRIBE_PREACCEPT_MIN")); v != "" {
+		c.ScribePreacceptMin, err = strconv.ParseFloat(v, 64)
+		// Above 1 is allowed and is how pre-acceptance is turned off on
+		// purpose; below 0 is refused, because a negative floor admits every
+		// proposal including the ones the model had no confidence in at all.
+		if err != nil || c.ScribePreacceptMin < 0 {
+			return c, fmt.Errorf("config: CHRONICLE_SCRIBE_PREACCEPT_MIN %q is not a number >= 0", v)
+		}
+	}
+
+	c.ScribeMaxAttempts = DefaultScribeMaxAttempts
+	if v := strings.TrimSpace(os.Getenv("CHRONICLE_SCRIBE_MAX_ATTEMPTS")); v != "" {
+		c.ScribeMaxAttempts, err = strconv.Atoi(v)
+		if err != nil || c.ScribeMaxAttempts < 1 {
+			return c, fmt.Errorf("config: CHRONICLE_SCRIBE_MAX_ATTEMPTS %q is not a positive integer", v)
+		}
 	}
 
 	c.OwnerEmail = strings.ToLower(strings.TrimSpace(os.Getenv("CHRONICLE_OWNER_EMAIL")))
