@@ -318,3 +318,47 @@ func (s *Tier1Store) TranscriptForScribe(ctx context.Context, memoID uuid.UUID) 
 	}
 	return t, err
 }
+
+// MemoByHash resolves CHRN-36's label identity — tier2.memos.content_hash — to
+// the memo it names.
+//
+// ON Tier1Store rather than Store, because the eval harness is DERIVED work and
+// reads the corpus the way Scribe does: ruling R4 grants chronicle_tier1 SELECT
+// on tier2.memos, and a harness that reached the corpus through the main role
+// would be scoring the router while standing outside the boundary the router
+// stands inside.
+//
+// The uniqueness constraint is on (author_id, content_hash), so two accounts
+// ingesting the same bytes are two memos with one hash. That is refused rather
+// than resolved: an eval run that silently picked one of them would score a
+// memo the labeller never read, and there is no field on the label that could
+// say which. It cannot happen on a single-author estate, which is exactly why
+// it would be found the hard way.
+func (s *Tier1Store) MemoByHash(ctx context.Context, contentHash string) (Memo, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+memoColumns+` FROM tier2.memos WHERE content_hash = $1 LIMIT 2`, contentHash)
+	if err != nil {
+		return Memo{}, fmt.Errorf("store: memo by hash: %w", err)
+	}
+	defer rows.Close()
+
+	var found []Memo
+	for rows.Next() {
+		m, err := scanMemo(rows)
+		if err != nil {
+			return Memo{}, fmt.Errorf("store: memo by hash: %w", err)
+		}
+		found = append(found, m)
+	}
+	if err := rows.Err(); err != nil {
+		return Memo{}, fmt.Errorf("store: memo by hash: %w", err)
+	}
+	switch len(found) {
+	case 0:
+		return Memo{}, ErrNotFound
+	case 1:
+		return found[0], nil
+	default:
+		return Memo{}, fmt.Errorf("store: content_hash %s names %d memos across authors, so it does not identify one", contentHash, len(found))
+	}
+}

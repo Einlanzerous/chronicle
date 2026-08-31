@@ -81,6 +81,8 @@ func run(args []string) error {
 		return runRetranscribe(args[1:])
 	case "prune":
 		return runPrune(args[1:])
+	case "eval":
+		return runEval(args[1:])
 	case "-h", "--help", "help":
 		usage()
 		return nil
@@ -99,6 +101,7 @@ usage:
   chronicle mint-invite [--email E]    issue a one-time sign-in invite
   chronicle retranscribe [--memo ID]   release held memos back to the queue
   chronicle prune [--dry-run]          delete audio past its retention window
+  chronicle eval [--dry-run]           score the router against the labelled set
   chronicle version                    print the build version
 
 migrate defaults to "up". "down" without -n rolls everything back.
@@ -110,6 +113,11 @@ prune deletes the audio of memos past their window that have a durable
 transcript, and nothing else — never a pinned memo, never one that was not
 transcribed, and never a transcript. --dry-run reads the same predicate a real
 run marks with, and deletes nothing.
+
+eval scores Scribe against CHRN-36's labelled set (docs/eval/routing-v1.yaml).
+--dry-run resolves every label and checks its transcript pin without running a
+model, and is the half that needs no GPU. --stratum synthetic needs no database
+either; --stratum real is HELD OUT, so log every run you make against it.
 `)
 }
 
