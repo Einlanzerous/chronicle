@@ -154,9 +154,18 @@ func (l Label) ID() string {
 
 // Short is the identity trimmed for a terminal table. A 64-character hash makes
 // every row wrap and the first eight distinguish twenty-one memos comfortably.
+//
+// LENGTH-GUARDED, and not defensively. Set.Validate calls this to build the
+// prefix for its OWN error messages, before problems() has checked the hash is
+// a sha256 — so an unguarded slice crashes on precisely the malformed input the
+// next check has a written diagnostic for, and the file that would have said
+// `hash "abc123" is not a lowercase sha256` says nothing at all.
 func (l Label) Short() string {
 	if l.Hash != "" {
-		return l.Hash[:8]
+		if len(l.Hash) >= 8 {
+			return l.Hash[:8]
+		}
+		return l.Hash
 	}
 	return strings.TrimSuffix(path.Base(l.File), ".md")
 }

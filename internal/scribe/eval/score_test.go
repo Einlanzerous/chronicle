@@ -370,3 +370,59 @@ func TestATypeOnANonTicketIsNotReported(t *testing.T) {
 		t.Fatalf("proposed = %q, want NOTE", got)
 	}
 }
+
+// A confidently wrong DISCARD is a calibration failure AND is shipped by
+// nothing, because PreAcceptable refuses DISCARD at any confidence. The report
+// used to print it under "what ACCEPT ALL would actually ship" while the sweep
+// four lines below correctly showed nothing being pre-accepted.
+func TestAConfidentlyWrongDiscardIsCountedButNotShippable(t *testing.T) {
+	rep := Score("p", []Result{
+		routed(lbl("a", StratumSynthetic, scribe.DestNote, "", yes()), scribe.DestDiscard, "", 0.95),
+		routed(lbl("b", StratumSynthetic, scribe.DestNote, "", yes()), scribe.DestTicket, "task", 0.95),
+	})
+	c := rep.Calibration
+	if len(c.ConfidentWrong) != 2 {
+		t.Fatalf("confident and wrong = %v, want both", c.ConfidentWrong)
+	}
+	if len(c.ConfidentWrongRefused) != 1 || c.ConfidentWrongRefused[0] != "a" {
+		t.Fatalf("refused by the gate = %v, want just the DISCARD", c.ConfidentWrongRefused)
+	}
+	for _, row := range rep.Thresholds {
+		if row.Min <= 0.95 && row.PreAccepted != 1 {
+			t.Errorf("min %.2f pre-accepted %d, want 1 — the DISCARD is never in ACCEPT ALL",
+				row.Min, row.PreAccepted)
+		}
+	}
+}
+
+// A proposal that never validated is refused by the gate too, whatever the
+// confidence — except it has none, so it cannot reach the top band at all.
+func TestAnInvalidProposalIsRefusedByTheGate(t *testing.T) {
+	r := routed(lbl("a", StratumSynthetic, scribe.DestNote, "", yes()), scribe.DestTicket, "task", 0.95)
+	r.Outcome.Status = scribe.StatusNeedsInput
+	rep := Score("p", []Result{r})
+	if len(rep.Calibration.ConfidentWrongRefused) != 1 {
+		t.Fatalf("refused = %v, want the needs_input one", rep.Calibration.ConfidentWrongRefused)
+	}
+}
+
+// §4: the label said NOTE, the labeller said TICKET was also defensible, the
+// router said TICKET. That is the ceiling on what any router can score here,
+// and it does not belong under "where the misses went".
+func TestADefensibleAnswerIsNotAMiss(t *testing.T) {
+	l := lbl("a", StratumSynthetic, scribe.DestNote, "", no(),
+		Alternative{Destination: scribe.DestTicket, TicketType: "task"})
+	wrong := lbl("b", StratumSynthetic, scribe.DestNote, "", yes())
+
+	a := Score("p", []Result{
+		routed(l, scribe.DestTicket, "task", 0.9),
+		routed(wrong, scribe.DestDiscard, "", 0.9),
+	}).Accuracy(StratumSynthetic)
+
+	if got := a.Confusion[scribe.DestNote]["TICKET"]; got != 0 {
+		t.Errorf("a lenient answer appears as a miss %d time(s)", got)
+	}
+	if got := a.Confusion[scribe.DestNote]["DISCARD"]; got != 1 {
+		t.Errorf("the genuine miss = %d, want 1", got)
+	}
+}

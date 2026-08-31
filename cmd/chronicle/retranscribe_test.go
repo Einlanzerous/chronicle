@@ -232,3 +232,21 @@ func TestRetranscribeRefusesAMemoWhoseAudioIsGone(t *testing.T) {
 		t.Fatalf("countable attempts = %d; a refused release must not spend them", n)
 	}
 }
+
+// --dry-run returns before the JSON block, so the pair used to write no file
+// and say nothing — REVIEW.md §8's cautionary tale, in one flag. Refused rather
+// than made to work: the resolution holds the transcripts, and those do not
+// leave the corpus.
+//
+// Checked here rather than in the eval package because it is a property of the
+// command's flag handling, and it must fire before anything reads config or
+// opens a pool — which is what makes this test runnable with no environment.
+func TestEvalRefusesJSONWithoutAScoredRun(t *testing.T) {
+	err := runEval([]string{"--dry-run", "--json", "/should/not/be/written.json"})
+	if err == nil {
+		t.Fatal("--dry-run --json was accepted and does nothing")
+	}
+	if !strings.Contains(err.Error(), "produces no scores") {
+		t.Fatalf("err = %v, want it to say why", err)
+	}
+}

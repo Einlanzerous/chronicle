@@ -179,10 +179,23 @@ type Calibration struct {
 	// threshold can rescue it.
 	Rising bool `json:"rising"`
 
-	// ConfidentWrong is what ACCEPT ALL would actually ship: items in the top
-	// band that were wrong. Reported as a count AND a list, because at this n
-	// the identities are more useful than the proportion.
+	// ConfidentWrong is items in the top band that were wrong. Reported as a
+	// count AND a list, because at this n the identities are more useful than
+	// the proportion.
+	//
+	// IT IS A CALIBRATION NUMBER AND NOT A SHIPPING NUMBER, and the two are
+	// not the same set: a confidently wrong DISCARD is a calibration failure
+	// and is shipped by nothing, because PreAcceptable refuses DISCARD at any
+	// confidence. Conflating them would report the irreversible accept as
+	// something ACCEPT ALL admits, which is the one thing CHRN-32 §4 exists to
+	// say it does not.
 	ConfidentWrong []string `json:"confident_wrong"`
+	// ConfidentWrongRefused is the subset the production gate declines whatever
+	// the threshold — a DISCARD, or a proposal that is not `valid`. Asking
+	// PreAcceptable at a minimum of 0 answers exactly that, since every
+	// confidence clears 0 and only the two non-threshold gates can still
+	// refuse. What is left is what a confidence threshold alone would admit.
+	ConfidentWrongRefused []string `json:"confident_wrong_refused"`
 }
 
 // Licenses reports R4's question: does the evidence support shipping a
@@ -242,7 +255,8 @@ type Report struct {
 	MovedPins []string `json:"moved_pins,omitempty"`
 }
 
-// Stratum returns one stratum's accuracy, or nil.
+// Accuracy returns one stratum's score, or nil. There is no argument that
+// returns a combined one.
 func (r *Report) Accuracy(s Stratum) *Accuracy {
 	for _, a := range r.Strata {
 		if a.Stratum == s {
@@ -315,16 +329,24 @@ func Score(proposer string, results []Result) *Report {
 			}
 			d.N++
 
-			proposed := "(none)"
-			if rec.Proposed != nil {
-				proposed = string(rec.Proposed.Destination)
+			// ONLY REAL MISSES. A lenient answer is off-diagonal too — the
+			// label said NOTE, also_defensible said TICKET, the router said
+			// TICKET — and §4 is explicit that this IS NOT A ROUTER FAILURE.
+			// Listing it under "where the misses went" would charge the router
+			// for the corpus's ambiguity in the one place the rest of this
+			// report is careful not to. The ambiguity tax already reports it.
+			if rec.Verdict == VerdictWrong || rec.Verdict == VerdictNoProposal {
+				proposed := "(none)"
+				if rec.Proposed != nil {
+					proposed = string(rec.Proposed.Destination)
+				}
+				row := acc.Confusion[rec.Labelled.Destination]
+				if row == nil {
+					row = map[string]int{}
+					acc.Confusion[rec.Labelled.Destination] = row
+				}
+				row[proposed]++
 			}
-			row := acc.Confusion[rec.Labelled.Destination]
-			if row == nil {
-				row = map[string]int{}
-				acc.Confusion[rec.Labelled.Destination] = row
-			}
-			row[proposed]++
 
 			switch rec.Verdict {
 			case VerdictStrict:
@@ -360,6 +382,10 @@ func Score(proposer string, results []Result) *Report {
 						buckets[i].Correct++
 					} else if i == len(buckets)-1 {
 						rep.Calibration.ConfidentWrong = append(rep.Calibration.ConfidentWrong, rec.Short)
+						if !p.PreAcceptable(rec.Status, 0) {
+							rep.Calibration.ConfidentWrongRefused =
+								append(rep.Calibration.ConfidentWrongRefused, rec.Short)
+						}
 					}
 					break
 				}

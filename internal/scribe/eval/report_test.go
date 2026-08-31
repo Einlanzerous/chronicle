@@ -122,3 +122,25 @@ func TestTheResolutionCheckRendersWithoutAModel(t *testing.T) {
 		t.Fatalf("resolution report:\n%s", b.String())
 	}
 }
+
+// The two "what would ACCEPT ALL ship" numbers have to reconcile in the text a
+// reader actually sees, not only in the fields behind it.
+func TestTheReportReconcilesTheConfidentWrongCountWithTheSweep(t *testing.T) {
+	out := render(t, Score("p", []Result{
+		routed(lbl("a", StratumSynthetic, scribe.DestNote, "", yes()), scribe.DestDiscard, "", 0.95),
+		routed(lbl("b", StratumSynthetic, scribe.DestNote, "", yes()), scribe.DestTicket, "task", 0.95),
+		routed(lbl("c", StratumSynthetic, scribe.DestNote, "", yes()), scribe.DestNote, "", 0.2),
+	}))
+	for _, want := range []string{
+		"Confident and wrong (top band): **2**",
+		"cannot be shipped at ANY threshold",
+		"calibration number rather than a shipping number",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("report does not say %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "These are what ACCEPT ALL would actually ship") {
+		t.Error("the report still claims a calibration count is a shipping count")
+	}
+}

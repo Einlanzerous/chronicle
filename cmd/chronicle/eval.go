@@ -47,6 +47,17 @@ func runEval(args []string) error {
 		return err
 	}
 
+	// REFUSED RATHER THAN IGNORED. The dry run returns before the JSON block,
+	// so the pair used to write no file and say nothing — REVIEW.md §8's
+	// cautionary tale exactly. And it is refused rather than made to work: the
+	// resolution deliberately has no JSON form, because an Item carries the
+	// transcript TEXT, and writing that to a file is the one thing §1 forbids.
+	if *dryRun && *jsonOut != "" {
+		return fmt.Errorf("eval: --json writes a scored report and --dry-run produces no scores, so the pair does nothing.\n" +
+			"Drop one. The resolution check has no JSON form on purpose: it holds the transcripts,\n" +
+			"and those do not leave the corpus (§1)")
+	}
+
 	var want eval.Stratum
 	switch *stratum {
 	case "all", "":

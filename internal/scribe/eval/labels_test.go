@@ -1,6 +1,8 @@
 package eval
 
 import (
+	"io/fs"
+	"os"
 	"strings"
 	"testing"
 
@@ -64,18 +66,53 @@ func TestTheCommittedLabelSetIsValid(t *testing.T) {
 }
 
 // The corpus is tier 2 and this repository is public. Nothing under docs/eval
-// may carry a real transcript, and the shape of the file is what keeps that
-// true: a real label has a hash and no text.
+// may carry authored text, and this checks the whole directory rather than only
+// the labels — the failure §1 guards against is a transcript DROPPED BESIDE the
+// set, which no amount of label validation would notice.
+//
+// So: every file under docs/eval is either the label file itself or a synthetic
+// fixture some label references, and no real label names a file at all.
 func TestNoRealTranscriptIsCommitted(t *testing.T) {
-	set, err := Load("../../../docs/eval/routing-v1.yaml")
+	const labels = "routing-v1.yaml"
+	set, err := Load("../../../docs/eval/" + labels)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, l := range set.Select(StratumReal) {
-		if l.File != "" {
+
+	accounted := map[string]bool{labels: true}
+	for _, l := range set.Labels {
+		if l.Stratum == StratumReal && l.File != "" {
 			t.Errorf("%s: a real label names a file, which would put authored text in git (§1)", l.Short())
 		}
+		if l.File != "" {
+			accounted[l.File] = true
+		}
 	}
+
+	err = fs.WalkDir(os.DirFS("../../../docs/eval"), ".", func(p string, d fs.DirEntry, err error) error {
+		switch {
+		case err != nil:
+			return err
+		case d.IsDir():
+			return nil
+		case !accounted[p]:
+			t.Errorf("docs/eval/%s is committed and no label accounts for it. The only text that "+
+				"belongs here is a fixture nobody said into a recorder (§1)", p)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Set.Validate builds its error prefix from Short() before problems() has
+// checked the hash is a sha256, so a short hash used to crash the process at
+// the exact point the code has a written diagnostic for it.
+func TestAMalformedHashIsReportedRatherThanFatal(t *testing.T) {
+	wantErr(t, strings.Replace(oneReal,
+		"0000000000000000000000000000000000000000000000000000000000000001", "abc123", 1),
+		"is not a lowercase sha256")
 }
 
 func mustParse(t *testing.T, body string) Set {

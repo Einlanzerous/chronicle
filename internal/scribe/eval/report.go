@@ -175,7 +175,14 @@ func (r *Report) renderCalibration(w io.Writer) {
 	if len(c.ConfidentWrong) > 0 {
 		pf(w, " — %s", strings.Join(c.ConfidentWrong, ", "))
 	}
-	ps(w, "\nThese are what ACCEPT ALL would actually ship.\n\n")
+	nl(w)
+	if n := len(c.ConfidentWrongRefused); n > 0 {
+		pf(w, "Of those, %d cannot be shipped at ANY threshold (a DISCARD, or not `valid`): %s.\n"+
+			"A confidence threshold alone would admit the remaining %d.\n",
+			n, strings.Join(c.ConfidentWrongRefused, ", "), len(c.ConfidentWrong)-n)
+	}
+	ps(w, "This is a calibration number rather than a shipping number. What ACCEPT ALL\n"+
+		"would actually ship at each candidate value is the sweep below.\n\n")
 }
 
 func (r *Report) renderThresholds(w io.Writer) {
