@@ -59,17 +59,25 @@ func IdempotencyKey(memoID uuid.UUID) string {
 
 // CreateTicket creates one ticket, idempotently on the memo.
 //
-// THE IDEMPOTENCY WINDOW IS SWITCHYARD'S AND IT IS 24 HOURS
-// (server/src/lib/idempotency.ts). Inside it, a replay returns the original
-// status and body verbatim and no second ticket exists. Outside it, the key has
-// expired and this WOULD create a second ticket — so a durable memo→ticket
-// link is the caller's to keep, and CHRN-33's plan carries the ruling on where
-// that record lives and what happens when it cannot be written.
+// THE HEADER REPLAYS A RESPONSE. IT DOES NOT SERIALISE A SIDE EFFECT, and a
+// caller that mistakes the one for the other will create duplicate tickets.
 //
-// Said here, in the function that would cause it, rather than only in a plan:
-// the 24 hours covers the case the ticket names — a batch retried over a flaky
-// mobile connection — and does not cover a client that queued offline for a
-// day.
+// Switchyard's middleware (server/src/lib/idempotency.ts) is: look the key up,
+// `await next()`, insert the cache row. There is no lock between the lookup and
+// the handler, and the insert's own catch says so — "Concurrent same-key
+// request landed first — that's fine, the other one wrote the cache entry."
+// Fine for the cache; the handler has already run twice, so TWO TICKETS EXIST.
+//
+// So two overlapping requests for one memo duplicate, and that is the ordinary
+// retry rather than an exotic race: a phone that gives up before this client's
+// 15-second timeout and re-sends is exactly the case. The 24-hour TTL is a
+// SEPARATE and weaker limit — outside it even a sequential replay re-creates.
+//
+// CALLERS MUST SERIALISE PER MEMO THEMSELVES. In Chronicle that is CHRN-33's
+// pending-link row with UNIQUE (memo_id), taken before the outward call; this
+// package cannot do it, because the only thing that can is a lock next to the
+// durable record. Said here, in the function that would cause it, rather than
+// only in a plan somebody has to find.
 func (c *Client) CreateTicket(ctx context.Context, in NewTicket) (Ticket, error) {
 	switch {
 	case strings.TrimSpace(in.ProjectKey) == "":

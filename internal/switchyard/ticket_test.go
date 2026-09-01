@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -206,5 +207,58 @@ func TestACreateFailureCarriesItsStatus(t *testing.T) {
 	}
 	if se.Status != http.StatusConflict || se.Retryable() {
 		t.Errorf("status %d retryable %v, want 409 and not retryable", se.Status, se.Retryable())
+	}
+}
+
+// The header replays a RESPONSE; it does not serialise a SIDE EFFECT.
+//
+// Switchyard's middleware looks the key up, runs the handler, then caches —
+// with no lock in between — so two overlapping requests for one memo both
+// create. This asserts the client does not paper over that, because a caller
+// that believed it were safe would skip the serialisation it actually needs
+// (CHRN-33's pending row with UNIQUE (memo_id)).
+func TestTheClientDoesNotPretendTheHeaderIsALock(t *testing.T) {
+	// A tracker that behaves the way the real middleware does under
+	// concurrency: the cache is consulted, but nothing serialises the handler.
+	var mu sync.Mutex
+	minted := 0
+	release := make(chan struct{})
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release // both requests are inside the handler together
+		mu.Lock()
+		minted++
+		key := "CHRN-" + string(rune('0'+minted))
+		mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"key": key, "id": "x"})
+	}))
+	t.Cleanup(s.Close)
+	c, err := New(s.URL, "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	memo := uuid.New()
+	var wg sync.WaitGroup
+	keys := make([]string, 2)
+	for i := range keys {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tk, err := c.CreateTicket(context.Background(), aTicket(memo))
+			if err == nil {
+				keys[i] = tk.Key
+			}
+		}()
+	}
+	close(release)
+	wg.Wait()
+
+	if keys[0] == keys[1] {
+		t.Fatalf("both concurrent creates returned %s — this client does not serialise, "+
+			"and a test asserting it does would hide the duplication CHRN-33 must prevent", keys[0])
+	}
+	if minted != 2 {
+		t.Fatalf("minted %d tickets, want 2 — the point is that the header did NOT stop the second", minted)
 	}
 }
