@@ -329,44 +329,15 @@ func Load() (Config, error) {
 	c.Tier1DatabaseURL = firstNonEmpty(
 		strings.TrimSpace(os.Getenv("CHRONICLE_TIER1_DATABASE_URL")), c.DatabaseURL)
 
-	c.ScribeOllamaURL = strings.TrimRight(strings.TrimSpace(os.Getenv("CHRONICLE_SCRIBE_OLLAMA_URL")), "/")
-	if c.ScribeOllamaURL != "" {
-		u, err := url.Parse(c.ScribeOllamaURL)
-		if err != nil || !u.IsAbs() || u.Host == "" {
-			return c, fmt.Errorf("config: CHRONICLE_SCRIBE_OLLAMA_URL %q is not an absolute http(s) URL", c.ScribeOllamaURL)
-		}
-		if u.Scheme != "http" && u.Scheme != "https" {
-			return c, fmt.Errorf("config: CHRONICLE_SCRIBE_OLLAMA_URL %q must be http or https, got scheme %q", c.ScribeOllamaURL, u.Scheme)
-		}
+	// Parsed by LoadScribe so the same rules apply whether the whole config is
+	// being read or only the routing half. CHRN-30's `chronicle eval` needs the
+	// second: a synthetic run must work with no CHRONICLE_DATABASE_URL at all.
+	sc, err := LoadScribe()
+	if err != nil {
+		return c, err
 	}
-
-	// Required alongside the URL. The proposer string is built from it and is
-	// the identity of every row Scribe writes -- CHRN-36 attributes a
-	// regression through it -- so there is no sensible default to invent, and
-	// guessing one would silently credit a model that never ran.
-	c.ScribeModel = strings.TrimSpace(os.Getenv("CHRONICLE_SCRIBE_MODEL"))
-	if (c.ScribeOllamaURL == "") != (c.ScribeModel == "") {
-		return c, fmt.Errorf("config: set both CHRONICLE_SCRIBE_OLLAMA_URL and CHRONICLE_SCRIBE_MODEL, or neither")
-	}
-
-	c.ScribePreacceptMin = DefaultScribePreacceptMin
-	if v := strings.TrimSpace(os.Getenv("CHRONICLE_SCRIBE_PREACCEPT_MIN")); v != "" {
-		c.ScribePreacceptMin, err = strconv.ParseFloat(v, 64)
-		// Above 1 is allowed and is how pre-acceptance is turned off on
-		// purpose; below 0 is refused, because a negative floor admits every
-		// proposal including the ones the model had no confidence in at all.
-		if err != nil || c.ScribePreacceptMin < 0 {
-			return c, fmt.Errorf("config: CHRONICLE_SCRIBE_PREACCEPT_MIN %q is not a number >= 0", v)
-		}
-	}
-
-	c.ScribeMaxAttempts = DefaultScribeMaxAttempts
-	if v := strings.TrimSpace(os.Getenv("CHRONICLE_SCRIBE_MAX_ATTEMPTS")); v != "" {
-		c.ScribeMaxAttempts, err = strconv.Atoi(v)
-		if err != nil || c.ScribeMaxAttempts < 1 {
-			return c, fmt.Errorf("config: CHRONICLE_SCRIBE_MAX_ATTEMPTS %q is not a positive integer", v)
-		}
-	}
+	c.ScribeOllamaURL, c.ScribeModel = sc.OllamaURL, sc.Model
+	c.ScribePreacceptMin, c.ScribeMaxAttempts = sc.PreacceptMin, sc.MaxAttempts
 
 	c.OwnerEmail = strings.ToLower(strings.TrimSpace(os.Getenv("CHRONICLE_OWNER_EMAIL")))
 	c.OwnerName = strings.TrimSpace(os.Getenv("CHRONICLE_OWNER_NAME"))
@@ -466,4 +437,76 @@ func optionalDuration(name string) (time.Duration, error) {
 		return 0, fmt.Errorf("config: %s %q is not a positive duration", name, v)
 	}
 	return d, nil
+}
+
+// Scribe is the routing half of the configuration, and it is loadable BY
+// ITSELF.
+//
+// That is not tidiness. `chronicle eval --stratum synthetic` is deliberately
+// runnable with no database and no environment — that is what makes it the
+// half CI can run — and Load() refuses the moment CHRONICLE_DATABASE_URL is
+// unset. A router built from the full config would make a synthetic run fail
+// naming the DATABASE, and the honest complaint about an unset
+// CHRONICLE_SCRIBE_OLLAMA_URL would never be reached.
+//
+// One parser, two callers: Load delegates here, so the pair rule and the
+// bounds cannot drift between them.
+type Scribe struct {
+	// OllamaURL is CHRONICLE_SCRIBE_OLLAMA_URL. Empty disables routing.
+	OllamaURL string
+	// Model is CHRONICLE_SCRIBE_MODEL, e.g. `gemma4:31b`.
+	Model string
+	// PreacceptMin is CHRN-36's to set; the default admits nothing.
+	PreacceptMin float64
+	// MaxAttempts is CHRN-32 §7's ceiling.
+	MaxAttempts int
+}
+
+// Enabled reports whether there is a model to ask.
+func (s Scribe) Enabled() bool { return s.OllamaURL != "" }
+
+// LoadScribe reads only the CHRONICLE_SCRIBE_* variables.
+func LoadScribe() (Scribe, error) {
+	var s Scribe
+	var err error
+
+	s.OllamaURL = strings.TrimRight(strings.TrimSpace(os.Getenv("CHRONICLE_SCRIBE_OLLAMA_URL")), "/")
+	if s.OllamaURL != "" {
+		u, err := url.Parse(s.OllamaURL)
+		if err != nil || !u.IsAbs() || u.Host == "" {
+			return s, fmt.Errorf("config: CHRONICLE_SCRIBE_OLLAMA_URL %q is not an absolute http(s) URL", s.OllamaURL)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return s, fmt.Errorf("config: CHRONICLE_SCRIBE_OLLAMA_URL %q must be http or https, got scheme %q", s.OllamaURL, u.Scheme)
+		}
+	}
+
+	// Required alongside the URL. The proposer string is built from it and is
+	// the identity of every row Scribe writes -- CHRN-36 attributes a
+	// regression through it -- so there is no sensible default to invent, and
+	// guessing one would silently credit a model that never ran.
+	s.Model = strings.TrimSpace(os.Getenv("CHRONICLE_SCRIBE_MODEL"))
+	if (s.OllamaURL == "") != (s.Model == "") {
+		return s, fmt.Errorf("config: set both CHRONICLE_SCRIBE_OLLAMA_URL and CHRONICLE_SCRIBE_MODEL, or neither")
+	}
+
+	s.PreacceptMin = DefaultScribePreacceptMin
+	if v := strings.TrimSpace(os.Getenv("CHRONICLE_SCRIBE_PREACCEPT_MIN")); v != "" {
+		s.PreacceptMin, err = strconv.ParseFloat(v, 64)
+		// Above 1 is allowed and is how pre-acceptance is turned off on
+		// purpose; below 0 is refused, because a negative floor admits every
+		// proposal including the ones the model had no confidence in at all.
+		if err != nil || s.PreacceptMin < 0 {
+			return s, fmt.Errorf("config: CHRONICLE_SCRIBE_PREACCEPT_MIN %q is not a number >= 0", v)
+		}
+	}
+
+	s.MaxAttempts = DefaultScribeMaxAttempts
+	if v := strings.TrimSpace(os.Getenv("CHRONICLE_SCRIBE_MAX_ATTEMPTS")); v != "" {
+		s.MaxAttempts, err = strconv.Atoi(v)
+		if err != nil || s.MaxAttempts < 1 {
+			return s, fmt.Errorf("config: CHRONICLE_SCRIBE_MAX_ATTEMPTS %q is not a positive integer", v)
+		}
+	}
+	return s, nil
 }

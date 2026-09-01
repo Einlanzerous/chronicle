@@ -1,0 +1,81 @@
+# CHRN-30 — the fixture catalogue for the synthetic stratum.
+#
+# WHY THIS IS COMMITTED RATHER THAN FETCHED, decided on CHRN-30's plan
+# (2026-08-31, `section:tradeoffs`) and worth restating where it is edited:
+#
+# A live fetch against Switchyard would work — every project below is real —
+# and it would tie the synthetic score to Switchyard's state on the day. Being
+# reproducible from the repo alone is the property that made committing the
+# synthetic stratum worth it (CHRN-36 §1); a fixture catalogue keeps it and a
+# live one spends it. It also keeps `--stratum synthetic` free of a token and
+# of a network, which is what makes that half runnable in CI.
+#
+# USED ONLY UNDER `--stratum synthetic`. The real stratum routes against the
+# live catalogue CHRN-31 supplies — its project half, which is the part that
+# can be built before CHRN-37 (see the note on CHRN-31).
+#
+# The eval report records this file's sha256 beside `labels_sha256`. The labels
+# prove which answers were scored against; the catalogue decides which project
+# keys were AVAILABLE to be answered. Change this file and every TICKET
+# proposal can move while the labels hash is unchanged — CHRN-36 §1's failure
+# with a different noun.
+#
+# A snapshot of the live project list, taken 2026-08-31. Descriptions are cut
+# to one line ON PURPOSE: the salvage hard-truncated at 150 characters
+# mid-word with no ellipsis and no budget, and prompt size grew linearly with
+# the project count. A written line is a deliberate budget.
+
+version: 1
+
+projects:
+  - key: SERV
+    name: Construct Server
+    description: The home operations centre itself — the docker stack, shared Postgres, observability, and the box's own configuration.
+  - key: CHRN
+    name: Chronicle
+    description: Voice-note ingestion into a notes and discussion wiki; the authored half of the two-tier estate wiki.
+  - key: SWY
+    name: Switchyard
+    description: Self-hosted ticket tracker and the system of record for all work.
+  - key: AMBR
+    name: Amber
+    description: Captures and preserves Claude Code transcripts before the rolling retention sweep destroys them.
+  - key: SGNT
+    name: Signet
+    description: Credential vault and control-plane daemon; env-file registry, encrypted vault, audit ledger, secret sync.
+  - key: PRSR
+    name: Purser
+    description: Cross-service provisioning and invite service — one command invites a person into several services at once.
+  - key: LYCM
+    name: Lyceum
+    description: Self-hosted DRM-free ebook reader and sync ecosystem, with send-to-Kindle delivery.
+  - key: ARGY
+    name: Argosy
+    description: Self-hosted media streaming server with cross-device resume and HLS transcoding.
+  - key: CTFG
+    name: Centrifuge
+    description: Newsletter curation — ingests email and scores it through a local model pipeline.
+  - key: ITLK
+    name: Interlock
+    description: Legislative tracking and CRM for a Chicago organiser; bills, officials and a correspondence ledger.
+  - key: EIDO
+    name: Project Eidolon
+    description: Thin-client agent portal — a kiosk tablet driven by a local model over MCP tools.
+  - key: DRY
+    name: Drydock
+    description: Agent orchestrator; a durable web terminal multiplexer for AI CLIs.
+  - key: CTAW
+    name: CTA Watch
+    description: Real-time dashboard for Chicago Transit Authority train performance and ridership.
+  - key: IDEA
+    name: Ideas
+    description: Incubator for new project ideas; greenfield work that needs a new repo lands here first.
+
+# The page tree is EMPTY, and that is a fact rather than an omission: there is
+# no page tree until CHRN-37 in E5. `scribe.Reconcile` already treats this as
+# the ordinary case rather than a special one — with no live ancestor, every
+# non-null page_path clears. The prompt renders this list and says so, because
+# a prompt that stays silent about it invites a NOTE to invent a path, stage 2
+# clears it, and CHRN-36's hallucination rate ends up measuring the prompt's
+# own invitation.
+pages: []

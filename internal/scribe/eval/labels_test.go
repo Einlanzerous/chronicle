@@ -79,7 +79,11 @@ func TestNoRealTranscriptIsCommitted(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	accounted := map[string]bool{labels: true}
+	// The catalogue (CHRN-30) belongs here for the same reason the fixtures
+	// do: nobody said it into a recorder. It is a snapshot of Switchyard's
+	// project list, committed so a synthetic run is reproducible from the repo
+	// alone, and the report records its hash beside the labels'.
+	accounted := map[string]bool{labels: true, "catalogue-v1.yaml": true}
 	for _, l := range set.Labels {
 		if l.Stratum == StratumReal && l.File != "" {
 			t.Errorf("%s: a real label names a file, which would put authored text in git (§1)", l.Short())

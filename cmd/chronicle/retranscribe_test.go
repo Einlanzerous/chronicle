@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Einlanzerous/chronicle/internal/scribe/eval"
 	"github.com/Einlanzerous/chronicle/internal/store"
 	"github.com/Einlanzerous/chronicle/internal/transcribe"
 )
@@ -248,5 +249,42 @@ func TestEvalRefusesJSONWithoutAScoredRun(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "produces no scores") {
 		t.Fatalf("err = %v, want it to say why", err)
+	}
+}
+
+// The unset-URL complaint must be REACHABLE, which is a statement about
+// ordering as much as about wording: `config.Load()` errors on a missing
+// CHRONICLE_DATABASE_URL, so a router built from the full config would make a
+// synthetic run fail by naming the database and this message would never be
+// printed. Running with no scribe variables and no DSN is the whole test.
+func TestEvalNamesTheMissingOllamaURLRatherThanTheDatabase(t *testing.T) {
+	for _, k := range []string{
+		"CHRONICLE_SCRIBE_OLLAMA_URL", "CHRONICLE_SCRIBE_MODEL",
+		"CHRONICLE_DATABASE_URL", "DATABASE_URL",
+	} {
+		t.Setenv(k, "")
+	}
+	err := runEval([]string{"--stratum", "synthetic", "--labels", "../../docs/eval/routing-v1.yaml"})
+	if err == nil {
+		t.Fatal("a synthetic run with no model configured was accepted")
+	}
+	if !strings.Contains(err.Error(), "CHRONICLE_SCRIBE_OLLAMA_URL") {
+		t.Fatalf("err = %v, want it to name the scribe URL", err)
+	}
+	if strings.Contains(err.Error(), "DATABASE_URL") {
+		t.Fatalf("err = %v — a synthetic run reached for the database", err)
+	}
+}
+
+// The ruling on CHRN-30's plan: the fixture catalogue is synthetic-only, and
+// the real stratum waits for CHRN-31's project half. Scoring `real` against
+// the fixture would grade a router nobody will run.
+func TestEvalRefusesToScoreTheRealStratumAgainstTheFixtureCatalogue(t *testing.T) {
+	t.Setenv("CHRONICLE_SCRIBE_OLLAMA_URL", "http://127.0.0.1:11434")
+	t.Setenv("CHRONICLE_SCRIBE_MODEL", "gemma4:31b")
+
+	_, err := newRouter("../../docs/eval", eval.StratumReal)
+	if err == nil || !strings.Contains(err.Error(), "CHRN-31") {
+		t.Fatalf("err = %v, want it to name CHRN-31", err)
 	}
 }

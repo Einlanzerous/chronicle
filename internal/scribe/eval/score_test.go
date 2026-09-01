@@ -426,3 +426,100 @@ func TestADefensibleAnswerIsNotAMiss(t *testing.T) {
 		t.Errorf("the genuine miss = %d, want 1", got)
 	}
 }
+
+// The probe exists because Rising cannot be read on a set with no mistakes: it
+// asserts accuracy VARIES with confidence, which needs wrong answers. This
+// measures the same thing from the other side, and survives a perfect score.
+func TestTheProbeReadsCalibrationWithoutNeedingAMistake(t *testing.T) {
+	unsure := func(id string, conf float64) Result {
+		l := lbl(id, StratumSynthetic, scribe.DestNote, "", no(),
+			Alternative{Destination: scribe.DestDiscussion})
+		return routed(l, scribe.DestNote, "", conf)
+	}
+	sure := func(id string, conf float64) Result {
+		return routed(lbl(id, StratumSynthetic, scribe.DestNote, "", yes()), scribe.DestNote, "", conf)
+	}
+
+	// Everything correct — the case that breaks Rising entirely.
+	rep := Score("p", []Result{
+		unsure("a", 0.65), unsure("b", 0.65),
+		sure("c", 0.95), sure("d", 0.85), sure("e", 0.95),
+	})
+	if rep.Calibration.Rising {
+		t.Fatal("a flawless run reported a rising trend")
+	}
+	if rep.Calibration.Licenses() {
+		t.Fatal("a flawless run licensed a threshold — that is the trap this replaces")
+	}
+
+	ok, determinable := rep.Calibration.TracksTheLabeller()
+	if !determinable {
+		t.Fatal("the probe could not be determined on 2 unsure and 3 confident items")
+	}
+	if !ok {
+		t.Fatalf("the probe failed on a router that hesitated exactly where the labeller did: %+v", rep.Calibration)
+	}
+	if rep.Calibration.UnsureMedian != 0.65 || rep.Calibration.ConfidentMedian != 0.95 {
+		t.Errorf("medians = %v / %v, want 0.65 / 0.95",
+			rep.Calibration.UnsureMedian, rep.Calibration.ConfidentMedian)
+	}
+}
+
+// The sharpest single failure of the probe: most sure about the memo a person
+// found hardest.
+func TestAnUnsureFixtureInTheTopBandFailsTheProbe(t *testing.T) {
+	l := lbl("a", StratumSynthetic, scribe.DestNote, "", no(),
+		Alternative{Destination: scribe.DestDiscussion})
+	rep := Score("p", []Result{
+		routed(l, scribe.DestNote, "", 0.95),
+		routed(lbl("b", StratumSynthetic, scribe.DestNote, "", yes()), scribe.DestNote, "", 0.95),
+	})
+	if got := rep.Calibration.UnsureInTopBand; len(got) != 1 || got[0] != "a" {
+		t.Fatalf("unsure in top band = %v, want [a]", got)
+	}
+	if ok, _ := rep.Calibration.TracksTheLabeller(); ok {
+		t.Fatal("the probe passed with an unsure item in the top band")
+	}
+}
+
+func TestTheProbeIsUndeterminableWithoutBothGroups(t *testing.T) {
+	rep := Score("p", []Result{
+		routed(lbl("a", StratumSynthetic, scribe.DestNote, "", yes()), scribe.DestNote, "", 0.9),
+	})
+	if _, determinable := rep.Calibration.TracksTheLabeller(); determinable {
+		t.Fatal("a set with no arguable labels claimed to measure the probe")
+	}
+}
+
+// The retry rate is the check on the grammar: a schema that stopped
+// constraining the model would show up here and nowhere else in the report.
+func TestTheRetryCountReachesTheReport(t *testing.T) {
+	one := routed(lbl("a", StratumSynthetic, scribe.DestNote, "", yes()), scribe.DestNote, "", 0.9)
+	one.Outcome.Attempts = 1
+	three := routed(lbl("b", StratumSynthetic, scribe.DestNote, "", yes()), scribe.DestNote, "", 0.9)
+	three.Outcome.Attempts = 3
+
+	a := Score("p", []Result{one, three}).Accuracy(StratumSynthetic)
+	if a.Retried != 1 || a.Attempts != 4 {
+		t.Fatalf("retried=%d attempts=%d, want 1 and 4", a.Retried, a.Attempts)
+	}
+}
+
+// `runner_up` is what the confidence rubric is built on, so a report that could
+// not show it could not explain its own calibration. Read out of the raw
+// answer, because it is a diagnostic and not part of CHRN-32's contract — this
+// package does not get to extend that contract by the back door.
+func TestTheRunnerUpIsReadFromTheRawAnswerAndNotTheContract(t *testing.T) {
+	r := routed(lbl("a", StratumSynthetic, scribe.DestNote, "", yes()), scribe.DestNote, "", 0.65)
+	r.Outcome.Raw = []byte(`{"reason":"x","destination":"NOTE","runner_up":"DISCUSSION","confidence":0.65}`)
+
+	rec := Score("p", []Result{r}).Items[0]
+	if rec.RunnerUp != "DISCUSSION" {
+		t.Fatalf("runner_up = %q, want DISCUSSION", rec.RunnerUp)
+	}
+	// Absent or unparseable is simply absent, never an error.
+	r.Outcome.Raw = []byte(`not json`)
+	if got := Score("p", []Result{r}).Items[0].RunnerUp; got != "" {
+		t.Errorf("runner_up = %q from unparseable raw, want empty", got)
+	}
+}

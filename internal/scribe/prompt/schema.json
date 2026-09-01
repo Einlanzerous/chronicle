@@ -1,0 +1,74 @@
+{
+  "type": "object",
+  "properties": {
+    "reason": {
+      "type": "string"
+    },
+    "destination": {
+      "type": "string",
+      "enum": [
+        "NOTE",
+        "TICKET",
+        "DISCUSSION",
+        "DISCARD"
+      ]
+    },
+    "runner_up": {
+      "type": "string",
+      "enum": [
+        "NOTE",
+        "TICKET",
+        "DISCUSSION",
+        "DISCARD",
+        ""
+      ]
+    },
+    "confidence": {
+      "type": "number"
+    },
+    "title": {
+      "type": "string"
+    },
+    "nearest_page": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "project_key": {
+      "type": "string"
+    },
+    "ticket_type": {
+      "type": "string",
+      "enum": [
+        "spike",
+        "task",
+        "bug",
+        "epic",
+        ""
+      ]
+    },
+    "description": {
+      "type": "string"
+    },
+    "body": {
+      "type": "string"
+    },
+    "opening_post": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "reason",
+    "destination",
+    "runner_up",
+    "confidence",
+    "title",
+    "nearest_page",
+    "project_key",
+    "ticket_type",
+    "description",
+    "body",
+    "opening_post"
+  ]
+}

@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"encoding/json"
 	"slices"
 	"time"
 
@@ -66,11 +67,42 @@ type ItemRecord struct {
 	Proposed   *Alternative  `json:"proposed"`
 	Confidence float64       `json:"confidence"`
 	Status     scribe.Status `json:"status"`
-	// Cleared is how many fields stage 2 removed. 0007 states the column's
-	// purpose as the hallucination rate this harness reports, so it is carried
-	// per item and totalled per stratum.
-	Cleared int    `json:"cleared_fields"`
-	Error   string `json:"error,omitempty"`
+
+	// Attempts is how many completions this item cost, and RunnerUp is the
+	// destination the model named as its second choice.
+	//
+	// Attempts is the check on the grammar (see scribe.Outcome.Attempts): a
+	// schema that stopped being applied would show up here and NOWHERE ELSE in
+	// the report. RunnerUp is what the confidence rubric is built on — the
+	// prompt makes the model name its second choice before it says how sure it
+	// is — so a report that could not show it could not explain its own
+	// calibration. It is read out of the raw output rather than the payload,
+	// because it is a routing diagnostic and not part of CHRN-32's contract.
+	Attempts int    `json:"attempts"`
+	RunnerUp string `json:"runner_up,omitempty"`
+
+	// Reason is the model's own argument for the destination.
+	//
+	// CARRIED BECAUSE PROMPT WORK IS IMPOSSIBLE WITHOUT IT: a report that says
+	// an item was wrong and not why sends you back to re-run it by hand.
+	//
+	// It also changes a property this record used to have, and the change is
+	// deliberate rather than overlooked. Every other field here is a
+	// destination, a status or a count; a reason is MODEL OUTPUT ABOUT A
+	// TRANSCRIPT and will quote it. So a `--json` from the `real` stratum is
+	// corpus-adjacent in a way it was not before — §1 is a rule about git and
+	// this file is not in git, but it should not be pasted into a PR either,
+	// and the repo ignores `*.eval.json` so the accident needs a -f.
+	Reason string `json:"reason,omitempty"`
+
+	// ClearedCount and Cleared are how many fields stage 2 removed, and which.
+	// 0007 states the purpose as the hallucination rate this harness reports;
+	// the count aggregates and the values are what you read to find out what
+	// the model invented.
+	ClearedCount int                   `json:"cleared_count"`
+	Cleared      []scribe.ClearedField `json:"cleared_fields,omitempty"`
+
+	Error string `json:"error,omitempty"`
 
 	Verdict Verdict `json:"verdict"`
 }
@@ -98,6 +130,14 @@ type Accuracy struct {
 	NeedsInput int `json:"needs_input"`
 	Cleared    int `json:"cleared_fields"`
 	Unhandled  int `json:"unhandled"`
+
+	// Retried is how many items cost more than one completion, and Attempts is
+	// the total spent. Reported because a retry rate at or near zero is the
+	// only evidence that the JSON schema passed as `format` is actually
+	// constraining the model — if it silently stopped, stage 1 would start
+	// firing again and every other number here would be unchanged.
+	Retried  int `json:"retried"`
+	Attempts int `json:"attempts"`
 
 	// ByLabel is the per-destination breakdown, keyed by the LABEL's
 	// destination. §5: it matters more than the headline, because at this n an
@@ -190,6 +230,28 @@ type Calibration struct {
 	// something ACCEPT ALL admits, which is the one thing CHRN-32 §4 exists to
 	// say it does not.
 	ConfidentWrong []string `json:"confident_wrong"`
+	// The LABELLER-UNCERTAINTY PROBE, and the reason it exists is that Rising
+	// cannot be measured on a set with no mistakes.
+	//
+	// `Licenses()` asserts accuracy VARIES with confidence, which structurally
+	// needs wrong answers to demonstrate. On the synthetic stratum a good
+	// router plausibly gets everything right, every occupied band sits at
+	// 100%, and Rising is false — the claim fails because the router made no
+	// mistakes. These three measure the same thing from the other side: the
+	// corpus already records where a person was unsure (§4's `confident:
+	// false` plus `also_defensible`), and a calibrated model should be least
+	// sure exactly there. That signal survives a perfect score.
+	//
+	// Medians rather than means: at n=4 unsure items one outlier moves a mean
+	// and moves nothing that matters.
+	UnsureN         int     `json:"unsure_n"`
+	UnsureMedian    float64 `json:"unsure_median"`
+	ConfidentN      int     `json:"confident_n"`
+	ConfidentMedian float64 `json:"confident_median"`
+	// UnsureInTopBand names labeller-unsure items the router was most sure
+	// about — the sharpest single failure of this probe.
+	UnsureInTopBand []string `json:"unsure_in_top_band"`
+
 	// ConfidentWrongRefused is the subset the production gate declines whatever
 	// the threshold — a DISCARD, or a proposal that is not `valid`. Asking
 	// PreAcceptable at a minimum of 0 answers exactly that, since every
@@ -207,6 +269,18 @@ type Calibration struct {
 // CHRONICLE_SCRIBE_PREACCEPT_MIN at its 1.01 default, which admits nothing, and
 // wait for a prompt that calibrates.
 func (c Calibration) Licenses() bool { return c.Determinable && c.Monotonic && c.Rising }
+
+// TracksTheLabeller reports the probe: is the router less sure where a person
+// was unsure, and did it stay out of the top band on all of them?
+//
+// Undeterminable with either group empty, which is honest rather than a pass:
+// a set with no arguable labels cannot say anything about this.
+func (c Calibration) TracksTheLabeller() (ok, determinable bool) {
+	if c.UnsureN == 0 || c.ConfidentN == 0 {
+		return false, false
+	}
+	return c.UnsureMedian < c.ConfidentMedian && len(c.UnsureInTopBand) == 0, true
+}
 
 // ThresholdRow is one candidate value of CHRONICLE_SCRIBE_PREACCEPT_MIN and
 // what it would have shipped over this run.
@@ -237,6 +311,15 @@ type Report struct {
 	Proposer     string    `json:"proposer"`
 	LabelsPath   string    `json:"labels_path"`
 	LabelsSHA256 string    `json:"labels_sha256"`
+
+	// ModelDigest and CatalogueSHA256 are the other two inputs a run is a
+	// function of, recorded for the same reason the labels hash and the
+	// transcript pin are. The proposer names the model TAG, which is mutable:
+	// re-pull and the string is unchanged while the weights are not. And the
+	// catalogue decides which project keys were available to be answered, so
+	// changing it moves every TICKET proposal while the labels hash sits still.
+	ModelDigest     string `json:"model_digest,omitempty"`
+	CatalogueSHA256 string `json:"catalogue_sha256,omitempty"`
 
 	Strata []*Accuracy `json:"strata"`
 
@@ -300,6 +383,12 @@ func Score(proposer string, results []Result) *Report {
 	}
 	var shippable []shipped
 
+	// The labeller-uncertainty probe's raw material, gathered over scored
+	// items only: an unhandled item has no correctness and a memo with no
+	// proposal has no confidence to compare.
+	var unsureConf, confidentConf []float64
+	var unsureTop []string
+
 	for _, res := range results {
 		rec := record(res)
 		acc := byStratum[rec.Stratum]
@@ -318,7 +407,11 @@ func Score(proposer string, results []Result) *Report {
 
 		if acc != nil {
 			acc.N++
-			acc.Cleared += rec.Cleared
+			acc.Cleared += rec.ClearedCount
+			acc.Attempts += rec.Attempts
+			if rec.Attempts > 1 {
+				acc.Retried++
+			}
 			if rec.Status == scribe.StatusNeedsInput {
 				acc.NeedsInput++
 			}
@@ -392,6 +485,16 @@ func Score(proposer string, results []Result) *Report {
 			}
 			rep.Calibration.Scored++
 			shippable = append(shippable, shipped{rec: rec, p: p, status: rec.Status})
+
+			topLo := buckets[len(buckets)-1].Lo
+			if rec.Confident {
+				confidentConf = append(confidentConf, rec.Confidence)
+			} else {
+				unsureConf = append(unsureConf, rec.Confidence)
+				if rec.Confidence >= topLo {
+					unsureTop = append(unsureTop, rec.Short)
+				}
+			}
 		} else {
 			rep.Calibration.Skipped++
 		}
@@ -413,6 +516,9 @@ func Score(proposer string, results []Result) *Report {
 
 	rep.Calibration.Buckets = buckets
 	rep.Calibration.Determinable, rep.Calibration.Monotonic, rep.Calibration.Rising = trend(buckets)
+	rep.Calibration.UnsureN, rep.Calibration.UnsureMedian = len(unsureConf), median(unsureConf)
+	rep.Calibration.ConfidentN, rep.Calibration.ConfidentMedian = len(confidentConf), median(confidentConf)
+	rep.Calibration.UnsureInTopBand = unsureTop
 
 	scoreable := 0
 	for _, a := range rep.Strata {
@@ -453,7 +559,10 @@ func record(res Result) ItemRecord {
 		AlsoDefensible: l.AlsoDefensible,
 		Unhandled:      l.Unhandled,
 		Status:         res.Outcome.Status,
-		Cleared:        len(res.Outcome.Cleared),
+		ClearedCount:   len(res.Outcome.Cleared),
+		Cleared:        res.Outcome.Cleared,
+		Attempts:       res.Outcome.Attempts,
+		RunnerUp:       runnerUp(res.Outcome.Raw),
 	}
 	if res.Item.MemoID != uuid.Nil {
 		rec.MemoID = res.Item.MemoID.String()
@@ -478,6 +587,7 @@ func record(res Result) ItemRecord {
 		}
 		rec.Proposed = &alt
 		rec.Confidence = p.Confidence
+		rec.Reason = p.Reason
 	}
 
 	switch {
@@ -493,6 +603,22 @@ func record(res Result) ItemRecord {
 		rec.Verdict = VerdictWrong
 	}
 	return rec
+}
+
+// runnerUp reads the model's second choice out of its raw answer.
+//
+// From the RAW rather than the payload, deliberately: `runner_up` shapes the
+// confidence and is a diagnostic this harness reports, but it is not part of
+// CHRN-32's proposal contract and this package does not get to extend that
+// contract by the back door. A missing or unparseable value is simply absent.
+func runnerUp(raw []byte) string {
+	var v struct {
+		RunnerUp string `json:"runner_up"`
+	}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return ""
+	}
+	return v.RunnerUp
 }
 
 // defensible reports whether the labeller marked this destination acceptable.
@@ -518,6 +644,20 @@ func typeAccepted(l Label, t string) bool {
 		}
 	}
 	return false
+}
+
+// median of a small sample. Sorts a copy: the caller's slice order is not this
+// function's to change.
+func median(xs []float64) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	c := slices.Clone(xs)
+	slices.Sort(c)
+	if n := len(c); n%2 == 1 {
+		return c[n/2]
+	}
+	return (c[len(c)/2-1] + c[len(c)/2]) / 2
 }
 
 // trend answers §5's actual question — does accuracy rise with confidence at

@@ -25,6 +25,18 @@ type Outcome struct {
 	Status   Status
 	Cleared  []ClearedField
 
+	// Attempts is how many completions this memo cost.
+	//
+	// CARRIED BECAUSE IT IS THE CHECK ON THE GRAMMAR. CHRN-30 passes a JSON
+	// schema as Ollama's `format`, which makes most of stage 1 unreachable —
+	// and if that schema were ever silently ignored (an Ollama release that
+	// drops support, a malformed format field), the retries would simply come
+	// back and NOTHING ELSE IN THE REPORT WOULD CHANGE: same destinations,
+	// same accuracy, same calibration. A retry rate at or near zero is the
+	// evidence the grammar is doing the work, and it only exists if somebody
+	// counts.
+	Attempts int
+
 	// Err is set when no attempt produced a schema-valid proposal. It is the
 	// last attempt's errors, and it is written to the row rather than logged
 	// and dropped.
@@ -66,7 +78,8 @@ func Run(ctx context.Context, gen Generate, cat Catalogue, maxAttempts int) Outc
 			// Ollama unreachable, context cancelled, and so on. Not a contract
 			// failure and not something a differently-worded prompt fixes, so
 			// it ends the run rather than burning the remaining attempts.
-			return Outcome{Raw: raw, Status: StatusInvalid, Err: fmt.Errorf("scribe: generate: %w", err)}
+			return Outcome{Raw: raw, Status: StatusInvalid, Attempts: attempt,
+				Err: fmt.Errorf("scribe: generate: %w", err)}
 		}
 		lastRaw = raw
 
@@ -77,8 +90,8 @@ func Run(ctx context.Context, gen Generate, cat Catalogue, maxAttempts int) Outc
 		}
 
 		cleared, status := Reconcile(p, cat)
-		return Outcome{Proposal: p, Raw: raw, Status: status, Cleared: cleared}
+		return Outcome{Proposal: p, Raw: raw, Status: status, Cleared: cleared, Attempts: attempt}
 	}
 
-	return Outcome{Raw: lastRaw, Status: StatusInvalid, Err: lastErr}
+	return Outcome{Raw: lastRaw, Status: StatusInvalid, Attempts: maxAttempts, Err: lastErr}
 }
