@@ -14,7 +14,10 @@ import (
 	"time"
 
 	"github.com/Einlanzerous/chronicle/internal/config"
+	"github.com/Einlanzerous/chronicle/internal/scribe"
+	"github.com/Einlanzerous/chronicle/internal/scribe/catalogue"
 	"github.com/Einlanzerous/chronicle/internal/scribe/eval"
+	"github.com/Einlanzerous/chronicle/internal/scribe/router"
 	"github.com/Einlanzerous/chronicle/internal/store"
 )
 
@@ -33,7 +36,11 @@ import (
 // it possible at all, and even then a 42-item eval on every PR would contend
 // with the transcription pump for the R9700 with nothing arbitrating.
 
-const defaultLabelsPath = "docs/eval/routing-v1.yaml"
+const (
+	defaultLabelsPath = "docs/eval/routing-v1.yaml"
+	// catalogueFile sits beside the label file and travels with it.
+	catalogueFile = "catalogue-v1.yaml"
+)
 
 func runEval(args []string) error {
 	fs := flag.NewFlagSet("eval", flag.ContinueOnError)
@@ -152,19 +159,28 @@ func runEval(args []string) error {
 			"or pass --allow-moved-pins to take this run as a new baseline", len(moved))
 	}
 
-	router, err := newRouter()
+	rt, err := newRouter(filepath.Dir(*labelsPath), want)
 	if err != nil {
 		return err
 	}
-	results, err := eval.Run(ctx, router, resolution.Items)
+	// Read once per run, before any routing, so the report can say WHICH
+	// weights answered. A tag is mutable; the digest is not.
+	digest, err := rt.Digest(ctx)
 	if err != nil {
 		return err
 	}
 
-	rep := eval.Score(router.Proposer(), results)
+	results, err := eval.Run(ctx, rt, resolution.Items)
+	if err != nil {
+		return err
+	}
+
+	rep := eval.Score(rt.Proposer(), results)
 	rep.RunAt = time.Now()
 	rep.LabelsPath = *labelsPath
 	rep.LabelsSHA256 = fileSHA256(*labelsPath)
+	rep.ModelDigest = digest
+	rep.CatalogueSHA256 = rt.cat.SHA256()
 	rep.Render(os.Stdout)
 
 	if *jsonOut != "" {
@@ -200,19 +216,68 @@ func dryRunVerdict(res eval.Resolution, allowMoved bool) error {
 	return nil
 }
 
-// newRouter is the seam CHRN-30 fills, and it is the whole of what is missing.
+// evalRouter adapts the production router to the harness's interface.
 //
-// It is a function returning an error rather than a stub returning canned
-// output on purpose: a harness that scored a fake router would print a
-// plausible report, and the estate's cautionary tale is an integration that was
-// a silent no-op and looked like a working feature. Everything else here runs.
-func newRouter() (eval.Router, error) {
-	return nil, fmt.Errorf(
-		"eval: no router is wired yet, so there is nothing to score.\n" +
-			"CHRN-30 owns the prompt and supplies it: a type with Proposer() and Route(),\n" +
-			"calling scribe.Run with a generator over Ollama. Until then:\n" +
-			"  chronicle eval --dry-run              check every label still resolves\n" +
-			"  chronicle eval --stratum synthetic --dry-run   the same, with no database")
+// The adaptation exists so that internal/scribe/router does NOT import
+// internal/scribe/eval: CHRN-33's batch path will want the router and has no
+// business depending on the thing that grades it. Route is the whole of the
+// difference — the harness passes an Item, the router wants the text.
+type evalRouter struct {
+	*router.Router
+	cat *catalogue.Snapshot
+}
+
+func (e evalRouter) Route(ctx context.Context, it eval.Item) (scribe.Outcome, error) {
+	return e.Router.Route(ctx, it.Text)
+}
+
+// newRouter builds the router from the SCRIBE VARIABLES ALONE.
+//
+// Never through config.Load(), which refuses the moment CHRONICLE_DATABASE_URL
+// is unset. runEval deliberately opens the corpus only when a real label needs
+// one, so `--stratum synthetic` works on a machine with no database and no
+// environment — and a router built from the full config would undo exactly
+// that, failing a synthetic run by naming the database instead of the model.
+func newRouter(labelsDir string, want eval.Stratum) (evalRouter, error) {
+	cfg, err := config.LoadScribe()
+	if err != nil {
+		return evalRouter{}, err
+	}
+	if !cfg.Enabled() {
+		return evalRouter{}, fmt.Errorf(
+			"eval: CHRONICLE_SCRIBE_OLLAMA_URL is not set, so there is no model to ask.\n" +
+				"Set it and CHRONICLE_SCRIBE_MODEL, or use --dry-run to check the labels resolve")
+	}
+
+	// THE CATALOGUE IS THE STRATUM'S, by the ruling on CHRN-30's plan
+	// (2026-08-31). The synthetic stratum routes against a committed fixture
+	// so a run is reproducible from the repo alone — which is the property
+	// CHRN-36 §1 bought by committing that stratum, and what keeps this half
+	// free of a token and a network. The real stratum needs the live list, and
+	// that is CHRN-31's project half.
+	if want != eval.StratumSynthetic {
+		return evalRouter{}, fmt.Errorf(
+			"eval: only --stratum synthetic can be scored today.\n" +
+				"The real stratum must route against the LIVE Switchyard project list, which is\n" +
+				"CHRN-31's project half and does not exist yet. Routing it against the committed\n" +
+				"fixture catalogue would score a router nobody will run — and routing it against\n" +
+				"no catalogue at all would put every TICKET in needs_input by construction")
+	}
+
+	cat, err := catalogue.LoadFixtureFile(filepath.Join(labelsDir, catalogueFile))
+	if err != nil {
+		return evalRouter{}, err
+	}
+	r, err := router.New(router.Options{
+		BaseURL:     cfg.OllamaURL,
+		Model:       cfg.Model,
+		Catalogue:   cat,
+		MaxAttempts: cfg.MaxAttempts,
+	})
+	if err != nil {
+		return evalRouter{}, err
+	}
+	return evalRouter{Router: r, cat: cat}, nil
 }
 
 func hasReal(labels []eval.Label) bool {

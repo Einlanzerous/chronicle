@@ -18,3 +18,9 @@ coverage.*
 *.swp
 .idea/
 .vscode/
+
+# Eval reports. `chronicle eval --json` writes the model's own reasoning about
+# each memo, and a reason is ABOUT a transcript and will quote it — so a report
+# from the `real` stratum is corpus-adjacent, and tier 2 does not go in git
+# (CHRN-36 §1). Ignored so committing one needs a deliberate -f.
+*.eval.json

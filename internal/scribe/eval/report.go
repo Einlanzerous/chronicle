@@ -27,11 +27,18 @@ func (r *Report) Render(w io.Writer) {
 		pf(w, " (sha256 %s)", r.LabelsSHA256[:12])
 	}
 	nl(w)
+	if r.ModelDigest != "" {
+		pf(w, "- model:     %s\n", short(r.ModelDigest))
+	}
+	if r.CatalogueSHA256 != "" {
+		pf(w, "- catalogue: %s\n", short(r.CatalogueSHA256))
+	}
 	pf(w, "- items:    %d scored, %d unhandled, %d failed\n\n",
 		len(r.Items)-len(r.Unhandled), len(r.Unhandled), len(r.Failures))
 
 	r.renderMovedPins(w)
 	r.renderAccuracy(w)
+	r.renderMisses(w)
 	r.renderCalibration(w)
 	r.renderThresholds(w)
 	r.renderUnhandled(w)
@@ -135,6 +142,43 @@ func (r *Report) renderConfusion(w io.Writer, a *Accuracy) {
 	nl(w)
 }
 
+// renderMisses is what prompt iteration is actually done from: every item the
+// router got wrong, with ITS OWN ARGUMENT for the answer it gave.
+//
+// The report used to say an item was wrong and not why, which sent you back to
+// re-run it by hand — the gap the CHRN-30 review found. A destination plus a
+// reason is usually enough to see whether the prompt misled the model or the
+// label is arguable.
+func (r *Report) renderMisses(w io.Writer) {
+	var bad []ItemRecord
+	for _, it := range r.Items {
+		if it.Verdict == VerdictWrong || it.Verdict == VerdictNoProposal {
+			bad = append(bad, it)
+		}
+	}
+	if len(bad) == 0 {
+		return
+	}
+	pf(w, "## What went wrong (%d)\n\n", len(bad))
+	for _, it := range bad {
+		proposed := "(no proposal)"
+		if it.Proposed != nil {
+			proposed = fmt.Sprintf("%s at %.2f", it.Proposed, it.Confidence)
+		}
+		pf(w, "**%s** — labelled %s, answered %s\n", it.Short, it.Labelled, proposed)
+		if it.Reason != "" {
+			pf(w, "> %s\n", strings.ReplaceAll(strings.TrimSpace(it.Reason), "\n", " "))
+		}
+		for _, c := range it.Cleared {
+			pf(w, "- cleared `%s` = %q: %s\n", c.Field, c.Value, c.Reason)
+		}
+		if it.Error != "" {
+			pf(w, "- error: %s\n", it.Error)
+		}
+		nl(w)
+	}
+}
+
 func (r *Report) renderCalibration(w io.Writer) {
 	c := r.Calibration
 	ps(w, "## Calibration — does confidence predict correctness\n\n")
@@ -183,6 +227,40 @@ func (r *Report) renderCalibration(w io.Writer) {
 	}
 	ps(w, "This is a calibration number rather than a shipping number. What ACCEPT ALL\n"+
 		"would actually ship at each candidate value is the sweep below.\n\n")
+
+	r.renderLabellerProbe(w)
+}
+
+// renderLabellerProbe reports whether the router is least sure where a person
+// was, which is calibration measured WITHOUT needing the router to be wrong.
+//
+// It exists because the trend above cannot be read on a set with no mistakes:
+// Rising asserts accuracy VARIES with confidence, and a router that gets
+// everything right makes every band 100% and Rising false. The corpus already
+// records where a second labeller could reasonably disagree, so a calibrated
+// model should be least sure exactly there — and that signal survives a
+// perfect score.
+func (r *Report) renderLabellerProbe(w io.Writer) {
+	c := r.Calibration
+	ok, determinable := c.TracksTheLabeller()
+	ps(w, "### Does it hesitate where the labeller did?\n\n")
+	if !determinable {
+		pf(w, "Not determinable: %d labeller-unsure and %d confident items scored.\n\n",
+			c.UnsureN, c.ConfidentN)
+		return
+	}
+	pf(w, "- labeller unsure (n=%d): median confidence %.2f\n", c.UnsureN, c.UnsureMedian)
+	pf(w, "- labeller confident (n=%d): median confidence %.2f\n", c.ConfidentN, c.ConfidentMedian)
+	if len(c.UnsureInTopBand) > 0 {
+		pf(w, "- **in the top band anyway: %s**\n", strings.Join(c.UnsureInTopBand, ", "))
+	}
+	if ok {
+		ps(w, "\n**The router hesitates where a person did.**\n\n")
+	} else {
+		ps(w, "\n**It does not.** The model is no less sure on the memos a second labeller\n"+
+			"could reasonably have labelled differently, so its confidence is not tracking\n"+
+			"the thing that makes them hard.\n\n")
+	}
 }
 
 func (r *Report) renderThresholds(w io.Writer) {
@@ -382,6 +460,19 @@ func psln(w io.Writer, s string)              { _, _ = io.WriteString(w, s+"\n")
 func pf(w io.Writer, format string, a ...any) { _, _ = fmt.Fprintf(w, format, a...) }
 func nl(w io.Writer)                          { _, _ = io.WriteString(w, "\n") }
 func flush(tw *tabwriter.Writer)              { _ = tw.Flush() }
+
+// short trims a digest for a header line. The first twelve distinguish
+// everything anyone will ever compare by hand.
+func short(s string) string {
+	s = strings.TrimPrefix(s, "sha256:")
+	if len(s) > 12 {
+		return s[:12]
+	}
+	if s == "" {
+		return "—"
+	}
+	return s
+}
 
 func pct(f float64) string { return fmt.Sprintf("%.1f%%", f*100) }
 

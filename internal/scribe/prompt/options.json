@@ -1,0 +1,12 @@
+{
+  "think": false,
+  "options": {
+    "temperature": 0,
+    "seed": 20260831,
+    "num_ctx": 16384,
+    "num_predict": 1536,
+    "repeat_penalty": 1.0,
+    "top_k": 64,
+    "top_p": 0.95
+  }
+}

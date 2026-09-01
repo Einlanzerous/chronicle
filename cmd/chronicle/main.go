@@ -117,7 +117,9 @@ run marks with, and deletes nothing.
 eval scores Scribe against CHRN-36's labelled set (docs/eval/routing-v1.yaml).
 --dry-run resolves every label and checks its transcript pin without running a
 model, and is the half that needs no GPU. --stratum synthetic needs no database
-either; --stratum real is HELD OUT, so log every run you make against it.
+either — it routes against the committed fixture catalogue and reads only the
+CHRONICLE_SCRIBE_* variables. Scoring --stratum real waits on CHRN-31's live
+project list; when it lands, that stratum is HELD OUT, so log every run.
 `)
 }
 
