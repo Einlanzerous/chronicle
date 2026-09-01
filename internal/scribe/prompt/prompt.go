@@ -113,7 +113,18 @@ func Fill(projects, pages, transcript, feedback string) string {
 		// BACK OFF TO A RUNE BOUNDARY. Slicing bytes can cut a multi-byte rune
 		// in half and put invalid UTF-8 into the prompt — whisper emits em
 		// dashes and curly quotes, so this is reachable rather than theoretical.
-		for len(transcript) > 0 && !utf8.ValidString(transcript) {
+		//
+		// ONLY THE TAIL IS INSPECTED, and that is the whole point. An earlier
+		// version asked `!utf8.ValidString(transcript)`, which re-validates the
+		// WHOLE string: one bad byte anywhere before the cap can never be
+		// removed by trimming the end, so the loop ran to empty and the model
+		// routed a fragment — silently, and almost certainly as a confident
+		// DISCARD. At most three bytes come off here, which is all a split rune
+		// can be.
+		for len(transcript) > 0 {
+			if r, size := utf8.DecodeLastRuneInString(transcript); r != utf8.RuneError || size > 1 {
+				break
+			}
 			transcript = transcript[:len(transcript)-1]
 		}
 	}

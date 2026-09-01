@@ -349,3 +349,46 @@ func TestRunStopsOnAGenerateError(t *testing.T) {
 		t.Fatal("the transport error was swallowed")
 	}
 }
+
+// The attempt count is the only evidence that the JSON schema passed as
+// `format` is actually constraining the model: if the grammar stopped being
+// applied, stage 1 would start firing again and nothing else in the report
+// would move.
+func TestRunCountsTheCompletionsAMemoCost(t *testing.T) {
+	t.Run("first attempt", func(t *testing.T) {
+		out := Run(context.Background(), func(context.Context, int, string) ([]byte, error) {
+			return []byte(`{"destination":"DISCARD","confidence":0.9,"reason":"nothing said","nearest_page":null}`), nil
+		}, emptyCatalogue{}, 3)
+		if out.Attempts != 1 {
+			t.Fatalf("attempts = %d, want 1", out.Attempts)
+		}
+	})
+
+	t.Run("retried then valid", func(t *testing.T) {
+		n := 0
+		out := Run(context.Background(), func(context.Context, int, string) ([]byte, error) {
+			n++
+			if n == 1 {
+				return []byte(`{"destination":"NONSENSE"}`), nil
+			}
+			return []byte(`{"destination":"DISCARD","confidence":0.9,"reason":"nothing said","nearest_page":null}`), nil
+		}, emptyCatalogue{}, 3)
+		if out.Attempts != 2 {
+			t.Fatalf("attempts = %d, want 2", out.Attempts)
+		}
+	})
+
+	t.Run("never valid", func(t *testing.T) {
+		out := Run(context.Background(), func(context.Context, int, string) ([]byte, error) {
+			return []byte(`{"destination":"NONSENSE"}`), nil
+		}, emptyCatalogue{}, 3)
+		if out.Attempts != 3 {
+			t.Fatalf("attempts = %d, want the 3 it spent", out.Attempts)
+		}
+	})
+}
+
+type emptyCatalogue struct{}
+
+func (emptyCatalogue) HasProject(string) bool { return false }
+func (emptyCatalogue) HasPage(string) bool    { return false }

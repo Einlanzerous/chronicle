@@ -61,7 +61,7 @@ Use one of those four numbers and no others.
 
 # Output
 
-A single JSON object with all ten keys, in the order listed above. No markdown fences, no commentary, no trailing text.
+A single JSON object with all eleven keys, in the order listed above. No markdown fences, no commentary, no trailing text.
 {{FEEDBACK}}
 # Transcript
 

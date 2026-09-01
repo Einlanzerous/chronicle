@@ -490,3 +490,36 @@ func TestTheProbeIsUndeterminableWithoutBothGroups(t *testing.T) {
 		t.Fatal("a set with no arguable labels claimed to measure the probe")
 	}
 }
+
+// The retry rate is the check on the grammar: a schema that stopped
+// constraining the model would show up here and nowhere else in the report.
+func TestTheRetryCountReachesTheReport(t *testing.T) {
+	one := routed(lbl("a", StratumSynthetic, scribe.DestNote, "", yes()), scribe.DestNote, "", 0.9)
+	one.Outcome.Attempts = 1
+	three := routed(lbl("b", StratumSynthetic, scribe.DestNote, "", yes()), scribe.DestNote, "", 0.9)
+	three.Outcome.Attempts = 3
+
+	a := Score("p", []Result{one, three}).Accuracy(StratumSynthetic)
+	if a.Retried != 1 || a.Attempts != 4 {
+		t.Fatalf("retried=%d attempts=%d, want 1 and 4", a.Retried, a.Attempts)
+	}
+}
+
+// `runner_up` is what the confidence rubric is built on, so a report that could
+// not show it could not explain its own calibration. Read out of the raw
+// answer, because it is a diagnostic and not part of CHRN-32's contract — this
+// package does not get to extend that contract by the back door.
+func TestTheRunnerUpIsReadFromTheRawAnswerAndNotTheContract(t *testing.T) {
+	r := routed(lbl("a", StratumSynthetic, scribe.DestNote, "", yes()), scribe.DestNote, "", 0.65)
+	r.Outcome.Raw = []byte(`{"reason":"x","destination":"NOTE","runner_up":"DISCUSSION","confidence":0.65}`)
+
+	rec := Score("p", []Result{r}).Items[0]
+	if rec.RunnerUp != "DISCUSSION" {
+		t.Fatalf("runner_up = %q, want DISCUSSION", rec.RunnerUp)
+	}
+	// Absent or unparseable is simply absent, never an error.
+	r.Outcome.Raw = []byte(`not json`)
+	if got := Score("p", []Result{r}).Items[0].RunnerUp; got != "" {
+		t.Errorf("runner_up = %q from unparseable raw, want empty", got)
+	}
+}

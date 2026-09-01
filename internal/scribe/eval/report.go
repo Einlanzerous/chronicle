@@ -77,8 +77,14 @@ func (r *Report) renderAccuracy(w io.Writer) {
 		pf(w, "- strict:  %d/%d  (%s)\n", a.Strict, a.N, pct(a.StrictRate()))
 		pf(w, "- lenient: %d/%d  (%s)\n", a.Lenient, a.N, pct(a.LenientRate()))
 		pf(w, "- ambiguity tax: %s — a property of the corpus, not the prompt\n", pct(a.AmbiguityTax()))
-		pf(w, "- no proposal: %d · needs_input: %d · fields cleared: %d · unhandled (set apart): %d\n\n",
+		pf(w, "- no proposal: %d · needs_input: %d · fields cleared: %d · unhandled (set apart): %d\n",
 			a.NoProposal, a.NeedsInput, a.Cleared, a.Unhandled)
+		// The check on the grammar. A schema passed as `format` should make
+		// stage 1 nearly unreachable; if this rate is not near zero, the
+		// grammar is not doing what the plan says it is, and every other
+		// number here would look identical either way.
+		pf(w, "- retried: %d of %d items, %d completions for %d memos (%s)\n\n",
+			a.Retried, a.N, a.Attempts, a.N, retryVerdict(a))
 
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 		psln(tw, "  label\tn\tstrict\tlenient\tno proposal")
@@ -166,6 +172,12 @@ func (r *Report) renderMisses(w io.Writer) {
 			proposed = fmt.Sprintf("%s at %.2f", it.Proposed, it.Confidence)
 		}
 		pf(w, "**%s** — labelled %s, answered %s\n", it.Short, it.Labelled, proposed)
+		if it.RunnerUp != "" {
+			pf(w, "- runner-up: %s\n", it.RunnerUp)
+		}
+		if it.Attempts > 1 {
+			pf(w, "- took %d attempts\n", it.Attempts)
+		}
 		if it.Reason != "" {
 			pf(w, "> %s\n", strings.ReplaceAll(strings.TrimSpace(it.Reason), "\n", " "))
 		}
@@ -460,6 +472,21 @@ func psln(w io.Writer, s string)              { _, _ = io.WriteString(w, s+"\n")
 func pf(w io.Writer, format string, a ...any) { _, _ = fmt.Fprintf(w, format, a...) }
 func nl(w io.Writer)                          { _, _ = io.WriteString(w, "\n") }
 func flush(tw *tabwriter.Writer)              { _ = tw.Flush() }
+
+// retryVerdict says what the retry count means, rather than leaving a reader
+// to know that near-zero is the good answer.
+func retryVerdict(a *Accuracy) string {
+	switch {
+	case a.N == 0:
+		return "nothing scored"
+	case a.Retried == 0:
+		return "no retries — stage 1 never fired, which is what the grammar is for"
+	case a.Retried*4 <= a.N:
+		return "a few retries; the grammar is mostly holding"
+	default:
+		return "RETRIES ARE COMMON — the schema may not be constraining the model at all"
+	}
+}
 
 // short trims a digest for a header line. The first twelve distinguish
 // everything anyone will ever compare by hand.

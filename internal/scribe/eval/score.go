@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"encoding/json"
 	"slices"
 	"time"
 
@@ -67,6 +68,19 @@ type ItemRecord struct {
 	Confidence float64       `json:"confidence"`
 	Status     scribe.Status `json:"status"`
 
+	// Attempts is how many completions this item cost, and RunnerUp is the
+	// destination the model named as its second choice.
+	//
+	// Attempts is the check on the grammar (see scribe.Outcome.Attempts): a
+	// schema that stopped being applied would show up here and NOWHERE ELSE in
+	// the report. RunnerUp is what the confidence rubric is built on — the
+	// prompt makes the model name its second choice before it says how sure it
+	// is — so a report that could not show it could not explain its own
+	// calibration. It is read out of the raw output rather than the payload,
+	// because it is a routing diagnostic and not part of CHRN-32's contract.
+	Attempts int    `json:"attempts"`
+	RunnerUp string `json:"runner_up,omitempty"`
+
 	// Reason is the model's own argument for the destination.
 	//
 	// CARRIED BECAUSE PROMPT WORK IS IMPOSSIBLE WITHOUT IT: a report that says
@@ -116,6 +130,14 @@ type Accuracy struct {
 	NeedsInput int `json:"needs_input"`
 	Cleared    int `json:"cleared_fields"`
 	Unhandled  int `json:"unhandled"`
+
+	// Retried is how many items cost more than one completion, and Attempts is
+	// the total spent. Reported because a retry rate at or near zero is the
+	// only evidence that the JSON schema passed as `format` is actually
+	// constraining the model — if it silently stopped, stage 1 would start
+	// firing again and every other number here would be unchanged.
+	Retried  int `json:"retried"`
+	Attempts int `json:"attempts"`
 
 	// ByLabel is the per-destination breakdown, keyed by the LABEL's
 	// destination. §5: it matters more than the headline, because at this n an
@@ -386,6 +408,10 @@ func Score(proposer string, results []Result) *Report {
 		if acc != nil {
 			acc.N++
 			acc.Cleared += rec.ClearedCount
+			acc.Attempts += rec.Attempts
+			if rec.Attempts > 1 {
+				acc.Retried++
+			}
 			if rec.Status == scribe.StatusNeedsInput {
 				acc.NeedsInput++
 			}
@@ -535,6 +561,8 @@ func record(res Result) ItemRecord {
 		Status:         res.Outcome.Status,
 		ClearedCount:   len(res.Outcome.Cleared),
 		Cleared:        res.Outcome.Cleared,
+		Attempts:       res.Outcome.Attempts,
+		RunnerUp:       runnerUp(res.Outcome.Raw),
 	}
 	if res.Item.MemoID != uuid.Nil {
 		rec.MemoID = res.Item.MemoID.String()
@@ -575,6 +603,22 @@ func record(res Result) ItemRecord {
 		rec.Verdict = VerdictWrong
 	}
 	return rec
+}
+
+// runnerUp reads the model's second choice out of its raw answer.
+//
+// From the RAW rather than the payload, deliberately: `runner_up` shapes the
+// confidence and is a diagnostic this harness reports, but it is not part of
+// CHRN-32's proposal contract and this package does not get to extend that
+// contract by the back door. A missing or unparseable value is simply absent.
+func runnerUp(raw []byte) string {
+	var v struct {
+		RunnerUp string `json:"runner_up"`
+	}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return ""
+	}
+	return v.RunnerUp
 }
 
 // defensible reports whether the labeller marked this destination acceptable.

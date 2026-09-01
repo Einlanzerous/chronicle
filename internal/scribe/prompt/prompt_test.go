@@ -30,7 +30,7 @@ import (
 //   - After it: bump Version and this hash together, in one commit.
 //
 // v1 has attributed nothing yet, so CHRN-30's own iterations move the hash.
-const hashV1 = "ffc6a59e5e0d3f2fac98cfd2539e64dfbdd47ea5907b69c71da0246d278a58c4"
+const hashV1 = "6e7417b52f8d931372ede8a93d632887656724c5dcf1cc8c3a32eb99456d2c98"
 
 func TestThePromptCannotChangeWithoutBumpingItsVersion(t *testing.T) {
 	got := Hash()
@@ -220,4 +220,36 @@ func shingles(s string, n int) map[string]bool {
 		out[strings.Join(words[i:i+n], " ")] = true
 	}
 	return out
+}
+
+// The backoff must inspect only the TAIL. An earlier version asked
+// utf8.ValidString of the WHOLE string, so one bad byte anywhere before the cap
+// could never be trimmed away by shortening the end — the loop ran to empty and
+// the model routed a fragment, silently.
+func TestOneBadByteEarlyDoesNotDiscardTheTranscript(t *testing.T) {
+	body := "the thing I want is " + "\xff" + strings.Repeat("a", MaxTranscriptBytes)
+	out := Fill("p", "pg", body, "")
+
+	rendered := out[strings.Index(out, "# Transcript"):]
+	if n := strings.Count(rendered, "a"); n < MaxTranscriptBytes/2 {
+		t.Fatalf("only %d transcript bytes survived one invalid byte", n)
+	}
+	if !strings.Contains(rendered, "the thing I want is") {
+		t.Error("the start of the transcript was thrown away")
+	}
+}
+
+// At most three bytes come off, which is all a split rune can be.
+func TestTheBackoffTrimsAtMostARune(t *testing.T) {
+	// The cap lands mid-rune: one ASCII byte then 3-byte runes.
+	body := "a" + strings.Repeat("世", MaxTranscriptBytes)
+	out := Fill("p", "pg", body, "")
+	if !utf8.ValidString(out) {
+		t.Fatal("the rendered prompt is not valid UTF-8")
+	}
+	rendered := out[strings.Index(out, "# Transcript"):]
+	got := strings.Count(rendered, "世")*3 + 1
+	if MaxTranscriptBytes-got > 3 {
+		t.Fatalf("trimmed %d bytes, want at most 3", MaxTranscriptBytes-got)
+	}
 }

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -184,6 +185,17 @@ func runEval(args []string) error {
 	rep.Render(os.Stdout)
 
 	if *jsonOut != "" {
+		// The report carries the model's reasoning about each memo, and a
+		// reason quotes the transcript it is about — so a scored `real` run
+		// writes something corpus-adjacent. `.gitignore` covers `*.eval.json`
+		// and cannot cover an arbitrary path, so the mismatch is said out loud
+		// here rather than left to the one filename somebody guessed.
+		if !strings.HasSuffix(*jsonOut, ".eval.json") {
+			fmt.Fprintf(os.Stderr,
+				"NOTE: %s is not named *.eval.json, which is what .gitignore covers.\n"+
+					"      This file holds the model's reasoning about each memo, and a reason\n"+
+					"      quotes the transcript — do not commit it (CHRN-36 §1).\n\n", *jsonOut)
+		}
 		b, err := json.MarshalIndent(rep, "", "  ")
 		if err != nil {
 			return err

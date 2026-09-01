@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Einlanzerous/chronicle/internal/scribe/eval"
 	"github.com/Einlanzerous/chronicle/internal/store"
 	"github.com/Einlanzerous/chronicle/internal/transcribe"
 )
@@ -282,7 +283,7 @@ func TestEvalRefusesToScoreTheRealStratumAgainstTheFixtureCatalogue(t *testing.T
 	t.Setenv("CHRONICLE_SCRIBE_OLLAMA_URL", "http://127.0.0.1:11434")
 	t.Setenv("CHRONICLE_SCRIBE_MODEL", "gemma4:31b")
 
-	_, err := newRouter("../../docs/eval", "")
+	_, err := newRouter("../../docs/eval", eval.StratumReal)
 	if err == nil || !strings.Contains(err.Error(), "CHRN-31") {
 		t.Fatalf("err = %v, want it to name CHRN-31", err)
 	}
