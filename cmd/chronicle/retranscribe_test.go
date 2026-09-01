@@ -276,14 +276,17 @@ func TestEvalNamesTheMissingOllamaURLRatherThanTheDatabase(t *testing.T) {
 	}
 }
 
-// The ruling on CHRN-30's plan: the fixture catalogue is synthetic-only, and
-// the real stratum waits for CHRN-31's project half. Scoring `real` against
-// the fixture would grade a router nobody will run.
-func TestEvalRefusesToScoreTheRealStratumAgainstTheFixtureCatalogue(t *testing.T) {
+// The ruling on CHRN-30's plan: the fixture catalogue is synthetic-only. Now
+// that CHRN-31 exists, the real stratum needs it CONFIGURED — and with no live
+// list the run is refused rather than quietly falling back to the fixture,
+// which would grade a router nobody will run.
+func TestEvalRefusesTheRealStratumWithoutTheLiveCatalogue(t *testing.T) {
 	t.Setenv("CHRONICLE_SCRIBE_OLLAMA_URL", "http://127.0.0.1:11434")
 	t.Setenv("CHRONICLE_SCRIBE_MODEL", "gemma4:31b")
+	t.Setenv("CHRONICLE_SWITCHYARD_URL", "")
+	t.Setenv("CHRONICLE_SWITCHYARD_TOKEN", "")
 
-	_, err := newRouter("../../docs/eval", eval.StratumReal)
+	_, err := newRouter(context.Background(), "../../docs/eval", eval.StratumReal)
 	if err == nil || !strings.Contains(err.Error(), "CHRN-31") {
 		t.Fatalf("err = %v, want it to name CHRN-31", err)
 	}

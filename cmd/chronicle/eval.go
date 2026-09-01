@@ -160,7 +160,7 @@ func runEval(args []string) error {
 			"or pass --allow-moved-pins to take this run as a new baseline", len(moved))
 	}
 
-	rt, err := newRouter(filepath.Dir(*labelsPath), want)
+	rt, err := newRouter(ctx, filepath.Dir(*labelsPath), want)
 	if err != nil {
 		return err
 	}
@@ -250,7 +250,7 @@ func (e evalRouter) Route(ctx context.Context, it eval.Item) (scribe.Outcome, er
 // one, so `--stratum synthetic` works on a machine with no database and no
 // environment — and a router built from the full config would undo exactly
 // that, failing a synthetic run by naming the database instead of the model.
-func newRouter(labelsDir string, want eval.Stratum) (evalRouter, error) {
+func newRouter(ctx context.Context, labelsDir string, want eval.Stratum) (evalRouter, error) {
 	cfg, err := config.LoadScribe()
 	if err != nil {
 		return evalRouter{}, err
@@ -262,21 +262,32 @@ func newRouter(labelsDir string, want eval.Stratum) (evalRouter, error) {
 	}
 
 	// THE CATALOGUE IS THE STRATUM'S, by the ruling on CHRN-30's plan
-	// (2026-08-31). The synthetic stratum routes against a committed fixture
-	// so a run is reproducible from the repo alone — which is the property
-	// CHRN-36 §1 bought by committing that stratum, and what keeps this half
-	// free of a token and a network. The real stratum needs the live list, and
-	// that is CHRN-31's project half.
-	if want != eval.StratumSynthetic {
-		return evalRouter{}, fmt.Errorf(
-			"eval: only --stratum synthetic can be scored today.\n" +
-				"The real stratum must route against the LIVE Switchyard project list, which is\n" +
-				"CHRN-31's project half and does not exist yet. Routing it against the committed\n" +
-				"fixture catalogue would score a router nobody will run — and routing it against\n" +
-				"no catalogue at all would put every TICKET in needs_input by construction")
+	// (2026-08-31). The synthetic stratum routes against a committed fixture so
+	// a run is reproducible from the repo alone — the property CHRN-36 §1
+	// bought by committing that stratum, and what keeps this half free of a
+	// token and a network. The real stratum routes against the LIVE list, which
+	// is CHRN-31: scoring the held-out corpus against a fixture would grade a
+	// router nobody runs.
+	var cat *catalogue.Snapshot
+	if want == eval.StratumSynthetic {
+		cat, err = catalogue.LoadFixtureFile(filepath.Join(labelsDir, catalogueFile))
+	} else {
+		if !cfg.CatalogueConfigured() {
+			return evalRouter{}, fmt.Errorf(
+				"eval: scoring anything but --stratum synthetic needs the live Switchyard project\n" +
+					"list (CHRN-31). Set CHRONICLE_SWITCHYARD_URL and CHRONICLE_SWITCHYARD_TOKEN.\n" +
+					"Routing the held-out corpus against the committed fixture catalogue would score\n" +
+					"a router nobody will run")
+		}
+		var live *catalogue.Live
+		if live, err = catalogue.NewLive(cfg.SwitchyardURL, cfg.SwitchyardToken); err == nil {
+			// ONE FETCH PER RUN. The snapshot is the cache: it lives for this
+			// batch and nothing outlives it, which is how CHRN-31's "cache
+			// briefly for a batch run, but never across runs" is satisfied by
+			// construction rather than by a TTL somebody has to trust.
+			cat, err = live.Fetch(ctx)
+		}
 	}
-
-	cat, err := catalogue.LoadFixtureFile(filepath.Join(labelsDir, catalogueFile))
 	if err != nil {
 		return evalRouter{}, err
 	}
