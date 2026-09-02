@@ -65,8 +65,12 @@ func (tr *tracker) start(t *testing.T) *Client {
 }
 
 func aTicket(memo uuid.UUID) NewTicket {
+	return aTicketWithKey(memo, "chronicle-decision-1")
+}
+
+func aTicketWithKey(memo uuid.UUID, key string) NewTicket {
 	return NewTicket{ProjectKey: "CHRN", Type: "task", Title: "Do the thing",
-		Description: "## Summary\nx", MemoID: memo}
+		Description: "## Summary\nx", MemoID: memo, IdempotencyKey: key}
 }
 
 // The whole of this ticket: a memo that creates CHRN-1 and then gets replayed
@@ -92,29 +96,65 @@ func TestAReplayedCreateReturnsTheSameTicket(t *testing.T) {
 	}
 }
 
-// Derived, never random: a random key makes every retry a new ticket, which is
-// exactly the failure this prevents. Keying on the memo also catches the
-// likelier accident — the same memo in two different batches.
-func TestTheIdempotencyKeyIsDerivedFromTheMemo(t *testing.T) {
-	memo := uuid.New()
-	key := IdempotencyKey(memo)
-
-	// Derived from the memo, so it is the same key on every retry without
-	// anything having to be stored between them.
-	if !strings.Contains(key, memo.String()) {
-		t.Errorf("key %q does not name the memo", key)
-	}
-	if key == IdempotencyKey(uuid.New()) {
-		t.Fatal("two memos share a key")
-	}
-
+// The caller's key is sent verbatim. It belongs to the DECISION and is stored
+// beside it, so a retry replays and a new decision does not.
+func TestTheCallersIdempotencyKeyIsSentVerbatim(t *testing.T) {
 	tr := &tracker{t: t}
 	c := tr.start(t)
-	if _, err := c.CreateTicket(context.Background(), aTicket(memo)); err != nil {
+	if _, err := c.CreateTicket(context.Background(),
+		aTicketWithKey(uuid.New(), "chronicle-decision-abc")); err != nil {
 		t.Fatal(err)
 	}
-	if len(tr.keys) != 1 || tr.keys[0] != IdempotencyKey(memo) {
-		t.Fatalf("sent key %v, want %s", tr.keys, IdempotencyKey(memo))
+	if len(tr.keys) != 1 || tr.keys[0] != "chronicle-decision-abc" {
+		t.Fatalf("sent key %v, want the caller's", tr.keys)
+	}
+}
+
+// A key derived from the memo would poison it: Switchyard caches every
+// sub-500 JSON response — including a 4xx — under the key it was sent with,
+// for 24 hours. A refusal would then replay for every corrected decision the
+// operator made that day. A NEW decision must be able to reach Switchyard.
+func TestANewDecisionOnTheSameMemoIsNotDeduplicated(t *testing.T) {
+	tr := &tracker{t: t}
+	c := tr.start(t)
+	memo := uuid.New()
+
+	first, err := c.CreateTicket(context.Background(), aTicketWithKey(memo, "decision-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := c.CreateTicket(context.Background(), aTicketWithKey(memo, "decision-2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Key == second.Key {
+		t.Fatal("a second decision on the same memo replayed the first — the key is memo-derived somewhere")
+	}
+}
+
+// Refused rather than defaulted: inventing a key here would make it fresh per
+// call, which duplicates on every retry — the same failure with better manners.
+func TestCreateRefusesAMissingIdempotencyKey(t *testing.T) {
+	tr := &tracker{t: t}
+	c := tr.start(t)
+	_, err := c.CreateTicket(context.Background(), aTicketWithKey(uuid.New(), ""))
+	if err == nil || !strings.Contains(err.Error(), "no idempotency key") {
+		t.Fatalf("err = %v, want a refusal", err)
+	}
+	if tr.next != 0 {
+		t.Error("a keyless create reached the tracker")
+	}
+}
+
+// Two decisions minted independently must not collide.
+func TestNewIdempotencyKeyIsUnique(t *testing.T) {
+	seen := map[string]bool{}
+	for range 100 {
+		k := NewIdempotencyKey()
+		if seen[k] {
+			t.Fatalf("minted key %q twice", k)
+		}
+		seen[k] = true
 	}
 }
 
@@ -169,9 +209,9 @@ func TestCreateRefusesWhatCannotBeUndone(t *testing.T) {
 		in   NewTicket
 		want string
 	}{
-		{"no project", NewTicket{Type: "task", Title: "t", MemoID: memo}, "no project key"},
-		{"no title", NewTicket{ProjectKey: "CHRN", Type: "task", MemoID: memo}, "no title"},
-		{"no memo", NewTicket{ProjectKey: "CHRN", Type: "task", Title: "t"}, "no memo id"},
+		{"no project", NewTicket{Type: "task", Title: "t", MemoID: memo, IdempotencyKey: "k"}, "no project key"},
+		{"no title", NewTicket{ProjectKey: "CHRN", Type: "task", MemoID: memo, IdempotencyKey: "k"}, "no title"},
+		{"no memo", NewTicket{ProjectKey: "CHRN", Type: "task", Title: "t", IdempotencyKey: "k"}, "no memo id"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := c.CreateTicket(context.Background(), tc.in); err == nil ||
@@ -245,7 +285,7 @@ func TestTheClientDoesNotPretendTheHeaderIsALock(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			tk, err := c.CreateTicket(context.Background(), aTicket(memo))
+			tk, err := c.CreateTicket(context.Background(), aTicketWithKey(memo, "one-decision"))
 			if err == nil {
 				keys[i] = tk.Key
 			}

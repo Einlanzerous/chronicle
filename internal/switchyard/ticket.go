@@ -20,6 +20,26 @@ type NewTicket struct {
 	Title       string
 	Description string
 
+	// IdempotencyKey deduplicates a retry of THIS DECISION.
+	//
+	// SUPPLIED, NOT DERIVED, and the reason is a trap CHRN-33's plan found in
+	// review. Switchyard caches every response below 500 that has a JSON body,
+	// and it renders every error as JSON — so a 4xx is cached under whatever
+	// key it was sent with, for 24 hours. A key derived from the memo would
+	// therefore poison that memo: a create refused because its project was
+	// archived would replay the cached 404 for every corrected decision the
+	// operator made for the rest of the day, with nothing saying why.
+	//
+	// A key that belongs to the DECISION does not have that problem. A retry of
+	// the same decision re-sends the same stored key and replays; a new
+	// decision carries a new key and reaches Switchyard. The caller keeps it
+	// beside its own durable record — for Chronicle that is CHRN-33's link row.
+	//
+	// It must still be STABLE ACROSS RETRIES rather than freshly random per
+	// call, or every retry creates a ticket. That property now comes from being
+	// stored rather than from being computed.
+	IdempotencyKey string
+
 	// MemoID is the provenance, and it is not optional.
 	//
 	// "The created ticket records where it came from (the memo, and Chronicle)
@@ -46,18 +66,16 @@ type Ticket struct {
 // can tell where it came from without knowing the memo id means anything.
 const MetadataSource = "chronicle"
 
-// IdempotencyKey is the key a create is deduplicated by, derived from the memo.
+// NewIdempotencyKey mints a key for one decision.
 //
-// DERIVED, NEVER RANDOM. A random key makes every retry a new ticket, which is
-// precisely the failure this ticket exists to prevent — "a memo that creates
-// SWY-231 and then gets replayed must return SWY-231, not create SWY-232".
-// Keying on the memo also protects the likelier accident: the same memo
-// submitted in two different batches, which a per-batch key would not catch.
-func IdempotencyKey(memoID uuid.UUID) string {
-	return "chronicle-memo-" + memoID.String()
+// A HELPER, NOT A DERIVATION. Callers store what this returns beside the
+// decision it belongs to and re-send that stored value on every retry — see
+// NewTicket.IdempotencyKey for why the key must not be a function of the memo.
+func NewIdempotencyKey() string {
+	return "chronicle-" + uuid.NewString()
 }
 
-// CreateTicket creates one ticket, idempotently on the memo.
+// CreateTicket creates one ticket under the caller's idempotency key.
 //
 // THE HEADER REPLAYS A RESPONSE. IT DOES NOT SERIALISE A SIDE EFFECT, and a
 // caller that mistakes the one for the other will create duplicate tickets.
@@ -78,6 +96,9 @@ func IdempotencyKey(memoID uuid.UUID) string {
 // package cannot do it, because the only thing that can is a lock next to the
 // durable record. Said here, in the function that would cause it, rather than
 // only in a plan somebody has to find.
+//
+// The same record is where the idempotency key lives — see
+// NewTicket.IdempotencyKey.
 func (c *Client) CreateTicket(ctx context.Context, in NewTicket) (Ticket, error) {
 	switch {
 	case strings.TrimSpace(in.ProjectKey) == "":
@@ -90,6 +111,11 @@ func (c *Client) CreateTicket(ctx context.Context, in NewTicket) (Ticket, error)
 		return Ticket{}, fmt.Errorf("switchyard: no title")
 	case in.MemoID == uuid.Nil:
 		return Ticket{}, fmt.Errorf("switchyard: no memo id — a ticket with no trail back to its recording is what this provenance exists to prevent")
+	case strings.TrimSpace(in.IdempotencyKey) == "":
+		// Refused rather than defaulted. A create with no key is one that
+		// duplicates on every retry, and inventing one here would make it
+		// fresh per call — the same failure with better manners.
+		return Ticket{}, fmt.Errorf("switchyard: no idempotency key — the caller stores one beside its durable record and re-sends it (CHRN-33's link row)")
 	}
 
 	body := map[string]any{
@@ -108,7 +134,7 @@ func (c *Client) CreateTicket(ctx context.Context, in NewTicket) (Ticket, error)
 
 	var t Ticket
 	err := c.do(ctx, "POST", "/v1/tickets", body,
-		map[string]string{"Idempotency-Key": IdempotencyKey(in.MemoID)}, &t)
+		map[string]string{"Idempotency-Key": in.IdempotencyKey}, &t)
 	if err != nil {
 		return Ticket{}, err
 	}
