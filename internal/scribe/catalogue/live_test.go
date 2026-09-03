@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/Einlanzerous/chronicle/internal/switchyard"
 )
@@ -158,4 +159,113 @@ func TestAgainstTheLiveSwitchyard(t *testing.T) {
 	}
 	t.Logf("%d live projects, catalogue %s", len(s.Projects), s.SHA256()[:12])
 	fmt.Fprintln(os.Stderr, s.RenderProjects())
+}
+
+// A SHORT FIRST SENTENCE IS STILL THE SUMMARY. The scan used to start at byte
+// 40, so anything shorter fell through to the hard cut — and EIDO's real
+// description is exactly that case, twenty-eight characters of the best summary
+// in the list, replaced by two-and-a-bit sentences.
+func TestAShortFirstSentenceIsStillTheSummary(t *testing.T) {
+	const eido = "Thin-client Agent OS portal. A Tailscale-connected Galaxy Tab A11+ in Fully " +
+		"Kiosk is a dumb display; a Go middleware routes voice intents to a local LLM on the " +
+		"R9700 that drives MCP tools and returns UI Directives for a Vue frontend."
+
+	s := fetch(t, live(t, p("EIDO", "Project Eidolon", eido)))
+	if got := s.Projects[0].Description; got != "Thin-client Agent OS portal." {
+		t.Errorf("description = %q, want the short first sentence", got)
+	}
+}
+
+// ...and the thing the old floor was defending against still does not fool it.
+// An abbreviation is short AND a single token; a real summary is short and has
+// several words, which is what the guard now tests instead of an offset.
+func TestAnAbbreviationIsNotMistakenForASentenceEnd(t *testing.T) {
+	for _, tc := range []struct{ name, desc, want string }{
+		{
+			// One token before the stop: not a sentence however long it is.
+			name: "single token",
+			desc: "Thin-client-agent-os-portal. A Tailscale-connected tablet drives the estate.",
+			want: "Thin-client-agent-os-portal. A Tailscale-connected tablet drives the estate.",
+		},
+		{
+			name: "company suffix",
+			desc: "Run by Argosy Systems Inc. The estate's object store and its replication.",
+			want: "Run by Argosy Systems Inc. The estate's object store and its replication.",
+		},
+		{
+			// The honorific is skipped and the scan carries on to the real
+			// sentence end, rather than giving up on the description.
+			name: "honorific mid-sentence",
+			desc: "Maintained with Dr. Adeyemi. A shared corpus of estate measurements.",
+			want: "Maintained with Dr. Adeyemi.",
+		},
+		{
+			// Below the length floor: `Est.` is not a summary.
+			name: "too short",
+			desc: "Est. 2019 and still running. The estate's oldest service.",
+			want: "Est. 2019 and still running.",
+		},
+		{
+			// A version number carries no space after the stop, so the original
+			// rule already excluded it. Asserted so it stays excluded.
+			name: "version number",
+			desc: "Ships as v1.4 of the collector. Nothing else runs here.",
+			want: "Ships as v1.4 of the collector.",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := fetch(t, live(t, p("X", "X", tc.desc)))
+			if got := s.Projects[0].Description; got != tc.want {
+				t.Errorf("description = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// A description with no space in it for 240 bytes cannot cut on a word
+// boundary, so the byte cut is the one that lands — and a multi-byte rune
+// straddling it would put a partial rune in the prompt, where nobody would
+// trace it back here.
+func TestTheHardCutLandsOnARuneBoundary(t *testing.T) {
+	s := fetch(t, live(t, p("X", "X", strings.Repeat("日", 300))))
+	got := s.Projects[0].Description
+	if !utf8.ValidString(got) {
+		t.Fatalf("description is not valid UTF-8: %q", got)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("description = %q, want it marked as cut", got)
+	}
+}
+
+// FETCH ENFORCES THE INVARIANT PARSE DOCUMENTS. A lowercase key renders into
+// the prompt, the model answers it, stage 1 rejects `project_key` as not
+// uppercase, and the attempt burns to MaxAttempts for that project alone.
+//
+// DROPPED RATHER THAN REFUSED, which is where the two constructors of a
+// Snapshot are allowed to differ: a fixture is a file a person edits, so Parse
+// refuses and they fix it; a live list belongs to another service, so refusing
+// would stop all routing over one project's data error.
+func TestALowercaseKeyIsNotOfferedAsADestination(t *testing.T) {
+	s := fetch(t, live(t,
+		p("chrn", "Chronicle lowercase", "should not be offered"),
+		p("SWY", "Switchyard", "should be offered"),
+	))
+	if len(s.Projects) != 1 || s.Projects[0].Key != "SWY" {
+		t.Fatalf("projects = %+v, want only the uppercase one", s.Projects)
+	}
+	if s.HasProject("chrn") || s.HasProject("CHRN") {
+		t.Fatal("a lowercase key reached the catalogue under either spelling")
+	}
+	// Parse holds the same line for the same reason, and refuses instead.
+	if _, err := Parse([]byte("version: 1\nprojects:\n  - key: chrn\n    name: Chronicle\n")); err == nil {
+		t.Fatal("Parse accepted a lowercase key")
+	}
+}
+
+// If dropping leaves nothing, a refusal fires rather than a silently empty
+// catalogue — so the drop above cannot hide a wholesale data error.
+func TestAListOfOnlyLowercaseKeysIsRefused(t *testing.T) {
+	if _, err := live(t, p("chrn", "Chronicle", "x")).Fetch(context.Background()); err == nil {
+		t.Fatal("a catalogue with no usable project was returned rather than refused")
+	}
 }

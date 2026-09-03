@@ -18,10 +18,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // DefaultTimeout bounds one call. Switchyard is on the same docker network and
@@ -88,7 +90,8 @@ func (c *Client) do(ctx context.Context, method, path string, body any, hdr map[
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 300 {
-		return &Error{Status: resp.StatusCode, Method: method, Path: path}
+		return &Error{Status: resp.StatusCode, Method: method, Path: path,
+			Detail: readDetail(resp.Body)}
 	}
 	if out == nil {
 		return nil
@@ -105,10 +108,78 @@ type Error struct {
 	Status int
 	Method string
 	Path   string
+
+	// Detail is Switchyard's own explanation, truncated. It is carried because
+	// on create there is more than one way to be wrong — an unknown project
+	// key, a bad type, an oversized title — and "Bad Request" names none of
+	// them. CHRN-33 stores this string on the link row as `refused_reason` and
+	// shows it to the operator on the memo that failed, so an empty one is a
+	// person told their decision evaporated and not told why.
+	//
+	// Safe to carry where the token is not: the credential travels in a request
+	// header and never comes back in a response body.
+	Detail string
 }
 
 func (e *Error) Error() string {
-	return fmt.Sprintf("switchyard: %s %s: %s", e.Method, e.Path, http.StatusText(e.Status))
+	// http.StatusText is empty for a code it does not know — a proxy answering
+	// 599 would otherwise render "switchyard: POST /v1/tickets: " and tell the
+	// operator nothing at all. The number is always there to fall back on.
+	what := http.StatusText(e.Status)
+	if what == "" {
+		what = fmt.Sprintf("status %d", e.Status)
+	}
+	if e.Detail != "" {
+		return fmt.Sprintf("switchyard: %s %s: %s: %s", e.Method, e.Path, what, e.Detail)
+	}
+	return fmt.Sprintf("switchyard: %s %s: %s", e.Method, e.Path, what)
+}
+
+// maxErrorDetail bounds what is copied out of an error body. Enough for a
+// sentence of explanation; short enough that a proxy answering with an HTML
+// page does not end up in a database column and a log line.
+const maxErrorDetail = 400
+
+// readDetail extracts a short, single-line explanation from an error body.
+//
+// It reads a bounded prefix rather than the whole body, and collapses
+// whitespace, because this string ends up in `refused_reason` and in a
+// structured log field — both of which are read by a person scanning, and
+// neither of which wants forty lines of an error page.
+func readDetail(r io.Reader) string {
+	b, err := io.ReadAll(io.LimitReader(r, maxErrorDetail*4))
+	if err != nil || len(b) == 0 {
+		return ""
+	}
+	// A JSON error body is the common case and its message is the useful part;
+	// anything else is carried verbatim, because guessing wrong about a shape
+	// is how an explanation becomes an empty string.
+	var body struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+		Detail  string `json:"detail"`
+	}
+	text := string(b)
+	if json.Unmarshal(b, &body) == nil {
+		for _, s := range []string{body.Message, body.Error, body.Detail} {
+			if strings.TrimSpace(s) != "" {
+				text = s
+				break
+			}
+		}
+	}
+	text = strings.Join(strings.Fields(text), " ")
+	if len(text) > maxErrorDetail {
+		// ON A RUNE BOUNDARY. A byte cut through a multi-byte rune leaves a
+		// partial one, and this string lands in CHRN-33's `refused_reason` and
+		// is shown to the operator on the memo that failed.
+		cut := text[:maxErrorDetail]
+		for len(cut) > 0 && !utf8.ValidString(cut) {
+			cut = cut[:len(cut)-1]
+		}
+		text = cut + "…"
+	}
+	return text
 }
 
 // Retryable reports whether the call is worth repeating. 5xx and 429 are; a

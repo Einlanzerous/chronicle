@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/Einlanzerous/chronicle/internal/switchyard"
 )
@@ -42,6 +43,23 @@ type Live struct{ sw *switchyard.Client }
 // sentence where it can and a word where it cannot.
 const maxDescription = 240
 
+// minSummary is the shortest run this will accept as a first sentence, and it
+// replaces an offset floor that was the wrong shape for the job — see summarise.
+const minSummary = 12
+
+// notASentenceEnd is the set of words that end in a full stop and are followed
+// by a capital often enough to fool the sentence scan.
+//
+// SMALL ON PURPOSE. This is a list of things that turn up in project
+// descriptions, not a general English abbreviation table: a bigger one would be
+// more code defending against text this estate does not write.
+var notASentenceEnd = map[string]bool{
+	"inc": true, "ltd": true, "llc": true, "corp": true, "co": true,
+	"etc": true, "eg": true, "e.g": true, "ie": true, "i.e": true,
+	"vs": true, "approx": true, "cf": true, "no": true,
+	"mr": true, "ms": true, "mrs": true, "dr": true, "st": true, "jr": true, "sr": true,
+}
+
 // NewLive wraps a Switchyard client.
 func NewLive(sw *switchyard.Client) *Live { return &Live{sw: sw} }
 
@@ -62,9 +80,34 @@ func (l *Live) Fetch(ctx context.Context) (*Snapshot, error) {
 
 	s := &Snapshot{Version: 1, Pages: []string{}}
 	for _, p := range ps {
+		// THE SAME INVARIANT Parse ENFORCES, and it is here because the two
+		// constructors of one Snapshot were disagreeing about a rule only one
+		// of them documented.
+		//
+		// Parse says why: "a lowercase key here would be a catalogue that can
+		// only produce answers stage 1 rejects" — validate.go requires an
+		// uppercase project_key, so a lowercase one renders into the prompt,
+		// the model answers it, stage 1 rejects it, and the attempt burns to
+		// MaxAttempts for that project alone.
+		//
+		// DROPPED RATHER THAN REFUSED, which is where the two constructors are
+		// allowed to differ. A fixture is a file a person edits, so Parse
+		// refuses and they fix it. A live list belongs to another service and
+		// Chronicle cannot fix it, so refusing would stop ALL routing over one
+		// project's data error. Dropping costs that project alone, and it is
+		// not silent: with no such destination in the prompt the model answers
+		// an empty project_key, its memos land needs_input, and they show up on
+		// the triage screen asking for a project. If dropping leaves nothing,
+		// the refusal above fires, so it cannot hide a wholesale error either.
+		if p.Key != strings.ToUpper(p.Key) {
+			continue
+		}
 		s.Projects = append(s.Projects, Project{
 			Key: p.Key, Name: p.Name, Description: summarise(p.Description),
 		})
+	}
+	if len(s.Projects) == 0 {
+		return nil, fmt.Errorf("catalogue: Switchyard returned no live projects with a usable key, so every TICKET would answer with an empty project_key")
 	}
 
 	// ORDER IS FIXED HERE, not left to the endpoint. The salvage's list was
@@ -90,17 +133,37 @@ func contentHash(ps []Project) string {
 }
 
 // summarise cuts a description to the prompt budget: the first sentence where
-// there is one, otherwise a word boundary, with an ellipsis so a reader can see
-// it was cut.
+// there is one worth trusting, otherwise a word boundary, with an ellipsis so a
+// reader can see it was cut.
+//
+// "WORTH TRUSTING" IS THE WHOLE OF THE DIFFICULTY, and the guard used to be an
+// offset: the scan began at byte 40, so a description whose first sentence was
+// shorter than that never matched and fell through to the hard 240-byte cut.
+// EIDO's is `Thin-client Agent OS portal.` — twenty-eight characters, and
+// exactly the summary maxDescription's comment claims this lands on. It got
+// two-and-a-bit sentences instead, and the comment described behaviour the code
+// did not have.
+//
+// An offset was never the right shape, because what it defends against is an
+// ABBREVIATION — `Inc.`, `Est.`, `Dr.` — and those are short AND a single
+// token, while a genuine short summary is short and has several words. So the
+// guard now tests the candidate itself: long enough, more than one word, and
+// not ending in a word from the small set that is usually not a sentence end.
+// The existing "full stop, then a space, then a capital" rule already excludes
+// version numbers, which carry no space.
+//
+// The residual failure is a summary cut SHORTER than it should be, never one
+// that says something wrong.
 func summarise(d string) string {
 	d = strings.Join(strings.Fields(strings.ReplaceAll(d, "\n", " ")), " ")
 	if d == "" {
 		return ""
 	}
-	// A sentence end, but not an abbreviation or a version number: require the
-	// full stop to be followed by a space and a capital.
-	for i := 40; i < len(d)-2 && i < maxDescription; i++ {
-		if d[i] == '.' && d[i+1] == ' ' && unicode.IsUpper(rune(d[i+2])) {
+	for i := minSummary; i < len(d)-2 && i < maxDescription; i++ {
+		if d[i] != '.' || d[i+1] != ' ' || !unicode.IsUpper(rune(d[i+2])) {
+			continue
+		}
+		if isSentence(d[:i]) {
 			return d[:i+1]
 		}
 	}
@@ -111,5 +174,27 @@ func summarise(d string) string {
 	if i := strings.LastIndex(cut, " "); i > maxDescription/2 {
 		cut = cut[:i]
 	}
+	// ON A RUNE BOUNDARY. The word-boundary cut above usually removes a
+	// straddling rune for free, but it does not fire on a long unbroken run —
+	// and a partial rune here goes into the prompt, where nobody would trace it
+	// back to this line.
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
 	return strings.TrimRight(cut, " ,;:—-") + "…"
+}
+
+// isSentence reports whether a run ending at a full stop reads as a whole
+// sentence rather than as an abbreviation somebody happened to put a capital
+// after.
+func isSentence(candidate string) bool {
+	if len(candidate) < minSummary {
+		return false
+	}
+	i := strings.LastIndex(candidate, " ")
+	if i < 0 {
+		// One word. `Thin-client.` is not a summary; `Inc.` is not either.
+		return false
+	}
+	return !notASentenceEnd[strings.ToLower(candidate[i+1:])]
 }
