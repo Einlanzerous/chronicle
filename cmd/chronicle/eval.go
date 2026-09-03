@@ -20,6 +20,7 @@ import (
 	"github.com/Einlanzerous/chronicle/internal/scribe/eval"
 	"github.com/Einlanzerous/chronicle/internal/scribe/router"
 	"github.com/Einlanzerous/chronicle/internal/store"
+	"github.com/Einlanzerous/chronicle/internal/switchyard"
 )
 
 // `chronicle eval` — CHRN-36's harness at a terminal.
@@ -298,13 +299,13 @@ func newRouter(ctx context.Context, labelsDir string, want eval.Stratum) (evalRo
 					"Routing the held-out corpus against the committed fixture catalogue would score\n" +
 					"a router nobody will run")
 		}
-		var live *catalogue.Live
-		if live, err = catalogue.NewLive(cfg.SwitchyardURL, cfg.SwitchyardToken); err == nil {
+		var sw *switchyard.Client
+		if sw, err = switchyard.New(cfg.SwitchyardURL, cfg.SwitchyardToken); err == nil {
 			// ONE FETCH PER RUN. The snapshot is the cache: it lives for this
 			// batch and nothing outlives it, which is how CHRN-31's "cache
 			// briefly for a batch run, but never across runs" is satisfied by
 			// construction rather than by a TTL somebody has to trust.
-			cat, err = live.Fetch(ctx)
+			cat, err = catalogue.NewLive(sw).Fetch(ctx)
 		}
 	}
 
