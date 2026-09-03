@@ -3,6 +3,7 @@ package switchyard
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/google/uuid"
@@ -141,6 +142,86 @@ func (c *Client) CreateTicket(ctx context.Context, in NewTicket) (Ticket, error)
 	if t.Key == "" {
 		return Ticket{}, fmt.Errorf("switchyard: ticket created but no key came back, so nothing can link to it")
 	}
-	t.URL = c.base.String() + "/tickets/" + t.Key
+	t.URL = c.TicketURL(t.Key)
 	return t, nil
+}
+
+// TicketURL is the deep link for a key.
+//
+// Exported because a key that came back out of a DATABASE needs the same link
+// as one that came back from a create — CHRN-33 answers `applied` from a stored
+// key without calling Switchyard at all, and a second spelling of this
+// concatenation somewhere else is a second place to get the routing wrong.
+func (c *Client) TicketURL(key string) string {
+	if key == "" {
+		return ""
+	}
+	return c.base.String() + "/tickets/" + key
+}
+
+type ticketsPage struct {
+	Items []struct {
+		Key       string  `json:"key"`
+		ID        string  `json:"id"`
+		DeletedAt *string `json:"deleted_at"`
+	} `json:"items"`
+	Page struct {
+		NextCursor string `json:"next_cursor"`
+		HasMore    bool   `json:"has_more"`
+	} `json:"page"`
+}
+
+// TicketsByMemo returns every ticket carrying this memo's id in its metadata.
+//
+// THIS IS WHAT MAKES A CRASH RECOVERABLE. CHRN-33 writes a pending row, calls
+// CreateTicket, and confirms. A process that dies between the call and the
+// confirm leaves a row that may or may not have a ticket behind it, and there
+// is no local evidence which — the answer is in Switchyard. This asks it.
+//
+// BY THE MEMO, NOT BY THE IDEMPOTENCY KEY, and that difference is why the
+// recovery has no expiry. The key is a cache entry with a 24-hour TTL and
+// nothing can be looked up by it; `metadata->>chronicle_memo_id` is a property
+// of the ticket itself, stamped by CreateTicket, and it is as findable next
+// month as it is next minute.
+//
+// IT RETURNS A LIST, AND THE PLURAL IS THE POINT. More than one match means two
+// tickets claim one memo — a race from before the pending row existed, or a
+// person who copied the metadata by hand. The caller must NOT pick one:
+// confirming either orphans the other, and nothing here knows which is right.
+//
+// A key and an id, and no title or status, for the reason the package comment
+// gives: there is no method in this package whose result could be assigned into
+// a column and go stale.
+func (c *Client) TicketsByMemo(ctx context.Context, memoID uuid.UUID) ([]Ticket, error) {
+	if memoID == uuid.Nil {
+		return nil, fmt.Errorf("switchyard: no memo id to search for")
+	}
+	var out []Ticket
+	seen := map[string]bool{}
+	cursor := ""
+
+	for page := 0; ; page++ {
+		if page > 100 {
+			return nil, fmt.Errorf("switchyard: /v1/tickets did not stop paginating")
+		}
+		q := url.Values{"cf.chronicle_memo_id": {memoID.String()}}
+		if cursor != "" {
+			q.Set("cursor", cursor)
+		}
+		var body ticketsPage
+		if err := c.do(ctx, "GET", "/v1/tickets?"+q.Encode(), nil, nil, &body); err != nil {
+			return nil, err
+		}
+		for _, t := range body.Items {
+			if t.Key == "" || t.DeletedAt != nil || seen[t.Key] {
+				continue
+			}
+			seen[t.Key] = true
+			out = append(out, Ticket{Key: t.Key, ID: t.ID, URL: c.TicketURL(t.Key)})
+		}
+		if !body.Page.HasMore || body.Page.NextCursor == "" {
+			return out, nil
+		}
+		cursor = body.Page.NextCursor
+	}
 }
