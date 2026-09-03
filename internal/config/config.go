@@ -460,6 +460,19 @@ type Scribe struct {
 	PreacceptMin float64
 	// MaxAttempts is CHRN-32 §7's ceiling.
 	MaxAttempts int
+
+	// SwitchyardURL and SwitchyardToken read the live project list (CHRN-31).
+	//
+	// They live on Scribe rather than on Config because the catalogue is part
+	// of a routing run and nothing else uses it, and because `chronicle eval`
+	// must be able to reach it without a database.
+	SwitchyardURL   string
+	SwitchyardToken string
+}
+
+// CatalogueConfigured reports whether the live project list can be read.
+func (s Scribe) CatalogueConfigured() bool {
+	return s.SwitchyardURL != "" && s.SwitchyardToken != ""
 }
 
 // Enabled reports whether there is a model to ask.
@@ -507,6 +520,21 @@ func LoadScribe() (Scribe, error) {
 		if err != nil || s.MaxAttempts < 1 {
 			return s, fmt.Errorf("config: CHRONICLE_SCRIBE_MAX_ATTEMPTS %q is not a positive integer", v)
 		}
+	}
+
+	// CHRN-31. Both or neither, for the reason the Ollama pair has: a URL with
+	// no token reaches an endpoint that answers 401, and half-configured looks
+	// configured right up until the first fetch.
+	s.SwitchyardURL = strings.TrimRight(strings.TrimSpace(os.Getenv("CHRONICLE_SWITCHYARD_URL")), "/")
+	s.SwitchyardToken = strings.TrimSpace(os.Getenv("CHRONICLE_SWITCHYARD_TOKEN"))
+	if s.SwitchyardURL != "" {
+		u, err := url.Parse(s.SwitchyardURL)
+		if err != nil || !u.IsAbs() || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			return s, fmt.Errorf("config: CHRONICLE_SWITCHYARD_URL %q is not an absolute http(s) URL", s.SwitchyardURL)
+		}
+	}
+	if (s.SwitchyardURL == "") != (s.SwitchyardToken == "") {
+		return s, fmt.Errorf("config: set both CHRONICLE_SWITCHYARD_URL and CHRONICLE_SWITCHYARD_TOKEN, or neither")
 	}
 	return s, nil
 }
