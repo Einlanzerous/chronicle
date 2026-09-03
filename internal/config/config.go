@@ -64,7 +64,7 @@ const DefaultScribeMaxAttempts = 3
 //     times in twenty-one, so this admits ONE card in eighteen there, against
 //     nine in twenty-three on the synthetic fixtures. Widening it is not the
 //     fix: at 0.65 the real stratum pre-accepts thirteen and three of them are
-//     wrong. Spreading confidence on real speech is CHRN-30's problem.
+//     wrong. Spreading confidence on real speech is CHRN-87's problem.
 const DefaultScribePreacceptMin = 0.80
 
 // Config is the process-wide configuration.
@@ -195,7 +195,10 @@ type Config struct {
 	// ScribePreacceptMin is the confidence at or above which a proposal MAY be
 	// pre-selected for ACCEPT ALL. Owned by CHRN-36, which is the only thing
 	// that will ever know the right value; see DefaultScribePreacceptMin for
-	// why the default admits nothing.
+	// the run that set it.
+	//
+	// THE DEFAULT IS LIVE. It admitted nothing until 2026-09-03 and now admits
+	// 0.80, so ACCEPT ALL pre-selects without anybody setting an env var.
 	//
 	// It is a floor and not the only gate: CHRN-32 §4 excludes DISCARD from
 	// pre-acceptance by contract, at any confidence, because `discarded` is
@@ -497,7 +500,7 @@ type Scribe struct {
 	OllamaURL string
 	// Model is CHRONICLE_SCRIBE_MODEL, e.g. `gemma4:31b`.
 	Model string
-	// PreacceptMin is CHRN-36's to set; the default admits nothing.
+	// PreacceptMin is CHRN-36's to set; the default is 0.80 and pre-selects.
 	PreacceptMin float64
 	// MaxAttempts is CHRN-32 §7's ceiling.
 	MaxAttempts int

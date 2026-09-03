@@ -287,7 +287,7 @@ func (r *Report) renderThresholds(w io.Writer) {
 			"confidence, so raise `CHRONICLE_SCRIBE_PREACCEPT_MIN` back above 1, which admits\n"+
 			"nothing. The compiled default is 0.80 as of CHRN-36's run on 2026-09-03, so a flat\n"+
 			"run now means UNDOING that rather than leaving things alone. ACCEPT ALL waits for a\n"+
-			"prompt that calibrates — a CHRN-30 problem and not a threshold problem. The sweep\n"+
+			"prompt that calibrates — a CHRN-87 problem and not a threshold problem. The sweep\n"+
 			"below is printed as evidence, not as a menu.\n\n")
 	}
 

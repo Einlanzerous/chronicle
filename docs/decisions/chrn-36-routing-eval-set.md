@@ -123,9 +123,14 @@ carry whatever the author unconsciously made easy.
 
 ### Why the real stratum is held out, and what that costs
 
-If CHRN-30 tunes the prompt against the set that scores it, the score measures
-memorisation. So the real stratum is the held-out half and CHRN-30 develops
+If prompt work tunes against the set that scores it, the score measures
+memorisation. So the real stratum is the held-out half and prompt work develops
 against the synthetic one.
+
+**This rule names CHRN-30 throughout because that was the prompt ticket when it
+was written. CHRN-30 closed 2026-09-03; the rule binds its successor,
+[CHRN-87], and every prompt ticket after it.** It was never about the ticket
+number — it is about whoever can change the thing being measured.
 
 The cost is real and worth naming: **the honest distribution is the one CHRN-30
 may not see.** Prompt work therefore happens against material that is
@@ -193,8 +198,8 @@ careless — each names a genuinely unsettled sentence at the end of the memo
 ("I need to figure out just sort of the best way to ensure that"; "I don't know
 how we would do around ownership"). The model is reading late hedging as
 *unsettled*, where the labeller read the deliverable named earlier as *decided*.
-That is one failure mode with one cause, which makes it a CHRN-30 prompt
-question rather than three separate errors.
+That is one failure mode with one cause, which makes it a prompt question
+rather than three separate errors — **CHRN-87**, which inherits it.
 
 The synthetic stratum was scored in the same session for the pooled calibration
 below: **21/23 strict (91.3%), 23/23 lenient**, catalogue `4d870db6d1cd` — a
@@ -361,7 +366,7 @@ the real stratum pre-accepts thirteen and **three of them are wrong** — a 23%
 error rate on precisely the items ACCEPT ALL would ship unread. The cliff
 between one-and-zero-wrong and thirteen-and-three-wrong is the whole argument
 for the band boundary. Making ACCEPT ALL worth having means a prompt whose
-confidence spreads on real speech, which is CHRN-30's problem and not a
+confidence spreads on real speech, which is **CHRN-87**'s problem and not a
 threshold's.
 
 **Three caveats that the numbers above do not carry on their own:**
@@ -375,16 +380,61 @@ threshold's.
   band, and on the real stratum alone **both medians are 0.65**, so there the
   router does not distinguish hard from easy at all. Confidence tracks
   correctness without tracking difficulty, and those are not the same property.
-- **The pooled table above was computed by hand from two reports, because the
-  harness can no longer produce it.** CHRN-31's follow-up made `--stratum`
-  mandatory for a scored run — one router holds one catalogue — so each run's
-  `Calibration` block pools over a single stratum and reaches its own verdict on
-  R4. The two runs disagreed for exactly that reason: synthetic alone printed
-  **"No threshold ships (R4)"** (its lenient accuracy is 100% in every band, so
+- **The pooled table above was computed by hand, because the harness can no
+  longer produce it.** CHRN-31's follow-up made `--stratum` mandatory for a
+  scored run — one router holds one catalogue — so each run's `Calibration`
+  block pools over a single stratum and reaches its own verdict on R4. The two
+  runs disagreed for exactly that reason: synthetic alone printed **"No
+  threshold ships (R4)"** (its lenient accuracy is 100% in every band, so
   `Rising` is false), real alone printed **"accuracy rises"**. Neither is §5's
-  number. The arithmetic is small and fully derivable from the two committed
-  reports, but a decision this size should not rest on a reader redoing it —
-  filed as **CHRN-86**.
+  number. Filed as **CHRN-86**.
+
+**And the reports the arithmetic came from are not in the repo, because they may
+not be.** `chronicle eval --json` writes the model's reasoning, and a reason
+quotes the transcript — §1 and §6 keep that out of a world-readable repo, and
+`.gitignore` plus a warning on any path not named `*.eval.json` enforce it. So
+the pooled table cannot be checked against a committed artefact, and saying
+"derivable from the two reports" would be pointing at files that do not and must
+not exist.
+
+What makes it checkable instead: §2's run log carries the real stratum
+per-memo, and the synthetic half is recorded here. Its fixtures are already
+committed under `docs/eval/synthetic/`, so there is no transcript to expose:
+
+```
+item                                labelled      proposed      conf  verdict
+argosy-resume-drift                 TICKET/bug    TICKET/bug    0.85  strict
+lyceum-kindle-delivery-status       TICKET/task   TICKET/task   0.85  strict
+signet-rotate-dry-run               TICKET/task   TICKET/task   0.85  strict
+centrifuge-score-reasons            TICKET/task   TICKET/task   0.65  strict
+switchyard-archived-project-picker  TICKET/bug    TICKET/bug    0.85  strict
+purser-deprovision-order            TICKET/spike  DISCUSSION    0.65  lenient
+cta-watch-second-phase              TICKET/epic   TICKET/epic   0.95  strict
+probably-already-a-ticket           TICKET/task   TICKET/task   0.65  unhandled
+unnamed-tool-idea                   TICKET/task   TICKET/task   0.65  strict
+linked-never-copied                 NOTE          NOTE          0.85  strict
+more-on-the-colour-rule             NOTE          NOTE          0.85  unhandled
+one-binary-per-service              NOTE          NOTE          0.95  strict
+reviewing-agent-work                NOTE          DISCUSSION    0.65  lenient
+secrets-never-in-compose            NOTE          NOTE          0.85  strict
+what-disposable-means               NOTE          NOTE          0.85  strict
+shared-postgres-or-per-service      DISCUSSION    DISCUSSION    0.65  strict
+mcp-tokens-per-agent                DISCUSSION    DISCUSSION    0.65  strict
+how-long-to-keep-transit-history    DISCUSSION    DISCUSSION    0.65  strict
+who-gets-the-gpu-at-night           DISCUSSION    DISCUSSION    0.65  strict
+should-eidolon-speak-first          DISCUSSION    DISCUSSION    0.65  strict
+mic-check                           DISCARD       DISCARD       0.95  strict
+false-start                         DISCARD       DISCARD       0.95  strict
+pocket-recording                    DISCARD       DISCARD       0.85  strict
+talked-myself-out-of-it             DISCARD       DISCARD       0.95  strict
+wrong-note-app                      DISCARD       DISCARD       0.95  strict
+```
+
+Dropping the two `unhandled` rows leaves 23 scored: **9 at 0.65, all correct**,
+and **14 at 0.85 or 0.95, all correct**. Adding the real stratum's 11-of-14 and
+4-of-4 from §2 gives the 20/23 and 18/18 in the table above. That is the whole
+derivation, and it now rests on two tables in this document rather than on files
+the repo is designed never to hold.
 
 ## 6 · Google's transcripts are a control, never an input
 
@@ -646,7 +696,8 @@ rose — 87.0% below 0.80 against 100% at or above it, n=41 — so the threshold
 shipped at 0.80. Recorded here because the ruling reads as a prediction
 otherwise, and the interesting half is that it came within one stratum of
 firing: scored alone, `synthetic` reports flat and refuses a threshold. See
-§5's result.
+§5's result. The prompt work that would make ACCEPT ALL worth having is
+**CHRN-87**.
 
 ## Done when
 

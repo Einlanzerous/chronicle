@@ -300,9 +300,15 @@ type ThresholdRow struct {
 	Held int `json:"held"`
 }
 
-// thresholdLadder is the sweep. It ends at the default that admits nothing so
-// R4's answer is a row in the same table as every alternative to it, rather
-// than a footnote.
+// thresholdLadder is the sweep. It ends at 1.01 — a value no confidence can
+// reach — so R4's answer is a row in the same table as every alternative to it,
+// rather than a footnote.
+//
+// That row is NOT the compiled default any more; it was until CHRN-36's run set
+// the default to 0.80, and report.go annotates the two separately for exactly
+// that reason. The ladder must also CONTAIN the compiled default, or the
+// sweep cannot show what is actually shipping — asserted in score_test.go,
+// because the coupling is otherwise implicit and silently breakable.
 var thresholdLadder = []float64{0.50, 0.60, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.01}
 
 // Report is one scored run, and it IS §2's run log entry: date, proposer,
