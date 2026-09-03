@@ -268,10 +268,29 @@ func newRouter(ctx context.Context, labelsDir string, want eval.Stratum) (evalRo
 	// token and a network. The real stratum routes against the LIVE list, which
 	// is CHRN-31: scoring the held-out corpus against a fixture would grade a
 	// router nobody runs.
+	//
+	// AND THAT IS WHY A SCORED RUN MUST NAME ONE. `--stratum all` is the
+	// default, and one router holds one catalogue — so scoring `all` would put
+	// BOTH strata against whichever catalogue got picked. Picking the live one
+	// silently scores the synthetic fixtures against Switchyard's state on the
+	// day, which is the exact property the committed fixture exists to keep;
+	// picking the fixture scores the held-out corpus against a router nobody
+	// runs. There is no third answer, so the run is refused rather than
+	// guessing. `--dry-run` is unaffected: it builds no router.
 	var cat *catalogue.Snapshot
-	if want == eval.StratumSynthetic {
+	switch want {
+	case "":
+		return evalRouter{}, fmt.Errorf(
+			"eval: a scored run must name a stratum — the catalogue is not the same for both.\n" +
+				"`--stratum synthetic` routes against the committed fixture, so the run is\n" +
+				"reproducible from the repo alone; `--stratum real` routes against the live\n" +
+				"Switchyard list. Scoring them together would put one of the two against the\n" +
+				"wrong world. (`--dry-run` needs no stratum: it builds no router.)")
+
+	case eval.StratumSynthetic:
 		cat, err = catalogue.LoadFixtureFile(filepath.Join(labelsDir, catalogueFile))
-	} else {
+
+	default:
 		if !cfg.CatalogueConfigured() {
 			return evalRouter{}, fmt.Errorf(
 				"eval: scoring anything but --stratum synthetic needs the live Switchyard project\n" +
@@ -288,6 +307,7 @@ func newRouter(ctx context.Context, labelsDir string, want eval.Stratum) (evalRo
 			cat, err = live.Fetch(ctx)
 		}
 	}
+
 	if err != nil {
 		return evalRouter{}, err
 	}

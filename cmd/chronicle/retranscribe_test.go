@@ -291,3 +291,30 @@ func TestEvalRefusesTheRealStratumWithoutTheLiveCatalogue(t *testing.T) {
 		t.Fatalf("err = %v, want it to name CHRN-31", err)
 	}
 }
+
+// `--stratum all` is the flag's default, and one router holds one catalogue.
+// Scoring `all` would put both strata against whichever catalogue got picked —
+// and picking the live one silently scores the committed synthetic fixtures
+// against Switchyard's state on the day, which is precisely the property the
+// fixture exists to keep. There is no third answer, so it is refused.
+func TestAScoredRunMustNameAStratum(t *testing.T) {
+	t.Setenv("CHRONICLE_SCRIBE_OLLAMA_URL", "http://127.0.0.1:11434")
+	t.Setenv("CHRONICLE_SCRIBE_MODEL", "gemma4:31b")
+	t.Setenv("CHRONICLE_SWITCHYARD_URL", "http://127.0.0.1:4002")
+	t.Setenv("CHRONICLE_SWITCHYARD_TOKEN", "tok")
+
+	// Configured for the live catalogue, so nothing else can be the complaint.
+	_, err := newRouter(context.Background(), "../../docs/eval", "")
+	if err == nil {
+		t.Fatal("a scored run with no stratum was accepted")
+	}
+	if !strings.Contains(err.Error(), "must name a stratum") {
+		t.Fatalf("err = %v, want it to say a stratum is required", err)
+	}
+	// And the synthetic path still works without any Switchyard config at all.
+	t.Setenv("CHRONICLE_SWITCHYARD_URL", "")
+	t.Setenv("CHRONICLE_SWITCHYARD_TOKEN", "")
+	if _, err := newRouter(context.Background(), "../../docs/eval", eval.StratumSynthetic); err != nil {
+		t.Fatalf("the synthetic path needs no Switchyard: %v", err)
+	}
+}
