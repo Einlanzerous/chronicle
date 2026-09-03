@@ -180,10 +180,26 @@ type Config struct {
 
 	// ScribeMaxAttempts is §7's ceiling before a failure is recorded.
 	ScribeMaxAttempts int
+
+	// SwitchyardURL and SwitchyardToken reach the estate's ticket tracker.
+	//
+	// Carried up from Scribe because `serve` needs them and LoadScribe is
+	// deliberately loadable without a database — see the pair's doc comment
+	// there for what they are now used by, which is no longer only the
+	// catalogue.
+	SwitchyardURL   string
+	SwitchyardToken string
 }
 
 // ScribeEnabled reports whether Chronicle will produce routing proposals.
 func (c Config) ScribeEnabled() bool { return c.ScribeOllamaURL != "" }
+
+// SwitchyardConfigured reports whether Chronicle can reach the ticket tracker
+// at all — for the project list, for creating a ticket, and for the deep link
+// a triage result carries back to the client.
+func (c Config) SwitchyardConfigured() bool {
+	return c.SwitchyardURL != "" && c.SwitchyardToken != ""
+}
 
 // Tier1IsSeparate reports whether the tier-1 pool has a DSN of its own rather
 // than falling back to the main one.
@@ -338,6 +354,7 @@ func Load() (Config, error) {
 	}
 	c.ScribeOllamaURL, c.ScribeModel = sc.OllamaURL, sc.Model
 	c.ScribePreacceptMin, c.ScribeMaxAttempts = sc.PreacceptMin, sc.MaxAttempts
+	c.SwitchyardURL, c.SwitchyardToken = sc.SwitchyardURL, sc.SwitchyardToken
 
 	c.OwnerEmail = strings.ToLower(strings.TrimSpace(os.Getenv("CHRONICLE_OWNER_EMAIL")))
 	c.OwnerName = strings.TrimSpace(os.Getenv("CHRONICLE_OWNER_NAME"))
@@ -461,16 +478,26 @@ type Scribe struct {
 	// MaxAttempts is CHRN-32 §7's ceiling.
 	MaxAttempts int
 
-	// SwitchyardURL and SwitchyardToken read the live project list (CHRN-31).
+	// SwitchyardURL and SwitchyardToken are the whole of Chronicle's access to
+	// the estate's ticket tracker. THREE THINGS NOW USE THEM, and the list has
+	// grown twice since it was written down here:
 	//
-	// They live on Scribe rather than on Config because the catalogue is part
-	// of a routing run and nothing else uses it, and because `chronicle eval`
-	// must be able to reach it without a database.
+	//   * the live project list rendered into the routing prompt (CHRN-31);
+	//   * creating a ticket when a memo routes to TICKET (CHRN-35), and
+	//     searching by memo id to recover a decision whose confirm never
+	//     landed (CHRN-33);
+	//   * the host of the deep link a triage result hands back to the client.
+	//
+	// They live on Scribe rather than only on Config because `chronicle eval`
+	// must reach the catalogue with no database configured at all. Config
+	// copies them up, because `serve` needs them and does have one.
 	SwitchyardURL   string
 	SwitchyardToken string
 }
 
-// CatalogueConfigured reports whether the live project list can be read.
+// CatalogueConfigured reports whether the live project list can be read. Same
+// pair as everything else Switchyard-shaped: there is one credential, and it
+// either reaches the tracker or it does not.
 func (s Scribe) CatalogueConfigured() bool {
 	return s.SwitchyardURL != "" && s.SwitchyardToken != ""
 }

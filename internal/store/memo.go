@@ -58,6 +58,12 @@ const (
 	pgIllegalTransition   = "CH001"
 	pgMemoImmutable       = "CH002"
 	pgMemoBadInitialState = "CH003"
+
+	// Raised when a statement gave up waiting for somebody else's row lock,
+	// because lock_timeout was set. CHRN-33's T2 holds a link row across a
+	// 15-second outward call, so a waiter that did not have its own deadline
+	// would queue behind it holding a connection of its own.
+	pgLockNotAvailable = "55P03"
 )
 
 // contentHashPattern mirrors the column CHECK: SHA-256 as lowercase hex.
@@ -372,7 +378,25 @@ func (s *Store) GetMemo(ctx context.Context, id uuid.UUID) (Memo, error) {
 // from a hold must not keep carrying why it was held, or the UI explains a hold
 // that is over.
 func (s *Store) AdvanceMemoState(ctx context.Context, id uuid.UUID, from, to, reason string) (Memo, error) {
-	m, err := scanMemo(s.pool.QueryRow(ctx, `
+	return advanceMemoState(ctx, s.pool, id, from, to, reason)
+}
+
+// querier is the overlap between *pgxpool.Pool and pgx.Tx.
+//
+// It exists so that one statement can be run either on the pool or inside
+// somebody else's transaction WITHOUT A SECOND COPY OF IT. CHRN-33's T2 needs
+// the memo advance to happen under the locks it already holds, in the same unit
+// as the link row it is confirming — and the alternative, a near-identical
+// query written out again next to the transaction that needed it, is how two
+// spellings of one rule end up disagreeing about which transitions are legal.
+type querier interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+func advanceMemoState(ctx context.Context, q querier, id uuid.UUID, from, to, reason string) (Memo, error) {
+	m, err := scanMemo(q.QueryRow(ctx, `
 		UPDATE tier2.memos
 		   SET state = $3, state_reason = $4
 		 WHERE id = $1 AND state = $2
@@ -381,7 +405,7 @@ func (s *Store) AdvanceMemoState(ctx context.Context, id uuid.UUID, from, to, re
 		// Either there is no such memo, or it moved out from under the caller.
 		// They are different answers and the caller needs to tell them apart.
 		var current string
-		switch e := s.pool.QueryRow(ctx,
+		switch e := q.QueryRow(ctx,
 			`SELECT state FROM tier2.memos WHERE id = $1`, id).Scan(&current); {
 		case errors.Is(e, pgx.ErrNoRows):
 			return Memo{}, ErrNotFound

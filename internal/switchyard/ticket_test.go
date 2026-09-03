@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -300,5 +301,119 @@ func TestTheClientDoesNotPretendTheHeaderIsALock(t *testing.T) {
 	}
 	if minted != 2 {
 		t.Fatalf("minted %d tickets, want 2 — the point is that the header did NOT stop the second", minted)
+	}
+}
+
+// ============================================================================
+// TicketsByMemo — CHRN-33's recovery, and why it searches by memo.
+// ============================================================================
+
+// search is a Switchyard that answers /v1/tickets?cf.chronicle_memo_id=<uuid>
+// with whatever it has been told to hold for that memo.
+type search struct {
+	byMemo map[string][]string
+	pages  bool
+	calls  []string
+}
+
+func (s *search) start(t *testing.T) *Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		memo := r.URL.Query().Get("cf.chronicle_memo_id")
+		s.calls = append(s.calls, memo)
+		keys := s.byMemo[memo]
+
+		type item struct {
+			Key       string  `json:"key"`
+			ID        string  `json:"id"`
+			DeletedAt *string `json:"deleted_at"`
+		}
+		out := struct {
+			Items []item `json:"items"`
+			Page  struct {
+				NextCursor string `json:"next_cursor"`
+				HasMore    bool   `json:"has_more"`
+			} `json:"page"`
+		}{}
+
+		// One key per page when paging, so the follow-up is exercised rather
+		// than assumed.
+		cursor := r.URL.Query().Get("cursor")
+		if s.pages && len(keys) > 1 {
+			at := 0
+			if cursor != "" {
+				at, _ = strconv.Atoi(cursor)
+			}
+			if at < len(keys) {
+				out.Items = append(out.Items, item{Key: keys[at], ID: "id-" + keys[at]})
+			}
+			if at+1 < len(keys) {
+				out.Page.HasMore = true
+				out.Page.NextCursor = strconv.Itoa(at + 1)
+			}
+		} else {
+			for _, k := range keys {
+				out.Items = append(out.Items, item{Key: k, ID: "id-" + k})
+			}
+		}
+		_ = json.NewEncoder(w).Encode(out)
+	}))
+	t.Cleanup(srv.Close)
+	c, err := New(srv.URL, "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// THE SEARCH IS BY MEMO AND NOT BY IDEMPOTENCY KEY, and that is what makes the
+// recovery outlive Switchyard's 24-hour cache: the memo id is a property of the
+// ticket, stamped at creation, and is as findable next month as next minute.
+func TestTheSweepFindsATicketByItsMemoAtAnyAge(t *testing.T) {
+	memo := uuid.New()
+	s := &search{byMemo: map[string][]string{memo.String(): {"CHRN-91"}}}
+	c := s.start(t)
+
+	got, err := c.TicketsByMemo(context.Background(), memo)
+	if err != nil {
+		t.Fatalf("TicketsByMemo: %v", err)
+	}
+	if len(got) != 1 || got[0].Key != "CHRN-91" {
+		t.Fatalf("got %+v, want one CHRN-91", got)
+	}
+	if got[0].URL == "" || !strings.HasSuffix(got[0].URL, "/tickets/CHRN-91") {
+		t.Fatalf("URL = %q, want a deep link", got[0].URL)
+	}
+	if len(s.calls) != 1 || s.calls[0] != memo.String() {
+		t.Fatalf("queried %v, want the memo id once", s.calls)
+	}
+}
+
+// A memo nothing was ever created for answers EMPTY AND NO ERROR. The sweep
+// branches on the count, so "none" has to be an ordinary answer rather than a
+// failure — otherwise case 2 could never run.
+func TestAMemoWithNoTicketAnswersEmpty(t *testing.T) {
+	s := &search{byMemo: map[string][]string{}}
+	got, err := s.start(t).TicketsByMemo(context.Background(), uuid.New())
+	if err != nil {
+		t.Fatalf("TicketsByMemo: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %+v, want none", got)
+	}
+}
+
+// TWO TICKETS FOR ONE MEMO ARE BOTH RETURNED. The client must not pick: the
+// caller's whole job in that case is to confirm nothing and tell a person, and
+// it cannot do that if the client has already chosen one.
+func TestBothTicketsComeBackWhenTwoClaimOneMemo(t *testing.T) {
+	memo := uuid.New()
+	s := &search{byMemo: map[string][]string{memo.String(): {"CHRN-91", "CHRN-92"}}, pages: true}
+	got, err := s.start(t).TicketsByMemo(context.Background(), memo)
+	if err != nil {
+		t.Fatalf("TicketsByMemo: %v", err)
+	}
+	if len(got) != 2 || got[0].Key != "CHRN-91" || got[1].Key != "CHRN-92" {
+		t.Fatalf("got %+v, want both keys across pages", got)
 	}
 }
