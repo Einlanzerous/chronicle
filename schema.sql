@@ -82,6 +82,59 @@ $$;
 
 
 --
+-- Name: memo_links_guard(); Type: FUNCTION; Schema: tier2; Owner: -
+--
+
+CREATE FUNCTION tier2.memo_links_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    -- On tier1.memo_proposals' pattern and tier2.transcripts' before it: the
+    -- identity is what makes the row mean anything, and a re-attributed
+    -- decision is a decision credited to a memo nobody made it about.
+    IF NEW.memo_id IS DISTINCT FROM OLD.memo_id THEN
+        RAISE EXCEPTION 'a memo link may not be re-attributed to another memo'
+            USING ERRCODE = 'CH020';
+    END IF;
+
+    -- CONFIRMED IS TERMINAL, and this is load-bearing rather than tidy.
+    --
+    -- The accept path answers `applied` with the stored key for a memo that is
+    -- already triaged, and it does that WITHOUT an outward call. That answer is
+    -- only honest while a confirmation cannot be withdrawn — if a later sweep
+    -- or a later batch could un-confirm a row, the key an operator was told
+    -- about could stop being the ticket their memo became, and nothing would
+    -- have logged the change.
+    IF OLD.confirmed_at IS NOT NULL
+       AND (NEW.confirmed_at IS DISTINCT FROM OLD.confirmed_at
+            OR NEW.ticket_key IS DISTINCT FROM OLD.ticket_key
+            OR NEW.destination IS DISTINCT FROM OLD.destination) THEN
+        RAISE EXCEPTION 'a confirmed memo link is immutable (memo %)', OLD.memo_id
+            USING ERRCODE = 'CH021';
+    END IF;
+
+    -- RE-ARMING A REFUSED ROW MUST BE A WHOLE NEW DECISION.
+    --
+    -- A refusal is an outcome, and the row keeps it so the operator can be told
+    -- why. Clearing `refused_at` is how a corrected decision reclaims the row —
+    -- but a corrected decision that re-sent the SAME idempotency key would
+    -- replay the cached refusal it was correcting, which is the twenty-four
+    -- hour trap `sent_idempotency_key` exists to close. Re-arming without a
+    -- fresh key is therefore refused here, where it cannot be forgotten,
+    -- rather than left to the one code path that does it today.
+    IF OLD.refused_at IS NOT NULL AND NEW.refused_at IS NULL
+       AND NEW.sent_idempotency_key = OLD.sent_idempotency_key THEN
+        RAISE EXCEPTION 're-arming a refused memo link needs a fresh idempotency key (memo %)', OLD.memo_id
+            USING ERRCODE = 'CH022';
+    END IF;
+
+    NEW.updated_at := now();
+    RETURN NEW;
+END
+$$;
+
+
+--
 -- Name: memos_guard(); Type: FUNCTION; Schema: tier2; Owner: -
 --
 
@@ -328,6 +381,44 @@ CREATE TABLE tier2.memo_arrivals (
 
 
 --
+-- Name: memo_links; Type: TABLE; Schema: tier2; Owner: -
+--
+
+CREATE TABLE tier2.memo_links (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    memo_id uuid NOT NULL,
+    destination text NOT NULL,
+    sent_project_key text,
+    sent_type text,
+    sent_title text,
+    sent_description text,
+    sent_idempotency_key text NOT NULL,
+    ticket_key text,
+    confirmed_at timestamp with time zone,
+    swept_at timestamp with time zone,
+    candidate_keys text[],
+    refused_at timestamp with time zone,
+    refused_status integer,
+    refused_reason text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT memo_links_confirmed_ticket_has_a_key CHECK (((confirmed_at IS NULL) OR (destination <> 'TICKET'::text) OR (ticket_key IS NOT NULL))),
+    CONSTRAINT memo_links_confirmed_xor_refused CHECK (((confirmed_at IS NULL) OR (refused_at IS NULL))),
+    CONSTRAINT memo_links_destination_check CHECK ((destination = ANY (ARRAY['NOTE'::text, 'TICKET'::text, 'DISCUSSION'::text, 'DISCARD'::text]))),
+    CONSTRAINT memo_links_refusal_states_why CHECK (((refused_at IS NULL) = (refused_reason IS NULL))),
+    CONSTRAINT memo_links_sent_idempotency_key_check CHECK ((sent_idempotency_key <> ''::text)),
+    CONSTRAINT memo_links_ticket_key_only_on_ticket CHECK (((ticket_key IS NULL) OR (destination = 'TICKET'::text)))
+);
+
+
+--
+-- Name: TABLE memo_links; Type: COMMENT; Schema: tier2; Owner: -
+--
+
+COMMENT ON TABLE tier2.memo_links IS 'What a PERSON decided a memo becomes. Authored, not derived: nothing regenerates it. UNIQUE (memo_id) is the lock that keeps one memo from becoming two tickets.';
+
+
+--
 -- Name: memos; Type: TABLE; Schema: tier2; Owner: -
 --
 
@@ -465,6 +556,22 @@ ALTER TABLE ONLY tier2.memo_arrivals
 
 
 --
+-- Name: memo_links memo_links_memo_id_key; Type: CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.memo_links
+    ADD CONSTRAINT memo_links_memo_id_key UNIQUE (memo_id);
+
+
+--
+-- Name: memo_links memo_links_pkey; Type: CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.memo_links
+    ADD CONSTRAINT memo_links_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: memos memos_pkey; Type: CONSTRAINT; Schema: tier2; Owner: -
 --
 
@@ -597,6 +704,13 @@ CREATE UNIQUE INDEX memo_arrivals_sighting ON tier2.memo_arrivals USING btree (m
 
 
 --
+-- Name: memo_links_unresolved; Type: INDEX; Schema: tier2; Owner: -
+--
+
+CREATE INDEX memo_links_unresolved ON tier2.memo_links USING btree (created_at) WHERE ((confirmed_at IS NULL) AND (refused_at IS NULL));
+
+
+--
 -- Name: memos_author_content; Type: INDEX; Schema: tier2; Owner: -
 --
 
@@ -639,6 +753,13 @@ CREATE TRIGGER memo_proposals_guard BEFORE UPDATE ON tier1.memo_proposals FOR EA
 
 
 --
+-- Name: memo_links memo_links_guard; Type: TRIGGER; Schema: tier2; Owner: -
+--
+
+CREATE TRIGGER memo_links_guard BEFORE UPDATE ON tier2.memo_links FOR EACH ROW EXECUTE FUNCTION tier2.memo_links_guard();
+
+
+--
 -- Name: memos memos_guard; Type: TRIGGER; Schema: tier2; Owner: -
 --
 
@@ -666,6 +787,14 @@ ALTER TABLE ONLY tier2.memo_arrivals
 
 ALTER TABLE ONLY tier2.memo_arrivals
     ADD CONSTRAINT memo_arrivals_memo_id_fkey FOREIGN KEY (memo_id) REFERENCES tier2.memos(id) ON DELETE CASCADE;
+
+
+--
+-- Name: memo_links memo_links_memo_id_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.memo_links
+    ADD CONSTRAINT memo_links_memo_id_fkey FOREIGN KEY (memo_id) REFERENCES tier2.memos(id) ON DELETE RESTRICT;
 
 
 --

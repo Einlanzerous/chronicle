@@ -26,8 +26,13 @@ import (
 	"github.com/Einlanzerous/chronicle/internal/config"
 	"github.com/Einlanzerous/chronicle/internal/invite"
 	"github.com/Einlanzerous/chronicle/internal/retention"
+	"github.com/Einlanzerous/chronicle/internal/scribe"
+	"github.com/Einlanzerous/chronicle/internal/scribe/catalogue"
+	"github.com/Einlanzerous/chronicle/internal/scribe/prompt"
 	"github.com/Einlanzerous/chronicle/internal/store"
+	"github.com/Einlanzerous/chronicle/internal/switchyard"
 	"github.com/Einlanzerous/chronicle/internal/transcribe"
+	"github.com/Einlanzerous/chronicle/internal/triage"
 	"github.com/Einlanzerous/chronicle/internal/upload"
 	"github.com/Einlanzerous/chronicle/internal/watch"
 )
@@ -254,6 +259,7 @@ func runServe(args []string) error {
 	var uploads *upload.Service
 	var pruner *retention.Pruner
 	var transcriber *transcribe.Service
+	var triager *triage.Service
 	deps := api.Deps{
 		DB:            st,
 		Accounts:      st,
@@ -420,6 +426,62 @@ func runServe(args []string) error {
 		return fmt.Errorf("CHRONICLE_INBOX_DIR is set but CHRONICLE_AUDIO_DIR is not: " +
 			"the watcher has nowhere to copy recordings to")
 	}
+	// TRIAGE (CHRN-33) — the batch surface, and the one place derived state
+	// becomes authored state.
+	//
+	// It needs BOTH halves of the routing configuration and not one, which is
+	// why it is gated on the pair rather than on ScribeEnabled alone:
+	//
+	//   * the Scribe config names the PROPOSER, and the proposer is the
+	//     identity of every proposal this surface reads. Without it there is no
+	//     `(memo_id, proposer)` to check a generation echo against, so there is
+	//     nothing to accept.
+	//   * the Switchyard config lands a TICKET and supplies the deep link. A
+	//     triage screen that could accept a TICKET and had nowhere to file it
+	//     would refuse every accept at the last step, after the operator had
+	//     already decided.
+	//
+	// Unset, the three routes answer 503 naming the variables. NOT 404: "not
+	// configured here" and "wrong URL" are different facts, and this is the
+	// shape /admin/storage and /admin/transcription already use.
+	if cfg.ScribeEnabled() && cfg.SwitchyardConfigured() {
+		proposer, err := scribe.Proposer("ollama", cfg.ScribeModel, prompt.Version)
+		if err != nil {
+			return err
+		}
+		sw, err := switchyard.New(cfg.SwitchyardURL, cfg.SwitchyardToken)
+		if err != nil {
+			return err
+		}
+		triager, err = triage.New(triage.Options{
+			Store: st,
+			// PROPOSALS ARE READ THROUGH THE TIER-1 STORE, on the tier-1 pool.
+			// The accept writes tier 2 through `st`. The two never share a
+			// transaction, and cannot: they connect as different roles.
+			Tier1:        tier1,
+			Tickets:      sw,
+			Catalogue:    catalogue.NewLive(sw),
+			Logger:       logger,
+			Proposer:     proposer,
+			PreacceptMin: cfg.ScribePreacceptMin,
+		})
+		if err != nil {
+			return err
+		}
+		deps.Triage = triager
+		logger.Info("triage enabled", "proposer", proposer,
+			"switchyard", cfg.SwitchyardURL, "preaccept_min", cfg.ScribePreacceptMin)
+	} else {
+		// Said out loud. Without it, memos are transcribed and routed and then
+		// sit in `transcribed` forever with nothing to accept them, and the
+		// system looks entirely healthy — REVIEW.md section 8's cautionary tale
+		// is an integration that was a silent no-op and looked like a feature.
+		logger.Warn("triage is OFF: memos will be transcribed and never triaged",
+			"remedy", "set CHRONICLE_SCRIBE_OLLAMA_URL, CHRONICLE_SCRIBE_MODEL, "+
+				"CHRONICLE_SWITCHYARD_URL and CHRONICLE_SWITCHYARD_TOKEN",
+			"visible_at", "GET /triage/batch")
+	}
+
 	if cfg.SSOEnabled() {
 		deps.CFAccess = api.NewCFAccessVerifier(cfg.CFAccessTeamDomain, cfg.CFAccessAUD...)
 	}
@@ -483,6 +545,19 @@ func runServe(args []string) error {
 			defer watching.Done()
 			if err := transcriber.Run(ctx); err != nil {
 				logger.Error("the transcription pump stopped", "error", err)
+			}
+		}()
+	}
+
+	// CHRN-33's sweep. It resolves decisions whose T2 never finished — a crash
+	// between the outward call and the confirm — and every batch also sweeps
+	// before it starts. This loop is for the rows nobody comes back to.
+	if triager != nil {
+		watching.Add(1)
+		go func() {
+			defer watching.Done()
+			if err := triager.Run(ctx, triage.DefaultSweepInterval); err != nil {
+				logger.Error("the triage sweep stopped", "error", err)
 			}
 		}()
 	}

@@ -96,6 +96,12 @@ type Deps struct {
 	// at an ASR service -- and those want completely different remedies.
 	Transcribing bool
 
+	// Triage is CHRN-33's batch surface. Nil answers 503 naming the variables
+	// that turn it on, rather than 404 — "not configured here" and "wrong URL"
+	// are different facts, and this is the same shape Audio and Transcription
+	// already use.
+	Triage Triage
+
 	// Uploads is the direct ingest path (CHRN-20). Nil when there is no audio
 	// store, in which case the four /memos/uploads routes answer 503 naming
 	// CHRONICLE_AUDIO_DIR -- the same shape the storage report uses, and for
@@ -121,6 +127,7 @@ type api struct {
 	uploads       *upload.Service
 	transcription Transcription
 	transcribing  bool
+	triage        Triage
 }
 
 // NewRouter builds the HTTP handler.
@@ -156,6 +163,7 @@ func NewRouter(d Deps) http.Handler {
 		uploads:       d.Uploads,
 		transcription: d.Transcription,
 		transcribing:  d.Transcribing,
+		triage:        d.Triage,
 	}
 
 	mux := http.NewServeMux()
@@ -229,6 +237,20 @@ func NewRouter(d Deps) http.Handler {
 	// What the corpus costs, and whether the disk agrees with the database
 	// (CHRN-23). A read: it reports orphans, it never deletes one.
 	mux.HandleFunc("GET /admin/storage", a.requireOwner(a.handleAdminStorage))
+
+	// TRIAGE (CHRN-33) — the primary surface, and the one place derived state
+	// becomes authored state.
+	//
+	// requireUser and not requireOwner: every account triages its own memos.
+	// The author scoping is applied inside the service, PER ITEM on the POST as
+	// well as on the GET, because a list that merely hides a memo is not access
+	// control — a client naming an id directly never went through the list.
+	mux.HandleFunc("GET /triage/batch", a.requireUser(a.handleTriageBatch))
+	mux.HandleFunc("POST /triage/accept", a.requireUser(a.handleTriageAccept))
+
+	// What triage left behind: the backlog by age, and the decisions that did
+	// not finish landing. Owner only, because it spans every author's corpus.
+	mux.HandleFunc("GET /admin/triage", a.requireOwner(a.handleAdminTriage))
 
 	// How transcription is going, and which memos are stuck (CHRN-27). Also a
 	// read -- the retry is `chronicle retranscribe`, on the host, because

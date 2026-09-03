@@ -362,3 +362,37 @@ func (s *Tier1Store) MemoByHash(ctx context.Context, contentHash string) (Memo, 
 		return Memo{}, fmt.Errorf("store: content_hash %s names %d memos across authors, so it does not identify one", contentHash, len(found))
 	}
 }
+
+// ProposalsForMemos returns one proposer's proposals for a set of memos, keyed
+// by memo. Memos Scribe has never run over are simply absent, and ABSENT IS A
+// REAL ANSWER the triage screen must render — see CHRN-33's generation echo,
+// where "I saw no proposal" is `null` and is checked like any other value.
+//
+// ONE PROPOSER, not all of them. The identity of a proposal is
+// `(memo_id, proposer)`, so a batch fetched across proposers would hand the
+// screen two cards for one memo — the same failure keying on transcript_id
+// would have caused, arriving through the other door.
+func (s *Tier1Store) ProposalsForMemos(ctx context.Context, memoIDs []uuid.UUID, proposer string) (map[uuid.UUID]Proposal, error) {
+	out := map[uuid.UUID]Proposal{}
+	if len(memoIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+proposalColumns+` FROM tier1.memo_proposals
+		  WHERE memo_id = ANY($1) AND proposer = $2`, memoIDs, proposer)
+	if err != nil {
+		return nil, fmt.Errorf("store: proposals for memos: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		p, err := scanProposal(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: proposals for memos: %w", err)
+		}
+		out[p.MemoID] = p
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: proposals for memos: %w", err)
+	}
+	return out, nil
+}

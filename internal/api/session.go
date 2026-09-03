@@ -147,12 +147,25 @@ const (
 // SameSite=Lax does not help: it governs which cookies the browser SENDS, not
 // which ones it accepts from the response.
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	return decodeJSONLimit(w, r, dst, maxBodyBytes)
+}
+
+// decodeJSONLimit is decodeJSON with a different size cap, for the one endpoint
+// whose body is legitimately larger than an invite token: a triage batch of
+// twenty-five decisions, each of which may carry an operator-authored ticket
+// description (CHRN-33).
+//
+// The CONTENT-TYPE CHECK IS NOT RELAXED with it, and must not be. It is what
+// closes login CSRF above, and a second decoder that skipped it would be a
+// second answer to the same question — which is how the check ends up applying
+// to the endpoint that was written first and none of the ones after it.
+func decodeJSONLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64) bool {
 	ct := r.Header.Get("Content-Type")
 	if mediaType, _, err := mime.ParseMediaType(ct); err != nil || mediaType != "application/json" {
 		http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
 		return false
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
