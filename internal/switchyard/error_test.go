@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -97,5 +98,34 @@ func TestTheErrorDetailNeverCarriesTheToken(t *testing.T) {
 	_, err := c.CreateTicket(context.Background(), aTicket(uuid.New()))
 	if strings.Contains(err.Error(), token) {
 		t.Fatalf("the token reached an error: %v", err)
+	}
+}
+
+// The detail is cut ON A RUNE BOUNDARY. A byte cut through a multi-byte rune
+// leaves a partial one, and this string is stored on CHRN-33's link row and
+// shown to the operator on the memo that failed.
+func TestALongErrorDetailIsCutOnARuneBoundary(t *testing.T) {
+	// Every rune is three bytes, so a byte cut at 400 lands mid-rune.
+	body := strings.Repeat("日", 400)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	c, _ := New(srv.URL, "tok")
+
+	_, err := c.CreateTicket(context.Background(), aTicket(uuid.New()))
+	var se *Error
+	if !errors.As(err, &se) {
+		t.Fatalf("err = %v, want a *Error", err)
+	}
+	if !utf8.ValidString(se.Detail) {
+		t.Fatalf("Detail is not valid UTF-8: %q", se.Detail)
+	}
+	if !strings.HasSuffix(se.Detail, "…") {
+		t.Fatalf("Detail = %q, want it marked as cut", se.Detail)
+	}
+	if len(se.Detail) > maxErrorDetail+len("…") {
+		t.Fatalf("Detail is %d bytes, past the budget", len(se.Detail))
 	}
 }

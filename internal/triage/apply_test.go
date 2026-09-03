@@ -391,6 +391,97 @@ func TestAnOverrideIsReconciledLikeAnAccept(t *testing.T) {
 	if h.tracker.createdCount() != 0 {
 		t.Fatal("an override reached a project that is not live")
 	}
+	var clearedKey bool
+	for _, c := range res[0].Cleared {
+		if c.Field == "project_key" && c.Value == "ARGY" {
+			clearedKey = true
+		}
+	}
+	if !clearedKey {
+		t.Fatalf("cleared = %+v, want the operator's own key named", res[0].Cleared)
+	}
+}
+
+// AN OVERRIDE MUST NOT OVERWRITE THE MODEL'S PROPOSAL WITH THE OPERATOR'S TEXT.
+//
+// Stage 2 at acceptance clears a field of whatever it was given, and on the
+// override path that is the OPERATOR'S proposal — the stored row was never
+// touched. Bumping it with the person's text would replace the model's proposal
+// under the model's proposer, so the one screen whose job is to keep those two
+// apart would attribute the second to the first, the model's proposal could
+// never be accepted as shown again, and CHRN-36 would count an operator's typo
+// as a hallucination.
+//
+// This is invariant 1 in the direction the structural tests do not cover: they
+// check that tier 1 never writes tier 2, and this is a tier-2 accept path
+// writing authored text into a tier-1 table that is never hand-edited.
+func TestAnOverrideNeverOverwritesTheModelsProposal(t *testing.T) {
+	h := newHarness(t)
+	m := h.ownMemo("about argosy")
+	before := h.propose(m.ID, ticketProposal("CHRN"))
+
+	res := h.apply(h.owner, h.override(m.ID, Override{
+		Destination: "TICKET", ProjectKey: "ARGY", TicketType: "task",
+		Title: "OPERATOR TYPED THIS", Description: "and this"}))
+	wantStatus(t, res[0], StatusNeedsInput)
+
+	after, err := h.tier1.GetProposal(h.ctx, m.ID, testProposer)
+	if err != nil {
+		t.Fatalf("GetProposal: %v", err)
+	}
+	switch {
+	case after.Payload == nil:
+		t.Fatal("the model's proposal was replaced by one with no payload")
+	case after.Payload.Title == "OPERATOR TYPED THIS":
+		t.Fatal("the operator's text was written into the model's proposal row")
+	case after.Payload.Title != before.Payload.Title:
+		t.Fatalf("payload title = %q, want the model's %q", after.Payload.Title, before.Payload.Title)
+	case after.Generation != before.Generation:
+		t.Fatalf("generation moved %d -> %d for a payload that did not change",
+			before.Generation, after.Generation)
+	case after.Status != scribe.StatusValid:
+		t.Fatalf("status = %q, want the model's proposal still acceptable as shown", after.Status)
+	}
+
+	// The echoed generation is the stored one, so the completed resend is still
+	// not stale without an intervening GET — which is what the bump bought on
+	// the accept path and is true here for free.
+	if res[0].Generation == nil || *res[0].Generation != before.Generation {
+		t.Fatalf("generation = %v, want the stored %d", res[0].Generation, before.Generation)
+	}
+	done := h.apply(h.owner, Item{
+		MemoID: m.ID, Proposer: testProposer, Generation: res[0].Generation,
+		Override: &Override{Destination: "TICKET", ProjectKey: "CHRN",
+			TicketType: "task", Title: "Do the thing", Description: "## Summary"},
+	})
+	wantStatus(t, done[0], StatusApplied)
+
+	// And the model's proposal is still there to accept as shown, had the
+	// operator gone that way instead.
+	if !h.link(m.ID).Confirmed() {
+		t.Fatal("the completed override did not land")
+	}
+}
+
+// EVERY RESULT NAMES ITS DESTINATION, not only the refusals. A client re-showing
+// a `needs_input` or a `stale` card has to be able to label it.
+func TestEveryResultCarriesTheDestinationItWasAbout(t *testing.T) {
+	h := newHarness(t)
+
+	applied := h.ownMemo("this one lands")
+	h.propose(applied.ID, ticketProposal("CHRN"))
+
+	incomplete := h.ownMemo("about argosy")
+	h.propose(incomplete.ID, ticketProposal("ARGY"))
+
+	res := h.apply(h.owner, h.accept(applied.ID), h.accept(incomplete.ID))
+	wantStatus(t, res[0], StatusApplied)
+	wantStatus(t, res[1], StatusNeedsInput)
+	for i, r := range res {
+		if r.Destination != string(scribe.DestTicket) {
+			t.Fatalf("result %d (%s) has destination %q, want TICKET", i, r.Status, r.Destination)
+		}
+	}
 }
 
 // ONE SNAPSHOT FOR THE WHOLE BATCH. Twelve memos accepted in one pass cannot

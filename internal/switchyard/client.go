@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // DefaultTimeout bounds one call. Switchyard is on the same docker network and
@@ -169,7 +170,14 @@ func readDetail(r io.Reader) string {
 	}
 	text = strings.Join(strings.Fields(text), " ")
 	if len(text) > maxErrorDetail {
-		text = text[:maxErrorDetail] + "…"
+		// ON A RUNE BOUNDARY. A byte cut through a multi-byte rune leaves a
+		// partial one, and this string lands in CHRN-33's `refused_reason` and
+		// is shown to the operator on the memo that failed.
+		cut := text[:maxErrorDetail]
+		for len(cut) > 0 && !utf8.ValidString(cut) {
+			cut = cut[:len(cut)-1]
+		}
+		text = cut + "…"
 	}
 	return text
 }

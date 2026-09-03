@@ -426,9 +426,12 @@ func (s *Service) applyOne(ctx context.Context, actor store.User, it Item, cat *
 	hasProposal := err == nil
 
 	// ---- 4 · What is actually being decided. ----
-	decided, res2, ok := s.decisionFor(res, it, stored, hasProposal)
+	// `res` and not a second variable: decisionFor fills in the destination,
+	// and binding it elsewhere would leave every non-refused result unlabelled
+	// — so a client could not name the card it has to re-show.
+	decided, res, ok := s.decisionFor(res, it, stored, hasProposal)
 	if !ok {
-		return res2
+		return res
 	}
 
 	// ---- 5 · Stage 2, at acceptance, against the batch's one snapshot. ----
@@ -450,7 +453,7 @@ func (s *Service) applyOne(ctx context.Context, actor store.User, it Item, cat *
 			res.Cleared = cleared
 		}
 		if status == scribe.StatusNeedsInput {
-			return s.needsInput(ctx, res, it, decided, cleared, hasProposal)
+			return s.needsInput(ctx, res, it, decided, cleared, stored, hasProposal)
 		}
 	}
 
@@ -620,21 +623,37 @@ func needsCatalogue(p *scribe.Proposal) bool {
 	return false
 }
 
-// needsInput bumps the proposal's generation and answers with the POST-BUMP
-// value.
+// needsInput answers with the generation the operator's completed resend must
+// echo, bumping the stored proposal FIRST IF AND ONLY IF STAGE 2 MUTATED IT.
 //
-// THE BUMP IS A TIER-1 WRITE ON THE TIER-1 POOL, and this is the only path in
-// the accept flow that makes one. It cannot share a transaction with anything
-// tier 2 — different pools, different roles — and it does not need to: this
-// path writes nothing tier 2 at all. Reconcile → bump → answer, or reconcile →
-// tier-2 transaction. Never both.
+// THE BUMP BELONGS TO THE PAYLOAD, NOT TO THE REQUEST, and that distinction is
+// the whole of why the two paths differ here:
 //
-// The post-bump generation is returned because the bump has JUST HAPPENED and
-// the operator's next action is an override echoing a generation. Without it,
-// every completion would come back `stale` until the client re-ran the GET —
-// one wasted round trip on the single most common corrective action there is.
+//   - ACCEPT AS SHOWN · `decided` is a clone of the stored payload that
+//     Reconcile has just mutated, so the stored row genuinely moved and must
+//     say so. Generation 1 becomes 2 and the clearing is recorded.
+//   - OVERRIDE · stage 2 cleared a field of THE OPERATOR'S OWN proposal. The
+//     stored row was never touched. Writing `decided` back would replace the
+//     model's proposal with the person's typed text under the model's
+//     proposer — so the triage screen, whose entire job is to keep those two
+//     apart, would attribute the second to the first, and the model's proposal
+//     could never be accepted as shown again. It would also count an
+//     operator's typo as a hallucination in the rate CHRN-36 reports per
+//     proposer. Nothing is bumped and the stored generation is echoed, which
+//     is still not stale: step 3 compares against whatever is stored.
+//
+// A tier-2 accept path writing authored text into a tier-1 table is invariant 1
+// in the direction the structural tests do not cover — they check that tier 1
+// never writes tier 2 — so it is named here at length.
+//
+// THE BUMP IS A TIER-1 WRITE ON THE TIER-1 POOL, and it is the only one in the
+// accept flow. It cannot share a transaction with anything tier 2 — different
+// pools, different roles — and it does not need to: this path writes nothing
+// tier 2 at all. Reconcile → bump → answer, or reconcile → tier-2 transaction.
+// Never both.
 func (s *Service) needsInput(ctx context.Context, res Result, it Item,
-	decided *scribe.Proposal, cleared []scribe.ClearedField, hasProposal bool) Result {
+	decided *scribe.Proposal, cleared []scribe.ClearedField,
+	stored store.Proposal, hasProposal bool) Result {
 	res.Status = StatusNeedsInput
 	res.Reason = "a target no longer resolves in the live catalogue; supply it and resend as an override"
 
@@ -642,6 +661,12 @@ func (s *Service) needsInput(ctx context.Context, res Result, it Item,
 		// An override against a memo Scribe never routed. There is no row to
 		// bump and no generation to echo — `null` remains the truthful answer,
 		// and the operator's corrected resend echoes null again.
+		return res
+	}
+	if it.Override != nil {
+		// The stored payload did not move, so neither does its generation.
+		g := stored.Generation
+		res.Generation = &g
 		return res
 	}
 	p, err := s.tier1.BumpProposalGeneration(ctx, it.MemoID, it.Proposer, decided, cleared, scribe.StatusNeedsInput)

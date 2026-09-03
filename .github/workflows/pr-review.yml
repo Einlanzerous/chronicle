@@ -224,7 +224,15 @@ jobs:
       # memo could never be re-routed. Added with the PR that creates the path
       # rather than with CHRN-67, which exposes routing as an MCP tool: waiting
       # would mean every diff in between was reviewed at the cheap tier.
-      sensitive_paths: '^(internal/store/|internal/scribe/|asr/|internal/transcribe/|internal/api/(session|cfaccess|ratelimit|router|storage|upload|transcription)|internal/(invite|config|audio|watch|upload|retention)/|cmd/chronicle/|migrations/|deploy/|scripts/|verify\.sh|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore)'
+      # internal/triage/ is CHRN-33, and it is here for BOTH reasons the two
+      # entries above give. It WRITES the authored decision — the first row
+      # Chronicle holds that no re-run can reconstruct — and it GATES the one
+      # transition that cannot be walked back: it is the only code that advances
+      # a memo to `discarded`, which tier2.memos_guard lists solely as a target.
+      # The PR that created the package reached internal/store/ and migrations/
+      # and so was reviewed at the expensive tier anyway; a follow-up touching
+      # only this package would not have been, which is the gap.
+      sensitive_paths: '^(internal/store/|internal/scribe/|internal/triage/|asr/|internal/transcribe/|internal/api/(session|cfaccess|ratelimit|router|storage|upload|transcription)|internal/(invite|config|audio|watch|upload|retention)/|cmd/chronicle/|migrations/|deploy/|scripts/|verify\.sh|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore)'
 
       # No `docs_skip_extra`: this repo commits no knowledge-graph cache, and
       # the one generated artifact it does carry is excluded outright in
