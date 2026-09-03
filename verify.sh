@@ -119,11 +119,11 @@ step "asr boundary" asr_boundary_check
 # -p 1: ONE TEST BINARY AT A TIME.
 #
 # `go test ./...` runs packages in parallel by default, and more than one
-# package now resets the shared test database -- internal/store and
-# internal/transcribe both roll the migrations down and back up to start from
-# empty. Overlapped, they drop tables out from under each other and produce
-# failures that read as migration bugs ("relation tier2.users does not exist")
-# and are not.
+# package now resets the shared test database -- internal/store,
+# internal/transcribe and internal/triage all roll the migrations down and back
+# up to start from empty. Overlapped, they drop tables out from under each other
+# and produce failures that read as migration bugs ("relation tier2.users does
+# not exist") and are not.
 #
 # The alternative, an advisory lock in each harness, is more precise and has to
 # be remembered by whoever adds the third database-backed package. This cannot
