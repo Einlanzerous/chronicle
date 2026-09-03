@@ -30,7 +30,10 @@ func TestTheReportRefusesAThresholdWhenCalibrationIsFlat(t *testing.T) {
 		routed(lbl("d", StratumSynthetic, scribe.DestNote, "", yes()), scribe.DestTicket, "task", 0.2),
 	})
 	out := render(t, rep)
-	for _, want := range []string{"No threshold ships (R4)", "1.01", "admits nothing"} {
+	// "back above 1" rather than "1.01": the compiled default moved to 0.80 on
+	// CHRN-36's run, so a flat run is now a regression to undo rather than a
+	// state to leave alone, and the report has to say the harder thing.
+	for _, want := range []string{"No threshold ships (R4)", "back above 1", "admits nothing"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("report does not mention %q:\n%s", want, out)
 		}

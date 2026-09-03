@@ -7,6 +7,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/Einlanzerous/chronicle/internal/config"
 	"github.com/Einlanzerous/chronicle/internal/scribe"
 )
 
@@ -283,17 +284,27 @@ func (r *Report) renderThresholds(w io.Writer) {
 		// remember. If accuracy does not rise with confidence there is no
 		// value at which pre-accepting beats not pre-accepting.
 		ps(w, "**No threshold ships (R4).** Calibration does not show accuracy rising with\n"+
-			"confidence, so leave `CHRONICLE_SCRIBE_PREACCEPT_MIN` at its 1.01 default, which\n"+
-			"admits nothing. ACCEPT ALL waits for a prompt that calibrates — a CHRN-30 problem\n"+
-			"and not a threshold problem. The sweep below is printed as evidence, not as a menu.\n\n")
+			"confidence, so raise `CHRONICLE_SCRIBE_PREACCEPT_MIN` back above 1, which admits\n"+
+			"nothing. The compiled default is 0.80 as of CHRN-36's run on 2026-09-03, so a flat\n"+
+			"run now means UNDOING that rather than leaving things alone. ACCEPT ALL waits for a\n"+
+			"prompt that calibrates — a CHRN-30 problem and not a threshold problem. The sweep\n"+
+			"below is printed as evidence, not as a menu.\n\n")
 	}
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	psln(tw, "  min\tpre-accepted\tof those wrong\theld for a tap")
 	for _, row := range r.Thresholds {
-		note := ""
-		if row.Min > 1 {
-			note = "  ← the default: admits nothing"
+		// Two different rows are worth pointing at, and conflating them is how
+		// this table went stale once already: the row that admits nothing, and
+		// whatever value is actually COMPILED IN today. They were the same row
+		// until CHRN-36's run set the default to 0.80, and a reader who assumes
+		// they still are will misread every line above.
+		var note string
+		switch {
+		case row.Min == config.DefaultScribePreacceptMin:
+			note = "  ← compiled default"
+		case row.Min > 1:
+			note = "  ← admits nothing"
 		}
 		pf(tw, "  %.2f\t%d\t%d\t%d%s\n", row.Min, row.PreAccepted, len(row.Wrong), row.Held, note)
 	}
