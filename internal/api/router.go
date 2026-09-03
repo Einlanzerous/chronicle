@@ -102,10 +102,6 @@ type Deps struct {
 	// already use.
 	Triage Triage
 
-	// TriageSweepInterval is how often the background sweep runs. Zero takes
-	// triage.DefaultSweepInterval.
-	TriageSweepInterval time.Duration
-
 	// Uploads is the direct ingest path (CHRN-20). Nil when there is no audio
 	// store, in which case the four /memos/uploads routes answer 503 naming
 	// CHRONICLE_AUDIO_DIR -- the same shape the storage report uses, and for

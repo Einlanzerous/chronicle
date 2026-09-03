@@ -375,16 +375,77 @@ func TestAnUnreachableSweepKeepsWhatAnEarlierPassFound(t *testing.T) {
 	}
 }
 
-// A search refused permanently ENDS the row rather than retrying it every five
-// minutes forever, and the operator is told which status did it.
-func TestAPermanentlyRefusedSearchMarksTheRow(t *testing.T) {
+// A SEARCH THAT WAS REFUSED IS NOT A DECISION THAT WAS REFUSED, and the row
+// must survive it — WITH A TICKET ALREADY BEHIND IT, which is the case that
+// makes the difference visible.
+//
+// A 4xx on the CREATE means nothing was created, so the decision will never
+// land and marking it refused is right. A 4xx on the SEARCH means the lookup
+// failed and says nothing about whether a ticket exists. Marking that refused
+// used to be terminal — `refused_at` is exactly what stops the sweep claiming
+// the row again — so the ticket was stranded, and worse: the operator, told to
+// change their decision, re-armed the row, T2 never searches, and a SECOND
+// ticket was created for one memo. The recovery mechanism manufacturing the
+// duplicate the whole design exists to prevent.
+//
+// The earlier version of this test used crashBeforeCreate, so no ticket existed
+// behind the row and the loss was invisible.
+func TestARefusedSearchDoesNotStrandATicketThatExists(t *testing.T) {
+	h := newHarness(t)
+	m := h.ownMemo("a memo whose confirm never landed")
+	h.propose(m.ID, ticketProposal("CHRN"))
+
+	// A ticket EXISTS; only the confirm is missing.
+	h.crashAfterCreate()
+	h.apply(h.owner, h.accept(m.ID))
+	if h.tracker.createdCount() != 1 {
+		t.Fatal("setup: no ticket behind the pending row")
+	}
+
+	// The token was rotated and this deployment still holds the old one. 401 is
+	// non-retryable, which is what used to end the row.
+	h.tracker.searchErr = httpError(401, "unauthorized")
+	sw := h.sweeper()
+	rep, err := sw.Sweep(h.ctx)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if rep.Refused != 0 {
+		t.Fatalf("report = %+v, want the row left pending rather than refused", rep)
+	}
+	if l := h.link(m.ID); !l.Pending() {
+		t.Fatalf("link = %+v, want it still claimable once the credential is fixed", l)
+	}
+
+	// And once it is fixed, the very next pass finds the ticket and confirms
+	// it. One ticket, one confirmed link, memo triaged.
+	h.tracker.searchErr = nil
+	if _, err := sw.Sweep(h.ctx); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if got := h.tracker.createdCount(); got != 1 {
+		t.Fatalf("%d tickets, want the original and only the original", got)
+	}
+	l := h.link(m.ID)
+	if !l.Confirmed() || l.TicketKey == nil {
+		t.Fatalf("link = %+v, want it confirmed against the ticket that existed all along", l)
+	}
+	if got := h.state(m.ID); got != store.StateTriaged {
+		t.Fatalf("memo is %q, want triaged", got)
+	}
+}
+
+// The other half, so the two are not confused: a refused CREATE still marks the
+// row. Nothing was created, so the decision will never land whatever is retried.
+func TestARefusedCreateStillMarksTheRow(t *testing.T) {
 	h := newHarness(t)
 	m := h.ownMemo("a memo")
 	h.propose(m.ID, ticketProposal("CHRN"))
 	h.crashBeforeCreate()
 	h.apply(h.owner, h.accept(m.ID))
 
-	h.tracker.searchErr = httpError(403, "the token cannot read tickets")
+	h.svc.beforeCreate = nil
+	h.tracker.createErr = httpError(404, "project CHRN is archived")
 	rep, err := h.sweeper().Sweep(h.ctx)
 	if err != nil {
 		t.Fatalf("Sweep: %v", err)
@@ -393,8 +454,8 @@ func TestAPermanentlyRefusedSearchMarksTheRow(t *testing.T) {
 		t.Fatalf("report = %+v, want a refusal", rep)
 	}
 	l := h.link(m.ID)
-	if l.RefusedStatus == nil || *l.RefusedStatus != 403 {
-		t.Fatalf("refused_status = %v, want 403", l.RefusedStatus)
+	if l.RefusedStatus == nil || *l.RefusedStatus != 404 {
+		t.Fatalf("refused_status = %v, want 404", l.RefusedStatus)
 	}
 }
 

@@ -79,10 +79,20 @@ const (
 // about memos it never displayed.
 const DefaultLimit = 25
 
-// MaxLimit bounds both. Each item may make one outward call bounded at
-// switchyard.DefaultTimeout, so this is also the worst-case wall clock of one
-// request — twenty-five is a little over six minutes if every single call times
-// out, and a screen holding more than twenty-five cards is not an evening pass.
+// MaxLimit bounds both. A screen holding more than twenty-five cards is not an
+// evening pass, and the POST is capped at the GET for the reason DefaultLimit
+// gives.
+//
+// IT IS ALSO THE WORST-CASE WALL CLOCK, and the number is bigger than it looks.
+// An item is bounded by itemBudget rather than by the outward call alone, so
+// twenty-five items that each burn their budget is about twelve and a half
+// minutes, plus up to one more budget in sweepBeforeBatch — and
+// handleTriageAccept deliberately sets no request deadline of its own.
+//
+// That is tolerable only because of rule 3 in the package comment: an item that
+// has started is DETACHED and durable, so the client giving up long before the
+// response loses nothing. It would not be tolerable if the request were the
+// thing keeping the work alive.
 const MaxLimit = 25
 
 // itemBudget bounds one detached item: a lock wait, one outward call, and the

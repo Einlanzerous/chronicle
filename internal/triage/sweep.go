@@ -188,18 +188,34 @@ func (s *Service) sweepOne(ctx context.Context, att store.LinkAttempt) (res stor
 
 	found, err := s.tickets.TicketsByMemo(ctx, link.MemoID)
 	if err != nil {
-		var se *switchyard.Error
-		if errors.As(err, &se) && !se.Retryable() {
-			// Case 5, on the search rather than the create. The search is by
-			// metadata that CHRN-35 stamps; a permanent refusal of it is a
-			// decision that will never be resolvable.
-			return refuseSweep(link, &se.Status, se.Error()), false, false
-		}
-		// CASE 3 · Unreachable. Leave it pending — and CARRY THE CANDIDATES
-		// FORWARD. A pass that could not look must not erase what an earlier
-		// pass found, or an ambiguity would silently downgrade to "unresolved"
-		// on the first network blip and the sweep would then create a third
-		// ticket.
+		// CASE 3 · COULD NOT LOOK. Leave it pending, WHATEVER THE STATUS.
+		//
+		// A NON-RETRYABLE SEARCH IS NOT A REFUSAL, and treating it as one used
+		// to strand a ticket that already existed. The two facts are different:
+		// a 4xx on the CREATE means nothing was created, so the decision will
+		// never land; a 4xx on the SEARCH means the lookup failed, and says
+		// nothing at all about whether a ticket is behind this row.
+		//
+		// The sequence that made it a duplicate rather than only a loss: an
+		// accept creates SY-501 and the process dies before the confirm; the
+		// Switchyard token is rotated and the running deployment holds the old
+		// one; the search answers 401, which is non-retryable; the row is
+		// marked refused, and `refused_at` is exactly what stops the sweep ever
+		// claiming it again. The operator is then told to change their decision
+		// — which re-arms the row with a fresh key, and T2 (which never
+		// searches) creates SY-502. Two tickets for one memo, manufactured by
+		// the recovery mechanism.
+		//
+		// There is no status here meaning "this memo can never be searched
+		// for". Every non-retryable code reachable — a rotated token, a lost
+		// scope, a changed route, Switchyard dropping the `cf.` filter — is a
+		// condition somebody fixes, and the row must still be there when they
+		// do.
+		//
+		// CARRY THE CANDIDATES FORWARD. A pass that could not look must not
+		// erase what an earlier pass found, or an ambiguity would silently
+		// downgrade to "unresolved" on the first blip and the next pass would
+		// create a third ticket.
 		return store.LinkResolution{
 			Action: store.LinkLeave, Swept: true, CandidateKeys: link.CandidateKeys,
 		}, false, false
