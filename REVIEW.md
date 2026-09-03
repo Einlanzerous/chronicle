@@ -68,12 +68,30 @@ the diff, and answer explicitly in the summary:
 - Does the PR claim something is verified that the diff does not demonstrate?
 
 **Specific to this repo: a Mode B (`tier: opus`) ticket owes a written decision
-before the code.** Decisions live in `docs/decisions/`, one file per ticket
-(`docs/decisions/chrn-71-accounts-and-sessions.md` is the pattern). A PR
-implementing an opus-tier ticket with no decision document, or whose code
-contradicts the decision document it does have, is a **🔴 Important** finding —
-the working agreement's entire argument is that discovering a wrong choice
-inside a 900-line diff is the most expensive possible moment to find out.
+before the code.** A PR implementing an opus-tier ticket with **no approved
+decision at all**, or whose code contradicts the decision it does have, is a
+**🔴 Important** finding — the working agreement's entire argument is that
+discovering a wrong choice inside a 900-line diff is the most expensive possible
+moment to find out.
+
+**It may live in either of two places, and you have to look in both.**
+
+- **The ticket's Switchyard PLAN**, approved before the work started. This is
+  the home going forward, for a reason that is not tidiness: the tracker can
+  *enforce* it. A ticket whose `review_mode` is `decision` cannot enter
+  `in_progress` until its plan is `approved` — a 422 with `guard:
+  plan_required`. A file in a repo is checked by a reviewer after the fact; a
+  plan is checked by the tracker before the code exists, which is what the whole
+  mode is trying to buy. CHRN-33 is the pattern (revision 4, 27 criteria).
+- **`docs/decisions/<ticket>.md`**, one file per ticket
+  (`docs/decisions/chrn-71-accounts-and-sessions.md` is the pattern). Twelve of
+  these exist and they remain the decision for their tickets. Plans arrived
+  after most of them, so their absence from Switchyard is history rather than a
+  gap, and **they are not to be backfilled**.
+
+So: a plan and no file is complete. A file and no plan is complete. Neither is
+the 🔴. Check the code against whichever one exists, and if both do, say so
+rather than picking.
 
 A change that is clean code and wrong scope is **🔴 Important**. Quote the unmet
 criterion.
