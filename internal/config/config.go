@@ -32,16 +32,40 @@ const DefaultASRMaxAttempts = 5
 // it — one completion is cheaper than an operator's attention.
 const DefaultScribeMaxAttempts = 3
 
-// DefaultScribePreacceptMin is deliberately 1.01 — a threshold NO confidence
-// can clear, so nothing is pre-accepted until somebody sets this on purpose.
+// DefaultScribePreacceptMin is 0.80, set from CHRN-36's scored run of
+// 2026-09-03 and not from taste. It was 1.01 — a threshold no confidence can
+// clear — for as long as nobody had measured one.
 //
-// CHRN-32 §8 gives the reasoning: the contract carries confidence and does not
-// interpret it, and the value that makes ACCEPT ALL safe is CHRN-36's to
-// measure. Defaulting to something plausible-looking like 0.8 would licence
-// batch acceptance on a number nobody has checked, which is the exact trade
-// the epic warns about — "a router at 70% that claims 0.9 confidence is worse
-// than no router, because it spends trust it has not earned".
-const DefaultScribePreacceptMin = 1.01
+// CHRN-32 §8 gives the reason it waited: the contract carries confidence and
+// does not interpret it, and the value that makes ACCEPT ALL safe is CHRN-36's
+// to measure. Defaulting to a plausible-looking 0.8 before the measurement
+// would have licenced batch acceptance on a number nobody had checked — "a
+// router at 70% that claims 0.9 confidence is worse than no router, because it
+// spends trust it has not earned". The number below is the same 0.8 the epic
+// warned against guessing, which is precisely why the evidence for it is
+// recorded rather than summarised: see §5 of
+// docs/decisions/chrn-36-routing-eval-set.md.
+//
+// The evidence, pooled across both strata as §5 requires (n=41):
+//
+//	0.50 – 0.80   n=23   87.0% correct
+//	>= 0.80       n=18  100.0% correct
+//
+// Monotonic and rising, so R4 — which refuses a threshold when calibration is
+// flat — does not apply. Zero confident-and-wrong items in either stratum.
+//
+// Two things about this number that its precision does not convey:
+//
+//   - The router emits three confidence values and no others (0.65, 0.85,
+//     0.95), so every threshold in (0.65, 0.85] partitions the corpus
+//     identically. 0.80 is §5's own band boundary and sits in the empty gap
+//     between the two clusters, which is why it is not fitted to a data point.
+//   - It is nearly inert on real speech. Real memos come back at 0.65 seventeen
+//     times in twenty-one, so this admits ONE card in eighteen there, against
+//     nine in twenty-three on the synthetic fixtures. Widening it is not the
+//     fix: at 0.65 the real stratum pre-accepts thirteen and three of them are
+//     wrong. Spreading confidence on real speech is CHRN-87's problem.
+const DefaultScribePreacceptMin = 0.80
 
 // Config is the process-wide configuration.
 type Config struct {
@@ -171,7 +195,10 @@ type Config struct {
 	// ScribePreacceptMin is the confidence at or above which a proposal MAY be
 	// pre-selected for ACCEPT ALL. Owned by CHRN-36, which is the only thing
 	// that will ever know the right value; see DefaultScribePreacceptMin for
-	// why the default admits nothing.
+	// the run that set it.
+	//
+	// THE DEFAULT IS LIVE. It admitted nothing until 2026-09-03 and now admits
+	// 0.80, so ACCEPT ALL pre-selects without anybody setting an env var.
 	//
 	// It is a floor and not the only gate: CHRN-32 §4 excludes DISCARD from
 	// pre-acceptance by contract, at any confidence, because `discarded` is
@@ -473,7 +500,7 @@ type Scribe struct {
 	OllamaURL string
 	// Model is CHRONICLE_SCRIBE_MODEL, e.g. `gemma4:31b`.
 	Model string
-	// PreacceptMin is CHRN-36's to set; the default admits nothing.
+	// PreacceptMin is CHRN-36's to set; the default is 0.80 and pre-selects.
 	PreacceptMin float64
 	// MaxAttempts is CHRN-32 §7's ceiling.
 	MaxAttempts int

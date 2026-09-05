@@ -265,9 +265,14 @@ type Calibration struct {
 //
 // If accuracy does not rise with confidence there is no value at which
 // pre-accepting beats not pre-accepting, and shipping a number anyway spends
-// trust the router has not earned. The answer then is to leave
-// CHRONICLE_SCRIBE_PREACCEPT_MIN at its 1.01 default, which admits nothing, and
-// wait for a prompt that calibrates.
+// trust the router has not earned. The answer then is to RAISE
+// CHRONICLE_SCRIBE_PREACCEPT_MIN back above 1, which admits nothing, and wait
+// for a prompt that calibrates.
+//
+// "Back above" rather than "leave at": the compiled default was 1.01 until
+// CHRN-36's run of 2026-09-03 measured a rising calibration and set it to 0.80.
+// A later run that goes flat is therefore a REGRESSION to undo, not a state to
+// preserve, and this sentence has to say so or it will read as reassurance.
 func (c Calibration) Licenses() bool { return c.Determinable && c.Monotonic && c.Rising }
 
 // TracksTheLabeller reports the probe: is the router less sure where a person
@@ -295,9 +300,15 @@ type ThresholdRow struct {
 	Held int `json:"held"`
 }
 
-// thresholdLadder is the sweep. It ends at the default that admits nothing so
-// R4's answer is a row in the same table as every alternative to it, rather
-// than a footnote.
+// thresholdLadder is the sweep. It ends at 1.01 — a value no confidence can
+// reach — so R4's answer is a row in the same table as every alternative to it,
+// rather than a footnote.
+//
+// That row is NOT the compiled default any more; it was until CHRN-36's run set
+// the default to 0.80, and report.go annotates the two separately for exactly
+// that reason. The ladder must also CONTAIN the compiled default, or the
+// sweep cannot show what is actually shipping — asserted in score_test.go,
+// because the coupling is otherwise implicit and silently breakable.
 var thresholdLadder = []float64{0.50, 0.60, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.01}
 
 // Report is one scored run, and it IS §2's run log entry: date, proposer,

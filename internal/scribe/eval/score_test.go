@@ -5,6 +5,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Einlanzerous/chronicle/internal/config"
 	"github.com/Einlanzerous/chronicle/internal/scribe"
 )
 
@@ -522,4 +523,25 @@ func TestTheRunnerUpIsReadFromTheRawAnswerAndNotTheContract(t *testing.T) {
 	if got := Score("p", []Result{r}).Items[0].RunnerUp; got != "" {
 		t.Errorf("runner_up = %q from unparseable raw, want empty", got)
 	}
+}
+
+// The sweep has to include whatever value is actually shipping, or the report
+// shows the operator every threshold except the one in force.
+//
+// report.go annotates the compiled default by exact equality against this
+// ladder. That matches today because both are the literal 0.80 — this is not a
+// float-comparison worry — but the coupling is implicit, and moving the default
+// to a value the ladder does not carry (0.78, or a swept 0.82) would delete the
+// `← compiled default` row with nothing failing. Which is precisely the
+// staleness renderThresholds' own comment says happened once already.
+func TestTheSweepCoversTheCompiledDefault(t *testing.T) {
+	for _, min := range thresholdLadder {
+		if min == config.DefaultScribePreacceptMin {
+			return
+		}
+	}
+	t.Fatalf("thresholdLadder %v does not contain the compiled default %v — "+
+		"the sweep cannot show what is shipping, and report.go's "+
+		"`← compiled default` row silently disappears",
+		thresholdLadder, config.DefaultScribePreacceptMin)
 }

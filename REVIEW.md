@@ -15,8 +15,9 @@ reviewer reads the `Done when` claim and green CI, *not the diff*. That is a
 sound trade only because something else read the diff, and that something is
 you. On a Mode A ticket you are not a second opinion — you are the only read.
 
-Three modes exist and the PR should tell you which one applies (from the
-ticket's `metadata.tier`):
+Three modes exist and the PR should tell you which one applies. The ticket
+now **states** it in `review_mode`; `metadata.tier` is what that was derived
+from, and is the fallback when `review_mode` is null:
 
 | mode | tier | what it means for you |
 |---|---|---|
@@ -91,10 +92,26 @@ moment to find out.
   `in_progress` until its plan is `approved` — a 422 with `guard:
   plan_required`. A file in a repo is checked by a reviewer after the fact; a
   plan is checked before the code exists, which is what the whole mode is trying
-  to buy. **That guard is not armed for CHRN yet** — every ticket here has
-  `review_mode: null` — so today the convention is followed rather than
-  enforced, and you still have to check the approval yourself. CHRN-33 is the
-  pattern (revision 4, 27 criteria).
+  to buy. **That guard is armed for CHRN as of 2026-09-03.** Every open ticket
+  carrying a `metadata.tier` now has a stated `review_mode` — `evidence` for
+  tier `sonnet`/`haiku`,
+  `decision` for tier `opus`, `full` for the five Mode C tickets — so a
+  `decision` ticket is now *blocked* from entering `in_progress` until its plan
+  is approved, rather than merely expected to have one. Two gaps in that
+  arming, both deliberate:
+
+  - **A ticket whose decision is a `docs/decisions/` file was left unarmed.**
+    `plan_required` only understands plans, so setting `decision` on one of the
+    twelve would demand a plan for a decision that was already taken and settled
+    in the repo. CHRN-36 is the live example: tier `opus`, decision on disk,
+    `review_mode: null` on purpose.
+  - **The seven epics, CHRN-74 and CHRN-85 stay `review_mode: null`** because
+    they carry no `metadata.tier` to derive a mode from. Null reads as *not
+    classified — ask*, and never as permission.
+
+  You still check the approval yourself: the guard gates the *transition*, not
+  the PR, and a ticket moved before the arming carries no trace of it. CHRN-33
+  is the pattern (revision 4, 27 criteria).
 - **`docs/decisions/<ticket>.md`**, one file per ticket
   (`docs/decisions/chrn-71-accounts-and-sessions.md` is the pattern). Twelve of
   these exist and they remain the decision for their tickets. Plans arrived

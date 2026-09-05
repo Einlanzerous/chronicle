@@ -123,9 +123,14 @@ carry whatever the author unconsciously made easy.
 
 ### Why the real stratum is held out, and what that costs
 
-If CHRN-30 tunes the prompt against the set that scores it, the score measures
-memorisation. So the real stratum is the held-out half and CHRN-30 develops
+If prompt work tunes against the set that scores it, the score measures
+memorisation. So the real stratum is the held-out half and prompt work develops
 against the synthetic one.
+
+**This rule names CHRN-30 throughout because that was the prompt ticket when it
+was written. CHRN-30 closed 2026-09-03; the rule binds its successor,
+[CHRN-87], and every prompt ticket after it.** It was never about the ticket
+number — it is about whoever can change the thing being measured.
 
 The cost is real and worth naming: **the honest distribution is the one CHRN-30
 may not see.** Prompt work therefore happens against material that is
@@ -143,6 +148,63 @@ ceremony; it is the only way to notice that the number stopped meaning what it
 did on the first run.
 
 Ruling R1 asks whether n=17 is even enough to hold out.
+
+### The run log
+
+One row per scoring run that touched `real`. `chronicle eval` ends its report
+with the block to paste; what follows is the summary line plus the per-memo
+transcript pins, which is what makes run N comparable to run N−1.
+
+| # | date | proposer | labels sha | catalogue sha | strict | lenient | n |
+|---|---|---|---|---|---|---|---|
+| 1 | 2026-09-03 | `ollama/gemma4:31b@v1` | `3d3f32d4130d` | `57ea1c8619f7` | 14/18 (77.8%) | 15/18 (83.3%) | 18 scored, 3 unhandled |
+
+**Run 1 — 2026-09-03.** The first scored run against the held-out stratum, and
+the one that set `DefaultScribePreacceptMin`. Decoding was pinned by then
+(`temperature: 0`, `seed: 20260831`), so §8's nondeterminism caveat no longer
+applies and this run is reproducible rather than a sample.
+
+Every memo was scored from the transcript its label was written against — no
+moved pins, and every transcript `whisper.cpp/small.en`:
+
+```
+memo      transcript  labelled      proposed      conf  verdict
+a7f69c42  c81ead0f    DISCARD       DISCARD       0.95  strict
+0c9f3382  b14bdc63    DISCARD       DISCARD       0.95  strict
+86dba197  efda5fe7    DISCARD       DISCARD       0.95  strict
+2ec3cf5b  40215382    DISCUSSION    DISCUSSION    0.65  strict
+cfdae2bb  05e2eabf    TICKET/task   TICKET/task   0.65  strict
+9f58d44c  d7a3f1fb    TICKET/task   TICKET/task   0.65  strict
+326bfea8  b3b9391b    NOTE          DISCUSSION    0.65  wrong
+65b286f3  0eb55a6e    DISCUSSION    DISCUSSION    0.95  strict
+1789ae0b  ea010dff    TICKET/task   TICKET/task   0.65  strict
+9f94db49  f9aae3eb    TICKET/task   TICKET/task   0.65  strict
+399de6bb  ffc32505    NOTE          NOTE          0.65  strict
+a4f387e2  d810530b    DISCUSSION    DISCUSSION    0.65  strict
+53a793d3  35692109    TICKET/spike  TICKET/spike  0.65  strict
+138881e9  fe79e35c    NOTE          TICKET/spike  0.65  lenient
+d5cdf80d  b70c1243    TICKET/task   TICKET/spike  0.65  strict
+b2709faf  469aae7e    TICKET/task   DISCUSSION    0.65  wrong
+ed9b9832  2e1f6038    TICKET/spike  TICKET/epic   0.65  unhandled
+0cd7dc67  8a3cf284    TICKET/task   DISCUSSION    0.65  unhandled
+6a47664c  c1e32daa    TICKET/spike  TICKET/spike  0.65  strict
+dbefd14a  d38e1bbf    TICKET/task   TICKET/epic   0.65  unhandled
+c74b8fe3  6b1033ed    TICKET/spike  DISCUSSION    0.65  wrong
+```
+
+**All three misses went the same way: TICKET or NOTE answered as DISCUSSION**,
+and all three at 0.65. The router's own reasons show why, and they are not
+careless — each names a genuinely unsettled sentence at the end of the memo
+("I need to figure out just sort of the best way to ensure that"; "I don't know
+how we would do around ownership"). The model is reading late hedging as
+*unsettled*, where the labeller read the deliverable named earlier as *decided*.
+That is one failure mode with one cause, which makes it a prompt question
+rather than three separate errors — **CHRN-87**, which inherits it.
+
+The synthetic stratum was scored in the same session for the pooled calibration
+below: **21/23 strict (91.3%), 23/23 lenient**, catalogue `4d870db6d1cd` — a
+different hash to the real run's, which is the point of §2's split and not a
+discrepancy.
 
 ## 3 · What the corpus actually contains, and what it is missing
 
@@ -262,6 +324,117 @@ door.
 
 A single summary number is deliberately not specified. At this n it would invite
 comparisons it cannot support.
+
+### The result, 2026-09-03 — and the threshold it sets
+
+**Pooled calibration, both strata, n=41.** Correctness is lenient, as §5
+specifies, and each band carries its per-stratum n so the pooling stays
+inspectable:
+
+| confidence | n | correct | accuracy | by stratum |
+|---|---|---|---|---|
+| `< 0.50` | 0 | 0 | — | — |
+| `0.50 – 0.80` | 23 | 20 | 87.0% | real 14, synthetic 9 |
+| `>= 0.80` | 18 | 18 | **100.0%** | real 4, synthetic 14 |
+
+Monotonic and rising, and **zero confident-and-wrong items in either stratum**.
+So R4 does not fire: the evidence supports a threshold, and
+`DefaultScribePreacceptMin` moves from 1.01 to **0.80**.
+
+**Why 0.80 and not some other number.** The router emits three confidence values
+and no others — 0.65, 0.85, 0.95 — so every candidate in (0.65, 0.85] partitions
+the corpus identically. 0.80 is this section's own band boundary and it lands in
+the empty gap between the two clusters, which is what keeps it from being fitted
+to a data point. The precision is spurious and saying so is part of the claim.
+
+**What it buys, stated as the sweep measured it rather than as a rate:**
+
+| stratum | pre-accepted at 0.80 | of those wrong | held for a tap |
+|---|---|---|---|
+| synthetic | 9 of 23 | 0 | 14 |
+| real | **1 of 18** | 0 | 17 |
+
+**On real speech it is very nearly inert, and that is the finding, not the
+threshold.** Seventeen of twenty-one real memos come back at 0.65. Of the four
+that clear 0.80, three are DISCARD, which §4 excludes from pre-acceptance at any
+confidence — so ACCEPT ALL selects exactly one card in a twenty-one-memo batch.
+The honest summary of this run is *the confidence field carries real signal and
+almost never uses it.*
+
+**Widening it is the wrong repair, and the sweep says so numerically.** At 0.65
+the real stratum pre-accepts thirteen and **three of them are wrong** — a 23%
+error rate on precisely the items ACCEPT ALL would ship unread. The cliff
+between one-and-zero-wrong and thirteen-and-three-wrong is the whole argument
+for the band boundary. Making ACCEPT ALL worth having means a prompt whose
+confidence spreads on real speech, which is **CHRN-87**'s problem and not a
+threshold's.
+
+**Three caveats that the numbers above do not carry on their own:**
+
+- **100% on n=18 is not "never wrong".** Zero errors in eighteen is consistent
+  with a true error rate as high as ~15% at 95% confidence. The top band is
+  clean; it is not proven safe.
+- **The labeller probe fails.** Median confidence is 0.65 where the labeller was
+  unsure against 0.85 where they were sure, which looks right — but one
+  labeller-unsure synthetic item (`talked-myself-out-of-it`) sits in the top
+  band, and on the real stratum alone **both medians are 0.65**, so there the
+  router does not distinguish hard from easy at all. Confidence tracks
+  correctness without tracking difficulty, and those are not the same property.
+- **The pooled table above was computed by hand, because the harness can no
+  longer produce it.** CHRN-31's follow-up made `--stratum` mandatory for a
+  scored run — one router holds one catalogue — so each run's `Calibration`
+  block pools over a single stratum and reaches its own verdict on R4. The two
+  runs disagreed for exactly that reason: synthetic alone printed **"No
+  threshold ships (R4)"** (its lenient accuracy is 100% in every band, so
+  `Rising` is false), real alone printed **"accuracy rises"**. Neither is §5's
+  number. Filed as **CHRN-86**.
+
+**And the reports the arithmetic came from are not in the repo, because they may
+not be.** `chronicle eval --json` writes the model's reasoning, and a reason
+quotes the transcript — §1 and §6 keep that out of a world-readable repo, and
+`.gitignore` plus a warning on any path not named `*.eval.json` enforce it. So
+the pooled table cannot be checked against a committed artefact, and saying
+"derivable from the two reports" would be pointing at files that do not and must
+not exist.
+
+What makes it checkable instead: §2's run log carries the real stratum
+per-memo, and the synthetic half is recorded here. Its fixtures are already
+committed under `docs/eval/synthetic/`, so there is no transcript to expose:
+
+```
+item                                labelled      proposed      conf  verdict
+argosy-resume-drift                 TICKET/bug    TICKET/bug    0.85  strict
+lyceum-kindle-delivery-status       TICKET/task   TICKET/task   0.85  strict
+signet-rotate-dry-run               TICKET/task   TICKET/task   0.85  strict
+centrifuge-score-reasons            TICKET/task   TICKET/task   0.65  strict
+switchyard-archived-project-picker  TICKET/bug    TICKET/bug    0.85  strict
+purser-deprovision-order            TICKET/spike  DISCUSSION    0.65  lenient
+cta-watch-second-phase              TICKET/epic   TICKET/epic   0.95  strict
+probably-already-a-ticket           TICKET/task   TICKET/task   0.65  unhandled
+unnamed-tool-idea                   TICKET/task   TICKET/task   0.65  strict
+linked-never-copied                 NOTE          NOTE          0.85  strict
+more-on-the-colour-rule             NOTE          NOTE          0.85  unhandled
+one-binary-per-service              NOTE          NOTE          0.95  strict
+reviewing-agent-work                NOTE          DISCUSSION    0.65  lenient
+secrets-never-in-compose            NOTE          NOTE          0.85  strict
+what-disposable-means               NOTE          NOTE          0.85  strict
+shared-postgres-or-per-service      DISCUSSION    DISCUSSION    0.65  strict
+mcp-tokens-per-agent                DISCUSSION    DISCUSSION    0.65  strict
+how-long-to-keep-transit-history    DISCUSSION    DISCUSSION    0.65  strict
+who-gets-the-gpu-at-night           DISCUSSION    DISCUSSION    0.65  strict
+should-eidolon-speak-first          DISCUSSION    DISCUSSION    0.65  strict
+mic-check                           DISCARD       DISCARD       0.95  strict
+false-start                         DISCARD       DISCARD       0.95  strict
+pocket-recording                    DISCARD       DISCARD       0.85  strict
+talked-myself-out-of-it             DISCARD       DISCARD       0.95  strict
+wrong-note-app                      DISCARD       DISCARD       0.95  strict
+```
+
+Dropping the two `unhandled` rows leaves 23 scored: **9 at 0.65, all correct**,
+and **14 at 0.85 or 0.95, all correct**. Adding the real stratum's 11-of-14 and
+4-of-4 from §2 gives the 20/23 and 18/18 in the table above. That is the whole
+derivation, and it now rests on two tables in this document rather than on files
+the repo is designed never to hold.
 
 ## 6 · Google's transcripts are a control, never an input
 
@@ -517,6 +690,14 @@ pre-accepting is better than not, and shipping a number anyway would spend trust
 the router has not earned — the precise failure CHRN-4 opens by naming. ACCEPT
 ALL then waits for a prompt that calibrates, which is a CHRN-30 problem and not
 a threshold problem.
+
+**R4 did not fire on the first scored run (2026-09-03).** Pooled calibration
+rose — 87.0% below 0.80 against 100% at or above it, n=41 — so the threshold
+shipped at 0.80. Recorded here because the ruling reads as a prediction
+otherwise, and the interesting half is that it came within one stratum of
+firing: scored alone, `synthetic` reports flat and refuses a threshold. See
+§5's result. The prompt work that would make ACCEPT ALL worth having is
+**CHRN-87**.
 
 ## Done when
 
