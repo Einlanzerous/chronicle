@@ -32,7 +32,7 @@ the two namespaces would collide.
   with two files in it earns nothing.
 - `internal/api/` — HTTP surface.
 - `migrations/` — `NNNN_name.up.sql` / `.down.sql`, embedded, auto-applied on boot.
-- `deploy/` — compose fragment and Traefik labels.
+- `deploy/` — `Dockerfile`, database provisioning, and the deploy **decisions**. The configuration itself is not here: `construct-server` declares the service block and every router, and CHRN-89 removed this repo's copies after they drifted from it.
 - `docs/` — architecture, plus `docs/salvage/` and `docs/benchmarks/`, which are
   the recovered and measured inputs the plan rests on. Read them before
   re-deriving anything they already answer.

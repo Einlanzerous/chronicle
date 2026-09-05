@@ -225,8 +225,10 @@ func NewRouter(d Deps) http.Handler {
 	// Deliberately NOT on limitSignIn. That wrapper exists for unauthenticated
 	// endpoints that mint a credential; putting a 20-per-minute bucket on a
 	// chunked upload would throttle ingest and nothing else. The edge agrees --
-	// traefik-chronicle.yml keeps chronicle-login-ratelimit on a separate
-	// PathPrefix(`/auth/`) router for exactly this ticket, by name. What bounds
+	// construct-server's config/traefik/dynamic/routers.yml keeps
+	// chronicle-login-ratelimit on a separate PathPrefix(`/auth/`) router for
+	// exactly this ticket, by name (CHRN-89 removed this repo's stale copy of
+	// that file; the reasoning is in deploy/README.md). What bounds
 	// this surface instead is the per-account cap on open sessions and the
 	// declared-size limit, both in internal/upload.
 	mux.HandleFunc("POST /memos/uploads", a.requireUser(a.handleUploadOpen))

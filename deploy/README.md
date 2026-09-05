@@ -6,20 +6,31 @@ Cloudflare tunnel → Traefik arrangement, and **also** on the WAN-forwarded
 new pattern: the tunneled half is Switchyard's shape, the direct half is
 Lyceum's (SERV-60), and the database is provisioned the way Purser's is.
 
+## The deploy configuration is not in this repo
+
+`construct-server` is the source of truth. It declares every service inline in `docker-compose.yml` and every router in `config/traefik/dynamic/routers.yml`; nothing is assembled from service-repo fragments at deploy time.
+
+**One in-repo copy remains, and it is not this directory's:** `asr/deploy/compose.asr.yml`, in the sealed ASR subtree. It carries the same rationale these files did, and it has drifted the dangerous way — its healthcheck is still `["CMD", "/usr/local/bin/asrd", "version"]` under a comment arguing for `/healthz`, while the deployed block runs an actual `/healthz` GET asserting a 200. construct-server's own comment on that block explains the change: `asrd version` *"prints a string and exits 0 from a bare container with no GPU, no database, no config and no server — verified — so it reports healthy for a wedged process for ever."* Its models-volume default is `~/tools/...` where the deployment pins an absolute path, because prod compose runs from `/opt/construct-server` and `~` expands to the wrong home. **Do not deploy ASR from that file.** CHRN-90 removes it; `asr/` is a sealed subtree with its own release, so it is a ticket of its own rather than a reach from this one.
+
+This directory used to carry `compose.chronicle.yml` and `traefik-chronicle.yml` — copies of both, kept so Chronicle's deploy shape was reviewable in Chronicle's own repo. The intent was right and the mechanism was not. **Nothing checked that the copies agreed with the deployment, and by the time they were removed (CHRN-89) both had diverged, in opposite directions:**
+
+- the **compose** copy was *ahead* — it declared `CHRONICLE_ASR_MODEL` and `CHRONICLE_TRANSCRIBE_INTERVAL`, which are not deployed;
+- the **Traefik** copy was *behind*, and in the direction that matters — it had no `chronicle-proxy-secret`, a middleware live on **every** router reaching this service (CHRN-75 / SERV-148). A reader following it would have built a routing config missing a security middleware, while the compose copy beside it happily carried the `CHRONICLE_PROXY_SECRET` that middleware supplies.
+
+Two documents making one claim, with the second going stale, is the CHRN-79 shape this project already named. So this file aims at **decisions — what cannot be derived from the configuration — rather than the configuration itself.** One table below is the exception and is worth naming rather than glossing: the deployed-routes table lists per-router middlewares, which *is* configuration, and it is the thing this deletion had to correct because it predated `chronicle-proxy-secret`. It earns its place by making the routing split legible in one view, and it is the one thing here that can still go stale — check it against `config/traefik/dynamic/routers.yml` when you change a router.
+
 ## Files
 
 | file | what it is |
 |---|---|
 | `Dockerfile` | static Go binary on Alpine. `docker build -f deploy/Dockerfile -t chronicle:local .` |
 | `provision-db.sh` | database, roles and the tier lockdown. Run once, as superuser, under `signet exec` |
-| `compose.chronicle.yml` | the service block to paste into `~/construct-server/docker-compose.yml` |
-| `traefik-chronicle.yml` | the routers and middleware to paste into `config/traefik/dynamic/routers.yml` |
 | `../asr/` | the shared estate ASR service — the pinned whisper.cpp image, the job contract, and `asrd`. Its own subtree, database, role and release; see `asr/README.md` |
 
 ## Order
 
 1. **Database** — `signet exec --secret construct-server/CHRONICLE_DB_PASSWORD --secret construct-server/CHRONICLE_TIER1_DB_PASSWORD -- deploy/provision-db.sh`
-2. **Secret on disk** — the compose file reads `${CHRONICLE_DB_PASSWORD}`, so Signet needs file targets:
+2. **Secret on disk** — `construct-server`'s `docker-compose.yml` reads `${CHRONICLE_DB_PASSWORD}`, so Signet needs file targets:
    ```
    signet target add-key --project construct-server --path /home/magos/construct-server/.env --name CHRONICLE_DB_PASSWORD
    signet target add-key --project construct-server --path /opt/construct-server/.env      --name CHRONICLE_DB_PASSWORD
@@ -41,9 +52,9 @@ Lyceum's (SERV-60), and the database is provisioned the way Purser's is.
    is fine. What is not fine is finding out at `up` time. `docker pull
    ghcr.io/einlanzerous/chronicle:latest` on the host settles it in one command.
 4. **Cloudflare** — do this **before** compose, not after. See below: the Access
-   application has to exist before the AUD in `compose.chronicle.yml` means
-   anything, and `check-edge-auth.sh` fails the config if a gated router has no
-   matching `CF_ACCESS_AUD_MAP` entry.
+   application has to exist before the AUD in the compose block means anything,
+   and `check-edge-auth.sh` fails the config if a gated router has no matching
+   `CF_ACCESS_AUD_MAP` entry.
 5. **Audio and inbox directories** — `sudo mkdir -p /data/chronicle/audio /data/chronicle/inbox`.
 
    `CHRONICLE_AUDIO_DIR` points here and the service **refuses to boot if the
@@ -117,23 +128,24 @@ Lyceum's (SERV-60), and the database is provisioned the way Purser's is.
    `CHRONICLE_INBOX_DIR` without `CHRONICLE_AUDIO_DIR` is refused outright: a
    watcher with nowhere to copy recordings to would record memos whose audio is
    immediately `missing`.
-6. **Compose** — paste `compose.chronicle.yml`, set `CHRONICLE_OWNER_EMAIL` in
-   `.env`, `docker compose up -d chronicle`. The service refuses to start
-   without it: auth is unconditional (CHRN-71) and the owner is who the first
-   invite belongs to.
+6. **Compose** — the `chronicle` service block lives in `construct-server`'s `docker-compose.yml`. Set `CHRONICLE_OWNER_EMAIL` in `.env`, then `docker compose up -d chronicle`. The service refuses to start without it: auth is unconditional (CHRN-71) and the owner is who the first invite belongs to.
 
-   The Access team domain, AUD and mobile base URL are **literals in the compose
-   block**, not `.env` entries — they are identifiers and hostnames, not
-   secrets, `check-edge-auth.sh` reads the AUD straight out of the file, and the
-   team domain and AUD must be set together or `config.Load` refuses to serve.
+   Four decisions in that block are not derivable from reading it, so they are recorded here:
+
+   - **No `ports:`, deliberately.** Chronicle is reached through Traefik on the internal entrypoint, never from the host. Publishing a port would put an unauthenticated listener on the host and bypass the edge entirely.
+   - **The Access team domain, AUD and mobile base URL are literals, not `.env` indirections.** They are identifiers and hostnames, not secrets — and `check-edge-auth.sh` reads the AUD *straight out of the compose file* to assert it agrees with the guard's `CF_ACCESS_AUD_MAP` entry for this host. Behind a `${...}` the check has nothing to read. Two copies of one identity is not ideal; they are cross-checked rather than trusted, which is what SERV-106 exists to do.
+   - **The team domain and AUD move together.** `config.Load` errors when exactly one of the pair is set and `runServe` returns that error, so a literal AUD beside an empty `${...}` team domain crash-loops the container rather than serving unverified.
+   - **`CHRONICLE_OWNER_EMAIL` unset is not a soft failure.** The owner keeps migration 0002's placeholder, which can never match a Cloudflare-verified email, so browser sign-in would look configured and silently never work.
 7. **First sign-in** — the first boot logs a single-use invite at `warn`:
    `docker compose logs chronicle | grep first-boot`. It expires in seven days
    and is never shown again; `docker compose exec chronicle chronicle
    mint-invite` issues another.
-8. **Traefik** — paste `traefik-chronicle.yml` (three routers, one service, one
-   middleware). Dynamic config; no restart needed. Then add
-   `chronicle.zerogravity.industries` to the guard's `CF_ACCESS_AUD_MAP`, and
-   run `./scripts/check-edge-auth.sh` in `construct-server`.
+8. **Traefik** — the routers, middlewares and service live in `construct-server`'s `config/traefik/dynamic/routers.yml`. Dynamic config; no restart needed. Then add `chronicle.zerogravity.industries` to the guard's `CF_ACCESS_AUD_MAP`, and run `./scripts/check-edge-auth.sh` in `construct-server`.
+
+   Two shapes there that a reader would otherwise have to reverse-engineer:
+
+   - **The login rate limit is a separate higher-priority router, not another middleware on the main one.** It has to reach `/auth/*` and *must not* reach upload traffic: CHRN-20 is resumable upload of memos recorded at arbitrary length, and a 5 req/s bucket across a chunked 40-minute upload throttles ingest rather than attackers. Same construction as `argosy-auth` and `lyceum-public-auth`.
+   - **The edge limiter and Chronicle's in-process limiter are for different threats, not redundant.** The container is reachable on `construct_net` by every other service on the box *without passing Traefik*, so the edge limiter does nothing for that path; the in-process one does nothing about volume from the WAN. The edge limit is per client IP, which is meaningful because the `public` entrypoint sets `forwardedHeaders.trustedIPs: []` and so trusts no client-supplied `X-Forwarded-*`.
 
 ## Transcription (CHRN-27)
 
@@ -196,10 +208,15 @@ Without these the Traefik routers exist but nothing routes to them.
 
 | host | entrypoint | middlewares | for |
 |---|---|---|---|
-| `chronicle.…` | `internal` | `cf-access-jwt` | browser, via Access → `POST /auth/sso/cloudflare` |
-| `chronicle-direct.…` | `public` | `crowdsec-bouncer`, `strip-cf-access` | the app and MCP, via invite → `POST /auth/session` |
+| `chronicle.…` | `internal` | `cf-access-jwt`, `chronicle-proxy-secret` | browser, via Access → `POST /auth/sso/cloudflare` |
+| `chronicle-direct.…` | `public` | `crowdsec-bouncer`, `strip-cf-access`, `chronicle-proxy-secret` | the app and MCP, via invite → `POST /auth/session` |
 | ↳ `PathPrefix(/auth/)` | `public` | + `chronicle-login-ratelimit` | the credential endpoints specifically |
 | ↳ `PathPrefix(/admin)` | `public` | `deny-all` → blackhole | **403. `/admin` is Access-only** |
+
+**`chronicle-proxy-secret` is on every router that reaches this service** (CHRN-75 / SERV-148) — it is how Chronicle knows a request came through this edge. Missing it is not a breakage but a silent coarsening: the app falls back to keying every WAN sign-in on Traefik's own address, and says so in its log rather than failing. Two properties it rests on, both easy to undo by accident:
+
+- `customRequestHeaders` **overwrites** rather than appends, so a client's own `X-Chronicle-Proxy-Secret` is replaced and never reaches the app. Chronicle compares in constant time and never presence-tests.
+- The value must be written `{{ env "CHRONICLE_PROXY_SECRET" }}`, **not** `${CHRONICLE_PROXY_SECRET}`. The file provider does not expand `${...}` — it would stamp the literal string, match nothing, and error nowhere. `crowdsecLapiKey` is the existence proof that the template form works.
 
 The direct router was written and left commented out until Chronicle had its own
 credential surface. **CHRN-71 landed that**, so the standard `routers.yml` sets
