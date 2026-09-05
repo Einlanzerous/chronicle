@@ -348,6 +348,14 @@ func noteError(err error) error {
 			if pgErr.ConstraintName == "note_revisions_memo" {
 				return fmt.Errorf("%w: %v", ErrMemoAlreadyLanded, err)
 			}
+		case pgForeignKeyViolation:
+			// A page, author or memo that is not there. transcript.go:179 and
+			// memolink.go:327 both map this the same way, and the reason is
+			// what a handler has to do with it: a caller naming something that
+			// does not exist is a 404, not a 500, and without this it arrives
+			// as an opaque wrap that leaves a handler choosing between the
+			// wrong status and a string match.
+			return fmt.Errorf("%w: %v", ErrNotFound, err)
 		}
 	}
 	return fmt.Errorf("store: note: %w", err)

@@ -54,14 +54,20 @@ func TestANoteNumberSurvivesAMove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NoteByRef after move: %v", err)
 	}
-	switch {
-	case after.ID != before.ID:
+	// Four independent assertions and not a switch: a switch stops at the
+	// first true case, so a red run on the identity check would hide whether
+	// the number moved too — one line of a four-line answer, on the assertion
+	// carrying criterion 0.
+	if after.ID != before.ID {
 		t.Errorf("id changed across a move: %s -> %s", before.ID, after.ID)
-	case after.Number != before.Number:
+	}
+	if after.Number != before.Number {
 		t.Errorf("number changed across a move: %d -> %d", before.Number, after.Number)
-	case after.PageID == before.PageID:
+	}
+	if after.PageID == before.PageID {
 		t.Errorf("page_id did not change, so nothing was actually moved")
-	case moved.PageID != elsewhere.ID:
+	}
+	if moved.PageID != elsewhere.ID {
 		t.Errorf("page_id = %s, want %s", moved.PageID, elsewhere.ID)
 	}
 }
@@ -78,8 +84,8 @@ func TestNoteNumbersAreNeverReused(t *testing.T) {
 	// after the row, and therefore the sequence value, has been built.
 	if _, _, err := s.CreateNote(ctx, NewNote{
 		PageID: uuid.New(), AuthorID: author, Title: "Doomed", Body: "",
-	}); err == nil {
-		t.Fatal("CreateNote against a missing page succeeded")
+	}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("CreateNote against a missing page err = %v, want ErrNotFound", err)
 	}
 
 	second := mkNote(t, s, ctx, page, author, "Second", "")
@@ -177,8 +183,8 @@ func TestCreateNoteIsAllOrNothing(t *testing.T) {
 	before := countRevisions(t, s, ctx)
 	if _, _, err := s.CreateNote(ctx, NewNote{
 		PageID: uuid.New(), AuthorID: author, Title: "Doomed", Body: "text that must not survive",
-	}); err == nil {
-		t.Fatal("CreateNote against a missing page succeeded")
+	}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("CreateNote against a missing page err = %v, want ErrNotFound", err)
 	}
 	if got := countRevisions(t, s, ctx); got != before {
 		t.Errorf("revisions %d -> %d: the failed create left a row behind", before, got)
@@ -401,6 +407,17 @@ func TestAMemoLandsInExactlyOneRevision(t *testing.T) {
 	})
 	if !errors.Is(err, ErrMemoAlreadyLanded) {
 		t.Errorf("second landing err = %v, want ErrMemoAlreadyLanded", err)
+	}
+
+	// AND THROUGH THE APPEND PATH, which is where a caller meets this in
+	// practice: the second pass at an idea arrives as a revision of the note
+	// the first pass created, not as a new note.
+	other := mkNote(t, s, ctx, page, author, "Somewhere else", "")
+	_, err = s.AppendRevision(ctx, other.ID, NewRevision{
+		AuthorID: author, Title: "Second landing", Body: "x", MemoID: &memo.ID,
+	})
+	if !errors.Is(err, ErrMemoAlreadyLanded) {
+		t.Errorf("append with a landed memo err = %v, want ErrMemoAlreadyLanded", err)
 	}
 
 	// NULL provenance is not constrained — most notes will be typed.

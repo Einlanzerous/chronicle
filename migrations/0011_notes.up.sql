@@ -204,8 +204,15 @@ CREATE OR REPLACE TRIGGER note_revisions_guard
     BEFORE UPDATE OR DELETE ON tier2.note_revisions
     FOR EACH ROW EXECUTE FUNCTION tier2.note_revisions_guard();
 
--- Redundant against 0001 and stated anyway, as documentation of intent at the
--- point the tier boundary is defined. 0003_memos.up.sql is the wording.
+-- Redundant, and stated anyway as documentation of intent at the point the
+-- tier boundary is defined. 0003_memos.up.sql is the wording.
+--
+-- WHAT MAKES IT REDUNDANT IS NARROWER THAN "0001 REVOKED THE SCHEMA", and the
+-- difference matters because 0007:52 re-granted USAGE on schema tier2. The
+-- fact that survives 0007: no GRANT on tier2.notes or tier2.note_revisions was
+-- ever issued, and 0007 deliberately added no ALTER DEFAULT PRIVILEGES on
+-- schema tier2 — so a tier-2 table created today is unreachable by
+-- chronicle_tier1 on table privileges alone, whatever it holds on the schema.
 --
 -- NOTE FOR CHRN-41: its index reads these tables as chronicle_tier1 and will
 -- need GRANT SELECT. That grant is CHRN-41's to raise and CHRN-52's to issue —
