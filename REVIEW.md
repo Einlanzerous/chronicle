@@ -333,7 +333,7 @@ to change and be regenerated.
 
 The five Mode C tickets are the ones that can destroy authored data or hand an
 agent write access to it, so their code must live somewhere `sensitive_paths`
-in `.github/workflows/pr-review.yml` names. **One of the five still has no path
+in `.github/workflows/pr-review.yml` names. **Two of the five still have no path
 in this repo — CHRN-67 (MCP write scopes) and CHRN-65 (the MCP server itself:
 Streamable HTTP behind Access).** Neither has a package, and an `internal/mcp/`
 or `internal/api/mcp/` would match nothing in the pattern — the
