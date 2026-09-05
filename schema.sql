@@ -970,6 +970,13 @@ CREATE UNIQUE INDEX memos_author_content ON tier2.memos USING btree (author_id, 
 
 
 --
+-- Name: note_revisions_fts; Type: INDEX; Schema: tier2; Owner: -
+--
+
+CREATE INDEX note_revisions_fts ON tier2.note_revisions USING gin (((setweight(to_tsvector('english'::regconfig, title), 'A'::"char") || setweight(to_tsvector('english'::regconfig, body), 'B'::"char"))));
+
+
+--
 -- Name: note_revisions_memo; Type: INDEX; Schema: tier2; Owner: -
 --
 
@@ -1023,6 +1030,13 @@ CREATE UNIQUE INDEX pages_sibling_slug ON tier2.pages USING btree (parent_id, sl
 --
 
 CREATE INDEX transcripts_durable ON tier2.transcripts USING btree (memo_id) WHERE (NOT partial);
+
+
+--
+-- Name: transcripts_fts; Type: INDEX; Schema: tier2; Owner: -
+--
+
+CREATE INDEX transcripts_fts ON tier2.transcripts USING gin (to_tsvector('english'::regconfig, text));
 
 
 --
