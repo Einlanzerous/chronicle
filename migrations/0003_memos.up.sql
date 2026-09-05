@@ -178,10 +178,24 @@ $fn$;
 CREATE OR REPLACE TRIGGER memos_guard BEFORE INSERT OR UPDATE ON tier2.memos
     FOR EACH ROW EXECUTE FUNCTION tier2.memos_guard();
 
--- Redundant against 0001 — chronicle_tier1 holds no USAGE on schema tier2 —
--- and stated anyway as documentation of intent, per the pattern 0002
--- established. Note that it does NOT make a later loosened grant appear in
--- schema.sql: pg_dump emits only non-default ACLs, so revoking a privilege the
--- role never held leaves nothing to emit. A loosened GRANT shows up in the
--- diff on its own. The statement is worth keeping; that justification is not.
+-- Redundant when written, and stated anyway as documentation of intent, per
+-- the pattern 0002 established.
+--
+-- WHAT MADE IT REDUNDANT IS NARROWER THAN "0001 REVOKED THE SCHEMA", and 0007
+-- is why the difference matters: 0007:52 re-granted USAGE on schema tier2, so
+-- the schema is not a wall and has not been one since E4. What holds instead
+-- is table privileges — 0007 deliberately added no ALTER DEFAULT PRIVILEGES on
+-- schema tier2, so a tier-2 table is unreachable by chronicle_tier1 until some
+-- migration grants it BY NAME.
+--
+-- AND FOR tier2.memos, ONE LATER DID. 0007:53 grants chronicle_tier1 SELECT on
+-- tier2.memos (and tier2.transcripts) so Scribe can read its input, and that
+-- grant supersedes this line. tier2.memo_arrivals is still ungranted. Do not
+-- read this REVOKE as evidence that the role cannot see memos today: it can,
+-- by name and on purpose. schema.sql is the current state; this file is when.
+--
+-- Note also that it does NOT make a later loosened grant appear in schema.sql:
+-- pg_dump emits only non-default ACLs, so revoking a privilege the role never
+-- held leaves nothing to emit. A loosened GRANT shows up in the diff on its
+-- own. The statement is worth keeping; that justification is not.
 REVOKE ALL ON tier2.memos, tier2.memo_arrivals FROM chronicle_tier1;
