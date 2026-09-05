@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.6.0](https://github.com/Einlanzerous/chronicle/compare/v1.5.0...v1.6.0) (2026-09-05)
+
+
+### Features
+
+* **catalogue:** the live Switchyard project list (CHRN-31) ([#47](https://github.com/Einlanzerous/chronicle/issues/47)) ([569f838](https://github.com/Einlanzerous/chronicle/commit/569f8387f5a1afeae0f5e248397bfe83b899e2a9))
+* **eval:** the routing eval set and its harness (CHRN-36) ([#44](https://github.com/Einlanzerous/chronicle/issues/44)) ([a3ea527](https://github.com/Einlanzerous/chronicle/commit/a3ea527f4be272341be987ce04502e086f17df96))
+* **scribe:** routing prompt v1 on local Gemma 4, and the catalogue it renders from (CHRN-30) ([#46](https://github.com/Einlanzerous/chronicle/issues/46)) ([54998fa](https://github.com/Einlanzerous/chronicle/commit/54998fafbfe20bfc3e68d301df7e7122d479f5dd))
+* **scribe:** set the pre-accept threshold from the scored eval (CHRN-36) ([#52](https://github.com/Einlanzerous/chronicle/issues/52)) ([b0efbb0](https://github.com/Einlanzerous/chronicle/commit/b0efbb0599d5316ef113aaa9ac7d77f1234b4b56))
+* **triage:** propose N, accept many, survive a partial failure (CHRN-33) ([#50](https://github.com/Einlanzerous/chronicle/issues/50)) ([253fadb](https://github.com/Einlanzerous/chronicle/commit/253fadb3b50a838edb224ddd0fbc490fd96239df))
+
 ## [1.5.0](https://github.com/Einlanzerous/chronicle/compare/v1.4.0...v1.5.0) (2026-08-30)
 
 
