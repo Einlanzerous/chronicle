@@ -8,6 +8,7 @@ import (
 	"go/printer"
 	"go/token"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -285,13 +286,81 @@ func TestTheTierHalvesDoNotReachIntoEachOther(t *testing.T) {
 		t.Fatal("the tier-1 file names tier2.memo_links — proposals are read on the tier-1 " +
 			"pool and decisions are written on the main one, and nothing may span them")
 	}
-	for _, f := range []string{"memolink.go", "triage.go"} {
-		src := readSource(t, f)
-		// tier1.memo_proposals is the only tier-1 table; naming it from a
-		// tier-2 write path would be a join across two pools that cannot exist.
-		if strings.Contains(src, "tier1.") {
-			t.Fatalf("%s reaches into tier 1 from a tier-2 write path", f)
+	// memolink.go IS the tier-2 write path, and it names no tier-1 table at
+	// all. Strictest of the three rules and the one that matters most: a
+	// statement here that touched tier 1 would be a decision write reaching
+	// across the boundary in the same transaction.
+	if src := readSource(t, "memolink.go"); strings.Contains(src, "tier1.") {
+		t.Fatal("memolink.go reaches into tier 1 from a tier-2 write path")
+	}
+
+	// triage.go is READ-ONLY and runs on the MAIN pool, which owns both
+	// schemas — so it may name a tier-1 table, and must never write one.
+	//
+	// This used to be a flat ban on the string `tier1.`, which was a proxy for
+	// the real property and was narrowed by CHRN-34 rather than deleted. The
+	// property is the one this test is named for: NO STATEMENT SPANS THE TWO
+	// POOLS. A ban on the string also forbade things that do not span them,
+	// and UntriagedMemos is exactly that case — it filters out CHRN-34's
+	// deferred memos with a NOT EXISTS against tier1.triage_holds, on the main
+	// role, in a query no tier-1 connection ever runs.
+	//
+	// Doing it in Go instead would not have been the safer option, which is
+	// worth recording because it looks like it would: the filter has to be
+	// inside LIMIT or `limit` stops meaning "a screen", and an operator who
+	// deferred twenty-five memos would get a permanently empty triage screen
+	// with a hundred still waiting.
+	//
+	// The write ban stays absolute, and it is what actually holds the line.
+	triageSrc := readSource(t, "triage.go")
+
+	// MATCHED ON A REGEX OVER WHITESPACE-INSENSITIVE SOURCE, not on three
+	// literal strings. The first version of this check compared against
+	// "INSERT INTO tier1." and friends, which the multi-line SQL literals in
+	// this package defeat with a line break after the verb — and which missed
+	// MERGE and TRUNCATE outright. A ban a plausible formatting choice walks
+	// through is not a ban. (PR #53 review.)
+	if tierOneWrite.MatchString(triageSrc) {
+		t.Fatalf("triage.go writes tier 1 (%q) — it is the read side, and a tier-1 "+
+			"write belongs beside the pool that owns it",
+			tierOneWrite.FindString(triageSrc))
+	}
+	// And the read it is allowed is the one that was argued for. A second
+	// tier-1 table appearing here is a new argument, not this one's precedent.
+	for _, ref := range tierOneRefs(triageSrc) {
+		if ref != "tier1.triage_holds" {
+			t.Fatalf("triage.go names %s; the only tier-1 read argued for here is "+
+				"tier1.triage_holds (CHRN-34). Make the case before adding another.", ref)
 		}
+	}
+}
+
+// tierOneWrite matches any SQL statement writing a tier-1 table, across a line
+// break and including the two verbs a literal-string check forgets.
+var tierOneWrite = regexp.MustCompile(`(?is)\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM|MERGE\s+INTO|TRUNCATE(\s+TABLE)?)\s+tier1\.`)
+
+// tierOneRefs returns every distinct `tier1.<table>` named in src.
+func tierOneRefs(src string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for i := 0; ; {
+		j := strings.Index(src[i:], "tier1.")
+		if j < 0 {
+			return out
+		}
+		i += j
+		end := i + len("tier1.")
+		for end < len(src) && (src[end] == '_' ||
+			(src[end] >= 'a' && src[end] <= 'z') ||
+			(src[end] >= 'A' && src[end] <= 'Z') ||
+			(src[end] >= '0' && src[end] <= '9')) {
+			end++
+		}
+		if ref := src[i:end]; !seen[ref] {
+			seen[ref] = true
+			out = append(out, ref)
+		}
+		i = end
 	}
 }
 
@@ -384,4 +453,39 @@ func funcBody(t *testing.T, file, name string) string {
 
 func printNode(w *strings.Builder, fset *token.FileSet, n ast.Node) error {
 	return printer.Fprint(w, fset, n)
+}
+
+// The write ban is only worth having if it catches the forms it claims to, and
+// the previous literal-string version silently did not. Asserted directly,
+// because a guard that fails open looks exactly like a guard that passes.
+func TestTheTierOneWriteBanCatchesWhatALiteralCheckMissed(t *testing.T) {
+	caught := []string{
+		`INSERT INTO tier1.triage_holds (memo_id) VALUES ($1)`,
+		"INSERT INTO\n\t\ttier1.triage_holds (memo_id)", // the line break a literal check walks through
+		`UPDATE tier1.memo_proposals SET status = 'valid'`,
+		"UPDATE\n  tier1.memo_proposals SET status = 'valid'",
+		`DELETE FROM tier1.triage_holds WHERE memo_id = $1`,
+		"delete   from   tier1.triage_holds", // case and spacing
+		`MERGE INTO tier1.triage_holds t USING x ON t.memo_id = x.id`,
+		`TRUNCATE tier1.triage_holds`,
+		`TRUNCATE TABLE tier1.triage_holds`,
+	}
+	for _, w := range caught {
+		if !tierOneWrite.MatchString(w) {
+			t.Errorf("the tier-1 write ban does not catch %q", w)
+		}
+	}
+
+	// And it must not fire on the read this test file deliberately permits, or
+	// it would ban the thing CHRN-34 argued for.
+	allowed := []string{
+		`AND NOT EXISTS (SELECT 1 FROM tier1.triage_holds h WHERE h.memo_id = m.id)`,
+		`SELECT count(*) FROM tier1.triage_holds h JOIN tier2.memos m ON m.id = h.memo_id`,
+		`-- updates to tier1.triage_holds belong beside the pool that owns it`,
+	}
+	for _, a := range allowed {
+		if tierOneWrite.MatchString(a) {
+			t.Errorf("the tier-1 write ban fires on a read: %q", a)
+		}
+	}
 }

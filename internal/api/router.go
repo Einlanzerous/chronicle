@@ -248,6 +248,13 @@ func NewRouter(d Deps) http.Handler {
 	mux.HandleFunc("GET /triage/batch", a.requireUser(a.handleTriageBatch))
 	mux.HandleFunc("POST /triage/accept", a.requireUser(a.handleTriageAccept))
 
+	// CHRN-34's two escapes. requireUser on the same grounds as the two above,
+	// and scoped inside the service per memo: deferring somebody else's memo
+	// answers exactly as deferring one that does not exist.
+	mux.HandleFunc("POST /triage/hold", a.requireUser(a.handleTriageHold))
+	mux.HandleFunc("POST /triage/release", a.requireUser(a.handleTriageRelease))
+	mux.HandleFunc("GET /triage/deferred", a.requireUser(a.handleTriageDeferred))
+
 	// What triage left behind: the backlog by age, and the decisions that did
 	// not finish landing. Owner only, because it spans every author's corpus.
 	mux.HandleFunc("GET /admin/triage", a.requireOwner(a.handleAdminTriage))

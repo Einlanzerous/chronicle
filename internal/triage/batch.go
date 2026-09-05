@@ -220,6 +220,13 @@ func (s *Service) linkState(l store.MemoLink, inFlight bool) *LinkState {
 type AdminReport struct {
 	Backlog BacklogReport `json:"backlog"`
 
+	// Deferred is CHRN-34's inbox as a NUMBER, beside the backlog rather than
+	// inside it. The backlog counts what is waiting for a decision nobody has
+	// made; this counts what somebody decided to decide later. Adding them
+	// would produce one figure that cannot be driven to zero, because half of
+	// it is deliberate.
+	Deferred int `json:"deferred"`
+
 	// The four link states. Three are read from columns; IN FLIGHT IS OBSERVED
 	// BY TAKING ROW LOCKS — see store.TriageLinkStates for why it cannot be a
 	// column or a timestamp.
@@ -251,6 +258,10 @@ func (s *Service) Admin(ctx context.Context) (AdminReport, error) {
 	rep.Backlog = BacklogReport{
 		Total: b.Total, Today: b.Today, ThisWeek: b.ThisWeek, Older: b.Older,
 		OldestCapturedAt: b.OldestCapturedAt,
+	}
+
+	if rep.Deferred, err = s.store.CountTriageHolds(ctx); err != nil {
+		return rep, err
 	}
 
 	links, err := s.store.TriageLinkStates(ctx, MaxLimit*4)

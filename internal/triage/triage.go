@@ -115,6 +115,13 @@ type Store interface {
 	LinksInFlight(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]bool, error)
 	TriageLinkStates(ctx context.Context, limit int) (store.TriageLinks, error)
 	TriageBacklog(ctx context.Context) (store.TriageBacklog, error)
+
+	// CHRN-34. Tier-1 rows written by a person, which is why they are here and
+	// not on Tier1 — see internal/store/hold.go for the full argument.
+	HoldForTriage(ctx context.Context, memoID, heldBy uuid.UUID, reason string) (store.TriageHold, error)
+	ReleaseTriageHold(ctx context.Context, memoID uuid.UUID) error
+	DeferredMemos(ctx context.Context, authorID uuid.UUID, limit int) ([]store.DeferredMemo, error)
+	CountTriageHolds(ctx context.Context) (int, error)
 }
 
 // Tier1 is the DERIVED surface, and it is a separate interface for the reason
