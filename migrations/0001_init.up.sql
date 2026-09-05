@@ -24,9 +24,25 @@ REVOKE ALL ON SCHEMA public FROM PUBLIC;
 REVOKE ALL ON SCHEMA tier1 FROM PUBLIC;
 REVOKE ALL ON SCHEMA tier2 FROM PUBLIC;
 
--- The regeneration role owns tier 1 outright and cannot see tier 2 at all.
--- This is the enforcement mechanism the doctrine calls for; CHRN-52 is the
--- test that proves it still holds.
+-- The regeneration role owns tier 1 outright. Its reach into tier 2 is not a
+-- schema wall — it is whatever a migration grants BY NAME, and as of 0007:53
+-- that is SELECT on tier2.memos and tier2.transcripts and nothing else. Scribe
+-- and the search index derive from the corpus, and cannot derive from a corpus
+-- they cannot read.
+--
+-- THIS COMMENT USED TO SAY THE ROLE "cannot see tier 2 at all" (CHRN-88). That
+-- was true when 0001 was written and false from 0007 onward, and it was wrong in
+-- the load-bearing direction: REVIEW.md section 1 sends a reviewer to these lines
+-- to judge a `GRANT ... TO chronicle_tier1`, and the old wording argued such a
+-- grant could not be reached anyway — clearing the one thing that check exists to
+-- catch. CHRN-32's ruling R4 (accepted 2026-08-30) is where it was ruled to
+-- change: say which two tables the role can read, and why.
+--
+-- What keeps every OTHER tier-2 table unreachable is table privileges, not the
+-- REVOKE below: no GRANT was ever issued on them, and 0007 deliberately added no
+-- ALTER DEFAULT PRIVILEGES on schema tier2. The invariant is unchanged — no
+-- tier-1 WRITE path reaches a tier-2 table — and CHRN-52 is the test that proves
+-- it still holds.
 GRANT USAGE, CREATE ON SCHEMA tier1 TO chronicle_tier1;
 ALTER DEFAULT PRIVILEGES IN SCHEMA tier1
   GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chronicle_tier1;

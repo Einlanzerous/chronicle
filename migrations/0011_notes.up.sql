@@ -205,7 +205,10 @@ CREATE OR REPLACE TRIGGER note_revisions_guard
     FOR EACH ROW EXECUTE FUNCTION tier2.note_revisions_guard();
 
 -- Redundant, and stated anyway as documentation of intent at the point the
--- tier boundary is defined. 0003_memos.up.sql is the wording.
+-- tier boundary is defined. 0002_accounts.up.sql established the pattern and
+-- 0003_memos.up.sql is the wording — but read 0003's post-0007 variant as the
+-- exception it is: 0007:53 grants SELECT on tier2.memos, so the "no GRANT was
+-- ever issued" below is true HERE and false THERE.
 --
 -- WHAT MAKES IT REDUNDANT IS NARROWER THAN "0001 REVOKED THE SCHEMA", and the
 -- difference matters because 0007:52 re-granted USAGE on schema tier2. The

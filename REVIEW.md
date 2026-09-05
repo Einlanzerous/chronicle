@@ -198,7 +198,7 @@ For any new table, query, or handler, say which side it is on. Concretely:
   disagrees. Measured on CHRN-79 rather than reasoned: a probe `GRANT SELECT ON
   tier2.memos TO chronicle_tier1` adds exactly one stanza, while all five
   tier-2 `REVOKE`s the migrations state — two on schema `tier2` (`0001:25`,
-  `0001:36`), three covering its four tables (`0002:76-77`, `0003:177`) —
+  `0001:52`), three covering its four tables (`0002:83-84`, `0003:201`) —
   render nothing at all. That visibility comes from `gen-schema.sh` rendering
   privileges instead of passing `--no-acl`, which is why the script is in
   `sensitive_paths` and why removing the ACLs there would break no test. **The
@@ -334,13 +334,23 @@ to change and be regenerated.
 The five Mode C tickets are the ones that can destroy authored data or hand an
 agent write access to it, so their code must live somewhere `sensitive_paths`
 in `.github/workflows/pr-review.yml` names. **One of the five still has no path
-in this repo: CHRN-67 (MCP write scopes).** `sensitive_paths` cannot list a
-package that does not exist, so the entry has to arrive with the code.
+in this repo — CHRN-67 (MCP write scopes) and CHRN-65 (the MCP server itself:
+Streamable HTTP behind Access).** Neither has a package, and an `internal/mcp/`
+or `internal/api/mcp/` would match nothing in the pattern — the
+`internal/api/(session|cfaccess|ratelimit|router|storage|upload|transcription)`
+alternation is exhaustive. `sensitive_paths` cannot list a package that does not
+exist, so the entry has to arrive with the code.
 
-So: **if this PR implements CHRN-67, check that it adds its new package to
-`sensitive_paths` in the same PR.** If it does not, that is a 🔴 Important
-finding — every subsequent PR touching the MCP write surface would otherwise be
-reviewed at the cheap tier, silently, which is the whole cost of the omission.
+So: **if this PR implements CHRN-65 or CHRN-67, check that it adds its new
+package to `sensitive_paths` in the same PR.** If it does not, that is a 🔴
+Important finding — every subsequent PR touching Chronicle's MCP surface, the
+Access-facing transport included, would otherwise be reviewed at the cheap tier,
+silently, which is the whole cost of the omission.
+
+CLAUDE.md's Mode C list calls CHRN-65 *"auth surface"*, which reads like the
+`internal/api/session` and `internal/invite/` code that already exists. It is
+not: the ticket is the MCP transport. Do not let the label talk you out of the
+check.
 
 **Two tickets this section used to name are now covered, and finding them
 uncovered is a false 🔴** — check the pattern before raising one:
