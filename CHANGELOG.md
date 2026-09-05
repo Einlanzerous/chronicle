@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.8.0](https://github.com/Einlanzerous/chronicle/compare/v1.7.0...v1.8.0) (2026-09-05)
+
+
+### Features
+
+* **markdown:** store raw, render on read, and leave references alone (CHRN-40) ([#57](https://github.com/Einlanzerous/chronicle/issues/57)) ([ed22837](https://github.com/Einlanzerous/chronicle/commit/ed228370d5b74cb60889c7fefeaffad79239f286))
+* **notes:** backlinks derived, tags authored, and the tier line between them (CHRN-42) ([#59](https://github.com/Einlanzerous/chronicle/issues/59)) ([c07d1dd](https://github.com/Einlanzerous/chronicle/commit/c07d1dddb0583aca6e4c150a0cd46b3f8ab86fd8))
+* **notes:** the note, its permanent number, and text that lives in revisions (CHRN-38) ([#56](https://github.com/Einlanzerous/chronicle/issues/56)) ([68d3697](https://github.com/Einlanzerous/chronicle/commit/68d369766dd87c4c3142abcd79d8a39686f47077))
+* **pages:** the page tree, and a move that orphans nothing (CHRN-37) ([#55](https://github.com/Einlanzerous/chronicle/issues/55)) ([2d1b26c](https://github.com/Einlanzerous/chronicle/commit/2d1b26c82ff04c4bf04399fac855020b84cbeb0d))
+* **search:** Postgres FTS over notes and transcripts, with no second copy (CHRN-41) ([#58](https://github.com/Einlanzerous/chronicle/issues/58)) ([9e2e3b5](https://github.com/Einlanzerous/chronicle/commit/9e2e3b55e838419fde3719e63975f7b557ab1d0d))
+
 ## [1.7.0](https://github.com/Einlanzerous/chronicle/compare/v1.6.0...v1.7.0) (2026-09-05)
 
 
