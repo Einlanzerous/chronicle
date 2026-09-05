@@ -373,3 +373,71 @@ func TestTheBacklogExcludesDeferredMemos(t *testing.T) {
 		t.Errorf("backlog after hold = %d, want 1 — a deferral is not backlog", after.Total)
 	}
 }
+
+// A HOLD DOES NOT OUTLIVE THE DECISION IT WAS DEFERRING.
+//
+// Found by the reviewer on PR #53, and it is the ticket's own failure mode
+// rather than an edge case. Holding only ever starts from `transcribed`, but
+// nothing kept the read side in step: a memo could be deferred and then decided
+// — the accept path names a memo id directly and never consults this table —
+// leaving a hold row that listed forever with a growing age, and counted in a
+// number an operator is meant to drive to zero.
+//
+// Re-holding could not clear it either: HoldForTriage refuses a decided memo
+// with ErrNotHoldable, so the row could only be removed by releasing a memo
+// nobody now believes is held.
+//
+// Fixed by carrying the entry predicate through to the read side, which makes a
+// decided memo's hold invisible by the same JOIN that already hides an orphan —
+// rather than by deleting the row on the accept path, which would put a tier-1
+// write on the tier-2 decision path that memolink_test.go bans.
+func TestAHoldDoesNotOutliveTheDecisionItDeferred(t *testing.T) {
+	s, ctx := newTestStore(t)
+	owner, err := s.GetOwner(ctx)
+	if err != nil {
+		t.Fatalf("GetOwner: %v", err)
+	}
+	memoID := seedTriageable(t, s, ctx, holdHash("outlive"))
+	if _, err := s.HoldForTriage(ctx, memoID, owner.ID, "decide later"); err != nil {
+		t.Fatalf("HoldForTriage: %v", err)
+	}
+
+	// The operator changes their mind and decides it anyway — reachable today
+	// because /triage/accept takes a memo id and never reads this table.
+	if _, err := s.AdvanceMemoState(ctx, memoID, StateTranscribed, StateTriaged, "decided after all"); err != nil {
+		t.Fatalf("AdvanceMemoState: %v", err)
+	}
+
+	held, err := s.DeferredMemos(ctx, uuid.Nil, 10)
+	if err != nil {
+		t.Fatalf("DeferredMemos: %v", err)
+	}
+	if len(held) != 0 {
+		t.Errorf("deferred inbox still lists a decided memo (%d rows) — it would age forever "+
+			"and re-holding answers ErrNotHoldable, so nothing could clear it", len(held))
+	}
+
+	n, err := s.CountTriageHolds(ctx)
+	if err != nil {
+		t.Fatalf("CountTriageHolds: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("hold count = %d after the memo was decided, want 0", n)
+	}
+
+	// The same for the other terminal destination, since DISCARD is the one
+	// that cannot be walked back.
+	other := seedTriageable(t, s, ctx, holdHash("outlive-discard"))
+	if _, err := s.HoldForTriage(ctx, other, owner.ID, ""); err != nil {
+		t.Fatalf("HoldForTriage: %v", err)
+	}
+	if _, err := s.AdvanceMemoState(ctx, other, StateTranscribed, StateDiscarded, "discarded at triage"); err != nil {
+		t.Fatalf("AdvanceMemoState: %v", err)
+	}
+	if held, err = s.DeferredMemos(ctx, uuid.Nil, 10); err != nil {
+		t.Fatalf("DeferredMemos: %v", err)
+	}
+	if len(held) != 0 {
+		t.Errorf("deferred inbox lists a discarded memo (%d rows)", len(held))
+	}
+}

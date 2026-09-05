@@ -61,6 +61,17 @@ type TriageHold struct {
 	HeldBy uuid.UUID
 	Reason string
 	HeldAt time.Time
+
+	// Age is how long it has been deferred, and it comes from the DATABASE'S
+	// clock like every other timestamp on this screen.
+	//
+	// It is here rather than left to the caller because the caller reaching for
+	// time.Since(HeldAt) is the bug this field prevents: on the idempotent
+	// re-hold of a memo parked three weeks ago, the app clock and the database
+	// clock disagree by the skew between them, and the confirmation would
+	// report an age the listing does not. One clock, one answer. (PR #53
+	// review.)
+	Age time.Duration
 }
 
 // DeferredMemo is one row of the deferred inbox: the hold, the memo it defers,
@@ -100,6 +111,7 @@ func (s *Store) HoldForTriage(ctx context.Context, memoID, heldBy uuid.UUID, rea
 	// has no row to insert and the ON CONFLICT arm never runs either.
 	var h TriageHold
 	var reasonCol *string
+	var ageSeconds float64
 	err := s.pool.QueryRow(ctx,
 		`WITH holdable AS (
 		     SELECT id FROM tier2.memos WHERE id = $1 AND state = $4
@@ -109,19 +121,21 @@ func (s *Store) HoldForTriage(ctx context.Context, memoID, heldBy uuid.UUID, rea
 		     ON CONFLICT (memo_id) DO NOTHING
 		     RETURNING memo_id, held_by, reason, held_at
 		 )
-		 SELECT memo_id, held_by, reason, held_at FROM ins
+		 SELECT memo_id, held_by, reason, held_at,
+		        EXTRACT(EPOCH FROM (now() - held_at)) FROM ins
 		 UNION ALL
 		 -- The already-held arm. Guarded by EXISTS(holdable) so that a memo
 		 -- which has since been triaged reports ErrNotHoldable rather than
 		 -- quietly returning a stale hold row.
-		 SELECT memo_id, held_by, reason, held_at
+		 SELECT memo_id, held_by, reason, held_at,
+		        EXTRACT(EPOCH FROM (now() - held_at))
 		   FROM tier1.triage_holds
 		  WHERE memo_id = $1
 		    AND EXISTS (SELECT 1 FROM holdable)
 		    AND NOT EXISTS (SELECT 1 FROM ins)
 		 LIMIT 1`,
 		memoID, heldBy, reason, StateTranscribed).
-		Scan(&h.MemoID, &h.HeldBy, &reasonCol, &h.HeldAt)
+		Scan(&h.MemoID, &h.HeldBy, &reasonCol, &h.HeldAt, &ageSeconds)
 
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -135,6 +149,7 @@ func (s *Store) HoldForTriage(ctx context.Context, memoID, heldBy uuid.UUID, rea
 	if reasonCol != nil {
 		h.Reason = *reasonCol
 	}
+	h.Age = time.Duration(ageSeconds * float64(time.Second))
 	return h, nil
 }
 
@@ -203,9 +218,25 @@ func (s *Store) DeferredMemos(ctx context.Context, authorID uuid.UUID, limit int
 		          LIMIT 1
 		        ) t ON TRUE
 		  WHERE ($1::uuid IS NULL OR m.author_id = $1)
+		    -- THE ENTRY PREDICATE, CARRIED THROUGH TO THE READ. HoldForTriage
+		    -- only ever creates a hold for a transcribed memo, and nothing
+		    -- keeps the two in step afterwards: /triage/accept names a memo id
+		    -- directly and never consults this table, so a deferred memo can be
+		    -- decided and leave its hold behind.
+		    --
+		    -- Without this line that row lists forever with a growing age, is
+		    -- counted in a number an operator is meant to drive to zero, and
+		    -- cannot be cleared by re-holding — HoldForTriage refuses a decided
+		    -- memo. Which is the ticket's own "place memos go to be forgotten",
+		    -- built instead of prevented. (PR #53 review.)
+		    --
+		    -- Filtered here rather than deleted on the accept path, because a
+		    -- DELETE there would be a tier-1 write on the tier-2 decision path
+		    -- and memolink_test.go bans exactly that.
+		    AND m.state = $5
 		  ORDER BY h.held_at
-		  LIMIT $5`,
-		author, SufficientRunners, SufficientModels, excerptBudget, limit)
+		  LIMIT $6`,
+		author, SufficientRunners, SufficientModels, excerptBudget, StateTranscribed, limit)
 	if err != nil {
 		return nil, fmt.Errorf("store: deferred memos: %w", err)
 	}
@@ -246,9 +277,13 @@ func (s *Store) CountTriageHolds(ctx context.Context) (int, error) {
 	// Through the JOIN, so the count agrees with the listing rather than with
 	// the table. An orphaned hold is not something an operator can act on and
 	// must not appear in a number they are meant to drive to zero.
+	// Same predicate as DeferredMemos, and it must stay the same one: a count
+	// that disagreed with the listing is a backlog figure an operator cannot
+	// reconcile with the screen it is meant to describe.
 	if err := s.pool.QueryRow(ctx,
 		`SELECT count(*) FROM tier1.triage_holds h
-		   JOIN tier2.memos m ON m.id = h.memo_id`).Scan(&n); err != nil {
+		   JOIN tier2.memos m ON m.id = h.memo_id
+		  WHERE m.state = $1`, StateTranscribed).Scan(&n); err != nil {
 		return 0, fmt.Errorf("store: count holds: %w", err)
 	}
 	return n, nil

@@ -33,7 +33,13 @@ type DeferredItem struct {
 	// Excerpt labels the card, exactly as it does on the triage screen. A
 	// deferred memo the operator cannot recognise is one they cannot decide,
 	// and "which memo was that" is the whole reason a bare id is not enough.
-	Excerpt string `json:"excerpt"`
+	//
+	// OMITTED ON THE HOLD CONFIRMATION, and that is not an oversight: a client
+	// that just held a memo is looking at the card it held. Fetching the
+	// transcript again to echo a label back would be a second query for text
+	// the caller already has on screen. The listing is where the label earns
+	// its place, weeks later, when nobody remembers what the memo was.
+	Excerpt string `json:"excerpt,omitempty"`
 
 	Reason string    `json:"reason,omitempty"`
 	HeldBy uuid.UUID `json:"held_by"`
@@ -41,7 +47,13 @@ type DeferredItem struct {
 
 	// AgeSeconds is the `Done when`'s "listed with an age", and it is a NUMBER
 	// rather than a rendered string because the client decides how to say
-	// "three weeks". Computed by the database — see store.DeferredMemo.Age.
+	// "three weeks".
+	//
+	// ALWAYS THE DATABASE'S CLOCK, on both paths. It used to be time.Since on
+	// the hold confirmation, which disagreed with the listing by the app-to-DB
+	// skew on exactly the case the endpoint is built around — the idempotent
+	// re-hold of a memo parked three weeks ago, which returns the ORIGINAL
+	// held_at. Both now read store's Age. (PR #53 review.)
 	AgeSeconds int64 `json:"age_seconds"`
 }
 
@@ -76,7 +88,7 @@ func (s *Service) Hold(ctx context.Context, actor store.User, memoID uuid.UUID, 
 		Reason:     h.Reason,
 		HeldBy:     h.HeldBy,
 		HeldAt:     h.HeldAt,
-		AgeSeconds: int64(time.Since(h.HeldAt).Seconds()),
+		AgeSeconds: int64(h.Age.Seconds()),
 	}, nil
 }
 
