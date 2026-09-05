@@ -64,10 +64,19 @@ func reindexLinks(ctx context.Context, q querier, noteID, revisionID uuid.UUID, 
 	// so a note quoting CHR-0311 in backticks does not acquire an edge.
 	seen := map[int64]bool{}
 	for _, r := range markdown.References([]byte(title + "\n\n" + body)) {
-		// A note does not link to itself. Self-references happen — a note
-		// quoting its own number while explaining what it is about — and an
-		// edge for one would put every such note in its own backlink list.
-		if r.Kind != markdown.KindNote || r.Number == selfNumber || seen[r.Number] {
+		// FILTERED HERE AND NOT BY THE CHECK CONSTRAINT. markdown's refPattern
+		// matches any run of digits, so prose containing "CHR-0" yields
+		// Number 0 — and 0013's `CHECK (to_number > 0)` would then refuse the
+		// insert, fail reindexLinks, and roll back THE WHOLE NOTE. A sentence
+		// mentioning CHR-0 would be a sentence that cannot be saved. The rule
+		// is store.ParseNoteRef's, stated where user input meets it: note
+		// numbers start at 1.
+		//
+		// A note does not link to itself either. Self-references happen — a
+		// note quoting its own number while explaining what it is about — and
+		// an edge for one puts every such note in its own backlink list.
+		if r.Kind != markdown.KindNote || r.Number <= 0 ||
+			r.Number == selfNumber || seen[r.Number] {
 			continue
 		}
 		seen[r.Number] = true
@@ -276,7 +285,7 @@ func (s *Store) NoteTags(ctx context.Context, noteID uuid.UUID) ([]string, error
 // one. A tag cuts across the tree; it does not reorganise it.
 func (s *Store) NotesByTag(ctx context.Context, tag string) ([]Note, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT `+prefixedNoteColumns+`
+		SELECT `+prefixed(noteColumns, "n")+`
 		  FROM tier2.note_tags t JOIN tier2.notes n ON n.id = t.note_id
 		 WHERE t.tag = $1
 		 ORDER BY n.number`, NormaliseTag(tag))
@@ -322,5 +331,3 @@ func (s *Store) AllTags(ctx context.Context) (map[string]int, error) {
 	}
 	return out, nil
 }
-
-const prefixedNoteColumns = `n.id, n.number, n.page_id, n.current_revision_id, n.author_id, n.created_at, n.updated_at`

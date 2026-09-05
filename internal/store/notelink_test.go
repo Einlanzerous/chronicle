@@ -171,6 +171,37 @@ func TestReferencesInCodeAreNotEdges(t *testing.T) {
 	}
 }
 
+// PROSE MENTIONING CHR-0 MUST STILL BE SAVEABLE. refPattern matches any run of
+// digits, so "CHR-0" parses to number 0; 0013's CHECK (to_number > 0) would
+// refuse the edge, fail the reindex and roll back the whole note. A sentence
+// that cannot be written down is a worse bug than a missing backlink.
+func TestANoteMentioningCHR0IsStillSaveable(t *testing.T) {
+	s, ctx := newTestStore(t)
+	page, author := notePage(t, s, ctx, "zero@example.com")
+
+	n, _, err := s.CreateNote(ctx, NewNote{
+		PageID: page, AuthorID: author, Title: "Numbering",
+		Body: "note numbers start at 1, so CHR-0 is not one and CHR-00 is not either",
+	})
+	if err != nil {
+		t.Fatalf("CreateNote with CHR-0 in the prose: %v", err)
+	}
+	out, err := s.OutboundLinks(ctx, n.ID)
+	if err != nil {
+		t.Fatalf("OutboundLinks: %v", err)
+	}
+	if len(out) != 0 {
+		t.Errorf("CHR-0 produced edges: %+v", out)
+	}
+
+	// And through the append path, which reindexes the same way.
+	if _, err := s.AppendRevision(ctx, n.ID, NewRevision{
+		AuthorID: author, Title: "Numbering", Body: "still true: CHR-0 names nothing",
+	}); err != nil {
+		t.Fatalf("AppendRevision with CHR-0 in the prose: %v", err)
+	}
+}
+
 // A note quoting its own number is not in its own backlink list.
 func TestANoteDoesNotLinkToItself(t *testing.T) {
 	s, ctx := newTestStore(t)
