@@ -186,6 +186,48 @@ $$;
 
 
 --
+-- Name: note_revisions_guard(); Type: FUNCTION; Schema: tier2; Owner: -
+--
+
+CREATE FUNCTION tier2.note_revisions_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    RAISE EXCEPTION 'a note revision is append-only: % is refused', TG_OP
+        USING ERRCODE = 'CH040';
+END
+$$;
+
+
+--
+-- Name: notes_guard(); Type: FUNCTION; Schema: tier2; Owner: -
+--
+
+CREATE FUNCTION tier2.notes_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF TG_OP = 'UPDATE' THEN
+        -- Identity is immutable. page_id and current_revision_id deliberately
+        -- are NOT: changing the first is a move, changing the second is an
+        -- edit, and those are the two things a note is supposed to survive.
+        IF NEW.id        IS DISTINCT FROM OLD.id
+        OR NEW.number    IS DISTINCT FROM OLD.number
+        OR NEW.author_id IS DISTINCT FROM OLD.author_id THEN
+            RAISE EXCEPTION 'note identity is immutable (id, number, author)'
+                USING ERRCODE = 'CH030';
+        END IF;
+
+        -- As memos_guard, transcripts_guard and memo_links_guard all do.
+        -- Without it, updated_at is a column nothing maintains.
+        NEW.updated_at := now();
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+
+--
 -- Name: pages_guard(); Type: FUNCTION; Schema: tier2; Owner: -
 --
 
@@ -516,6 +558,50 @@ CREATE TABLE tier2.memos (
 
 
 --
+-- Name: note_number_seq; Type: SEQUENCE; Schema: tier2; Owner: -
+--
+
+CREATE SEQUENCE tier2.note_number_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: note_revisions; Type: TABLE; Schema: tier2; Owner: -
+--
+
+CREATE TABLE tier2.note_revisions (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    note_id uuid NOT NULL,
+    seq integer NOT NULL,
+    title text NOT NULL,
+    body text NOT NULL,
+    memo_id uuid,
+    author_id uuid NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT note_revisions_seq_check CHECK ((seq > 0))
+);
+
+
+--
+-- Name: notes; Type: TABLE; Schema: tier2; Owner: -
+--
+
+CREATE TABLE tier2.notes (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    number bigint DEFAULT nextval('tier2.note_number_seq'::regclass) NOT NULL,
+    page_id uuid NOT NULL,
+    current_revision_id uuid NOT NULL,
+    author_id uuid NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
 -- Name: page_redirects; Type: TABLE; Schema: tier2; Owner: -
 --
 
@@ -683,6 +769,46 @@ ALTER TABLE ONLY tier2.memos
 
 
 --
+-- Name: note_revisions note_revisions_id_note_id_key; Type: CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.note_revisions
+    ADD CONSTRAINT note_revisions_id_note_id_key UNIQUE (id, note_id);
+
+
+--
+-- Name: note_revisions note_revisions_note_id_seq_key; Type: CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.note_revisions
+    ADD CONSTRAINT note_revisions_note_id_seq_key UNIQUE (note_id, seq);
+
+
+--
+-- Name: note_revisions note_revisions_pkey; Type: CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.note_revisions
+    ADD CONSTRAINT note_revisions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: notes notes_number_key; Type: CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.notes
+    ADD CONSTRAINT notes_number_key UNIQUE (number);
+
+
+--
+-- Name: notes notes_pkey; Type: CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.notes
+    ADD CONSTRAINT notes_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: page_redirects page_redirects_pkey; Type: CONSTRAINT; Schema: tier2; Owner: -
 --
 
@@ -844,6 +970,27 @@ CREATE UNIQUE INDEX memos_author_content ON tier2.memos USING btree (author_id, 
 
 
 --
+-- Name: note_revisions_memo; Type: INDEX; Schema: tier2; Owner: -
+--
+
+CREATE UNIQUE INDEX note_revisions_memo ON tier2.note_revisions USING btree (memo_id) WHERE (memo_id IS NOT NULL);
+
+
+--
+-- Name: note_revisions_note; Type: INDEX; Schema: tier2; Owner: -
+--
+
+CREATE INDEX note_revisions_note ON tier2.note_revisions USING btree (note_id, seq DESC);
+
+
+--
+-- Name: notes_page; Type: INDEX; Schema: tier2; Owner: -
+--
+
+CREATE INDEX notes_page ON tier2.notes USING btree (page_id);
+
+
+--
 -- Name: page_redirects_page; Type: INDEX; Schema: tier2; Owner: -
 --
 
@@ -921,6 +1068,20 @@ CREATE TRIGGER memos_guard BEFORE INSERT OR UPDATE ON tier2.memos FOR EACH ROW E
 
 
 --
+-- Name: note_revisions note_revisions_guard; Type: TRIGGER; Schema: tier2; Owner: -
+--
+
+CREATE TRIGGER note_revisions_guard BEFORE DELETE OR UPDATE ON tier2.note_revisions FOR EACH ROW EXECUTE FUNCTION tier2.note_revisions_guard();
+
+
+--
+-- Name: notes notes_guard; Type: TRIGGER; Schema: tier2; Owner: -
+--
+
+CREATE TRIGGER notes_guard BEFORE INSERT OR UPDATE ON tier2.notes FOR EACH ROW EXECUTE FUNCTION tier2.notes_guard();
+
+
+--
 -- Name: pages pages_guard; Type: TRIGGER; Schema: tier2; Owner: -
 --
 
@@ -964,6 +1125,54 @@ ALTER TABLE ONLY tier2.memo_links
 
 ALTER TABLE ONLY tier2.memos
     ADD CONSTRAINT memos_author_id_fkey FOREIGN KEY (author_id) REFERENCES tier2.users(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: note_revisions note_revisions_author_id_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.note_revisions
+    ADD CONSTRAINT note_revisions_author_id_fkey FOREIGN KEY (author_id) REFERENCES tier2.users(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: note_revisions note_revisions_memo_id_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.note_revisions
+    ADD CONSTRAINT note_revisions_memo_id_fkey FOREIGN KEY (memo_id) REFERENCES tier2.memos(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: note_revisions note_revisions_note_id_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.note_revisions
+    ADD CONSTRAINT note_revisions_note_id_fkey FOREIGN KEY (note_id) REFERENCES tier2.notes(id) ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: notes notes_author_id_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.notes
+    ADD CONSTRAINT notes_author_id_fkey FOREIGN KEY (author_id) REFERENCES tier2.users(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: notes notes_current_revision; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.notes
+    ADD CONSTRAINT notes_current_revision FOREIGN KEY (current_revision_id, id) REFERENCES tier2.note_revisions(id, note_id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: notes notes_page_id_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.notes
+    ADD CONSTRAINT notes_page_id_fkey FOREIGN KEY (page_id) REFERENCES tier2.pages(id) ON DELETE RESTRICT;
 
 
 --
