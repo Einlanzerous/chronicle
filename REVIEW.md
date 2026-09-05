@@ -162,11 +162,27 @@ For any new table, query, or handler, say which side it is on. Concretely:
   table name in new SQL is a finding on its own, before you even work out which
   side it meant.
 - **A new tier-2 table needs an explicit `REVOKE ALL … FROM chronicle_tier1`.**
-  It is *redundant* — `chronicle_tier1` holds no `USAGE` on schema `tier2`, so
-  it could not reach the table anyway — and it is stated anyway as
-  **documentation of intent, at the point where the tier boundary is defined**.
-  A new tier-2 table without one is a 🟡. One that *grants* anything to
-  `chronicle_tier1` is 🔴. `0003_memos.up.sql` is the wording to match.
+  It is *redundant*, and stated anyway as **documentation of intent, at the
+  point where the tier boundary is defined**. A new tier-2 table without one is
+  a 🟡. One that *grants* anything to `chronicle_tier1` is 🔴.
+  `0011_notes.up.sql` is the wording to match.
+
+  **What makes it redundant is table privileges, not a schema wall — and you
+  have to reason from the right one to reach the right verdict on that 🔴.**
+  `0007:52` grants `USAGE ON SCHEMA tier2 TO chronicle_tier1`; the schema has
+  not been a wall since E4, whatever older comments say. What holds instead:
+  `0007` deliberately added **no `ALTER DEFAULT PRIVILEGES` on schema `tier2`**,
+  so a tier-2 table created today is unreachable on table privileges alone
+  until some migration grants it **by name**. Two have been:
+  `GRANT SELECT ON tier2.memos, tier2.transcripts` at `0007:53`, so Scribe can
+  read its input. Those two are the deliberate exceptions and the list is
+  meant to stay that short.
+
+  This is why the stale version of the argument is worth correcting rather
+  than tolerating: reasoning from a schema wall, a table-level
+  `GRANT … TO chronicle_tier1` looks harmless — the role supposedly cannot
+  reach the schema anyway — and you would clear the exact thing the 🔴 exists
+  to catch. It reaches. Judge the `GRANT` on its own terms.
 
   **Do not expect the `REVOKE` to be what makes a loosening visible.** This
   section claimed that until CHRN-79 and it was false: `pg_dump` emits only
@@ -315,16 +331,28 @@ to change and be regenerated.
 
 ### 7. A Mode C ticket must register its own package
 
-Three of the five Mode C tickets have **no path in this repo yet** — CHRN-22
-(retention pruner), CHRN-39 (revisions), CHRN-67 (MCP write scopes). They are
-the tickets that can destroy authored data or hand an agent write access to it,
-and `sensitive_paths` in `.github/workflows/pr-review.yml` cannot list a package
-that does not exist.
+The five Mode C tickets are the ones that can destroy authored data or hand an
+agent write access to it, so their code must live somewhere `sensitive_paths`
+in `.github/workflows/pr-review.yml` names. **One of the five still has no path
+in this repo: CHRN-67 (MCP write scopes).** `sensitive_paths` cannot list a
+package that does not exist, so the entry has to arrive with the code.
 
-So: **if this PR implements one of those three, check that it adds its new
-package to `sensitive_paths` in the same PR.** If it does not, that is a
-🔴 Important finding — every subsequent PR touching the pruner or the MCP write
-surface would otherwise be reviewed at the cheap tier, silently.
+So: **if this PR implements CHRN-67, check that it adds its new package to
+`sensitive_paths` in the same PR.** If it does not, that is a 🔴 Important
+finding — every subsequent PR touching the MCP write surface would otherwise be
+reviewed at the cheap tier, silently, which is the whole cost of the omission.
+
+**Two tickets this section used to name are now covered, and finding them
+uncovered is a false 🔴** — check the pattern before raising one:
+
+| ticket | path today | covered by |
+|---|---|---|
+| CHRN-22 (retention pruner) | `internal/retention/` | `internal/(invite\|config\|audio\|watch\|upload\|retention)/` |
+| CHRN-39 (revisions) | `internal/store/` — CHRN-38 put revisions there | `internal/store/` |
+
+For any other Mode C ticket, resolve the package against `sensitive_paths`
+before writing a finding; the rule is about a package the pattern misses, not
+about a ticket appearing on a list.
 
 ### 8. Logs
 

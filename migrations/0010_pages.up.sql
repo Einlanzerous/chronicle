@@ -168,7 +168,13 @@ $fn$;
 CREATE OR REPLACE TRIGGER pages_guard BEFORE INSERT OR UPDATE ON tier2.pages
     FOR EACH ROW EXECUTE FUNCTION tier2.pages_guard();
 
--- Redundant against 0001 — chronicle_tier1 holds no USAGE on schema tier2 —
--- and stated anyway as documentation of intent at the point the tier boundary
--- is defined, per the pattern 0002 established and 0003 words.
+-- Redundant, and stated anyway as documentation of intent at the point the
+-- tier boundary is defined, per the pattern 0002 established and 0003 words.
+--
+-- WHAT MAKES IT REDUNDANT IS NARROWER THAN "0001 REVOKED THE SCHEMA", and the
+-- difference matters because 0007:52 re-granted USAGE on schema tier2. The
+-- fact that survives 0007: no GRANT on tier2.pages or tier2.page_redirects was
+-- ever issued, and 0007 deliberately added no ALTER DEFAULT PRIVILEGES on
+-- schema tier2 — so a tier-2 table created today is unreachable by
+-- chronicle_tier1 on table privileges alone, whatever it holds on the schema.
 REVOKE ALL ON tier2.pages, tier2.page_redirects FROM chronicle_tier1;

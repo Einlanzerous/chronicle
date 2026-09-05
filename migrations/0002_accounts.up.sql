@@ -63,9 +63,16 @@ INSERT INTO tier2.users (email, display_name, is_owner)
 SELECT 'owner@localhost', 'Owner', TRUE
 WHERE NOT EXISTS (SELECT 1 FROM tier2.users);
 
--- Redundant against 0001 — chronicle_tier1 holds no USAGE on schema tier2 —
--- and stated anyway as documentation of intent, at the point where the tier
--- boundary is defined and on the two tables whose exposure would matter most.
+-- Redundant, and stated anyway as documentation of intent, at the point where
+-- the tier boundary is defined and on the two tables whose exposure would
+-- matter most.
+--
+-- WHAT MAKES IT REDUNDANT IS NARROWER THAN "0001 REVOKED THE SCHEMA", and the
+-- difference matters because 0007:52 re-granted USAGE on schema tier2. The
+-- fact that survives 0007: no GRANT on tier2.users or tier2.user_tokens was
+-- ever issued, and 0007 deliberately added no ALTER DEFAULT PRIVILEGES on
+-- schema tier2 — so a tier-2 table created today is unreachable by
+-- chronicle_tier1 on table privileges alone, whatever it holds on the schema.
 --
 -- It does NOT make a later loosened grant appear in schema.sql, which is what
 -- this comment used to claim (CHRN-78). pg_dump emits only non-default ACLs,
