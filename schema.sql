@@ -431,6 +431,27 @@ COMMENT ON TABLE tier1.memo_uploads IS 'CHRN-20. Uploads in flight: what the cli
 
 
 --
+-- Name: note_links; Type: TABLE; Schema: tier1; Owner: -
+--
+
+CREATE TABLE tier1.note_links (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    from_note_id uuid NOT NULL,
+    from_revision_id uuid NOT NULL,
+    to_number bigint NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT note_links_to_number_check CHECK ((to_number > 0))
+);
+
+
+--
+-- Name: TABLE note_links; Type: COMMENT; Schema: tier1; Owner: -
+--
+
+COMMENT ON TABLE tier1.note_links IS 'Derived from the current revision of each note by CHRN-42. Regenerable: delete every row and rebuild. Never hand-edited.';
+
+
+--
 -- Name: triage_holds; Type: TABLE; Schema: tier1; Owner: -
 --
 
@@ -587,6 +608,18 @@ CREATE TABLE tier2.note_revisions (
 
 
 --
+-- Name: note_tags; Type: TABLE; Schema: tier2; Owner: -
+--
+
+CREATE TABLE tier2.note_tags (
+    note_id uuid NOT NULL,
+    tag text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT note_tags_tag_check CHECK ((tag ~ '^[a-z0-9]+(-[a-z0-9]+)*$'::text))
+);
+
+
+--
 -- Name: notes; Type: TABLE; Schema: tier2; Owner: -
 --
 
@@ -721,6 +754,22 @@ ALTER TABLE ONLY tier1.memo_uploads
 
 
 --
+-- Name: note_links note_links_from_note_id_to_number_key; Type: CONSTRAINT; Schema: tier1; Owner: -
+--
+
+ALTER TABLE ONLY tier1.note_links
+    ADD CONSTRAINT note_links_from_note_id_to_number_key UNIQUE (from_note_id, to_number);
+
+
+--
+-- Name: note_links note_links_pkey; Type: CONSTRAINT; Schema: tier1; Owner: -
+--
+
+ALTER TABLE ONLY tier1.note_links
+    ADD CONSTRAINT note_links_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: triage_holds triage_holds_pkey; Type: CONSTRAINT; Schema: tier1; Owner: -
 --
 
@@ -790,6 +839,14 @@ ALTER TABLE ONLY tier2.note_revisions
 
 ALTER TABLE ONLY tier2.note_revisions
     ADD CONSTRAINT note_revisions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: note_tags note_tags_pkey; Type: CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.note_tags
+    ADD CONSTRAINT note_tags_pkey PRIMARY KEY (note_id, tag);
 
 
 --
@@ -921,6 +978,20 @@ CREATE UNIQUE INDEX memo_uploads_key ON tier1.memo_uploads USING btree (author_i
 
 
 --
+-- Name: note_links_from; Type: INDEX; Schema: tier1; Owner: -
+--
+
+CREATE INDEX note_links_from ON tier1.note_links USING btree (from_note_id);
+
+
+--
+-- Name: note_links_to; Type: INDEX; Schema: tier1; Owner: -
+--
+
+CREATE INDEX note_links_to ON tier1.note_links USING btree (to_number);
+
+
+--
 -- Name: triage_holds_age; Type: INDEX; Schema: tier1; Owner: -
 --
 
@@ -988,6 +1059,13 @@ CREATE UNIQUE INDEX note_revisions_memo ON tier2.note_revisions USING btree (mem
 --
 
 CREATE INDEX note_revisions_note ON tier2.note_revisions USING btree (note_id, seq DESC);
+
+
+--
+-- Name: note_tags_tag; Type: INDEX; Schema: tier2; Owner: -
+--
+
+CREATE INDEX note_tags_tag ON tier2.note_tags USING btree (tag);
 
 
 --
@@ -1166,6 +1244,14 @@ ALTER TABLE ONLY tier2.note_revisions
 
 
 --
+-- Name: note_tags note_tags_note_id_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.note_tags
+    ADD CONSTRAINT note_tags_note_id_fkey FOREIGN KEY (note_id) REFERENCES tier2.notes(id) ON DELETE RESTRICT;
+
+
+--
 -- Name: notes notes_author_id_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
 --
 
@@ -1261,6 +1347,13 @@ GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE tier1.memo_proposals TO chronicle_tie
 --
 
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE tier1.memo_uploads TO chronicle_tier1;
+
+
+--
+-- Name: TABLE note_links; Type: ACL; Schema: tier1; Owner: -
+--
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE tier1.note_links TO chronicle_tier1;
 
 
 --

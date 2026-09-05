@@ -193,6 +193,13 @@ func (s *Store) CreateNote(ctx context.Context, in NewNote) (Note, NoteRevision,
 		return Note{}, NoteRevision{}, err
 	}
 
+	// CHRN-42's link graph is derived from this text, and it is derived HERE so
+	// that the graph can never be stale with respect to the revision it came
+	// from. A stale link graph is not a slow backlink list, it is a wrong one.
+	if err := reindexLinks(ctx, tx, noteID, revID, note.Number, in.Title, in.Body); err != nil {
+		return Note{}, NoteRevision{}, err
+	}
+
 	// Both deferred foreign keys are checked here, not above.
 	if err := tx.Commit(ctx); err != nil {
 		return Note{}, NoteRevision{}, noteError(err)
@@ -220,7 +227,9 @@ func (s *Store) AppendRevision(ctx context.Context, noteID uuid.UUID, in NewRevi
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var locked uuid.UUID
-	err = tx.QueryRow(ctx, `SELECT id FROM tier2.notes WHERE id = $1 FOR UPDATE`, noteID).Scan(&locked)
+	var number int64
+	err = tx.QueryRow(ctx,
+		`SELECT id, number FROM tier2.notes WHERE id = $1 FOR UPDATE`, noteID).Scan(&locked, &number)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return NoteRevision{}, ErrNotFound
 	}
@@ -243,6 +252,11 @@ func (s *Store) AppendRevision(ctx context.Context, noteID uuid.UUID, in NewRevi
 		`UPDATE tier2.notes SET current_revision_id = $2 WHERE id = $1`,
 		noteID, rev.ID); err != nil {
 		return NoteRevision{}, noteError(err)
+	}
+
+	// Re-derived from the text that is now current — see CreateNote.
+	if err := reindexLinks(ctx, tx, noteID, rev.ID, number, in.Title, in.Body); err != nil {
+		return NoteRevision{}, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
