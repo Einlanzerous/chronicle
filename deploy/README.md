@@ -17,7 +17,7 @@ This directory used to carry `compose.chronicle.yml` and `traefik-chronicle.yml`
 - the **compose** copy was *ahead* — it declared `CHRONICLE_ASR_MODEL` and `CHRONICLE_TRANSCRIBE_INTERVAL`, which are not deployed;
 - the **Traefik** copy was *behind*, and in the direction that matters — it had no `chronicle-proxy-secret`, a middleware live on **every** router reaching this service (CHRN-75 / SERV-148). A reader following it would have built a routing config missing a security middleware, while the compose copy beside it happily carried the `CHRONICLE_PROXY_SECRET` that middleware supplies.
 
-Two documents making one claim, with the second going stale, is the CHRN-79 shape this project already named. So this file records **decisions — what cannot be derived from the configuration — and never the configuration itself.** There is nothing here left to drift.
+Two documents making one claim, with the second going stale, is the CHRN-79 shape this project already named. So this file aims at **decisions — what cannot be derived from the configuration — rather than the configuration itself.** One table below is the exception and is worth naming rather than glossing: the deployed-routes table lists per-router middlewares, which *is* configuration, and it is the thing this deletion had to correct because it predated `chronicle-proxy-secret`. It earns its place by making the routing split legible in one view, and it is the one thing here that can still go stale — check it against `config/traefik/dynamic/routers.yml` when you change a router.
 
 ## Files
 

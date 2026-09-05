@@ -94,7 +94,7 @@ or the app    small.en       DISCUSSION                     discussion
 | `internal/` | config, model, store, api, the transcription pump |
 | `internal/asrclient/` | generated from `asr/openapi.yaml`; do not hand-edit |
 | `migrations/` | embedded SQL, applied on boot |
-| `deploy/` | compose fragment and Traefik labels |
+| `deploy/` | `Dockerfile`, database provisioning, and the deploy decisions. Not the configuration — `construct-server` holds the service block and the routers (CHRN-89) |
 | `docs/decisions/` | written decisions for the tickets that get one before code |
 | `docs/salvage/` | the Scribe, recovered from `imperium-loop` before it was decommissioned |
 | `docs/benchmarks/` | measured ASR model choice — read this before picking a model |

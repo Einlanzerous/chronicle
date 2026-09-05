@@ -133,10 +133,16 @@ jobs:
       #                         stdout; `bootstrapOwner` writes the owner row;
       #                         the boot guards warn when the proxy list or the
       #                         cookie flag is not what production needs.
-      #   deploy/               Traefik labels decide whether this service sits
-      #                         on the WAN-forwarded `public` entrypoint, and
-      #                         compose carries the env `internal/config` reads.
-      #                         CHRN-16's whole surface.
+      #   deploy/               provision-db.sh creates the roles and grants the
+      #                         tier split rests on, and the Dockerfile is what
+      #                         ships. CHRN-89 removed the compose and Traefik
+      #                         copies that used to be the reason for this
+      #                         entry — the entrypoint choice and the env
+      #                         `internal/config` reads now live in
+      #                         construct-server, so a change to them is not a
+      #                         diff here at all. The path stays sensitive for
+      #                         what remains: a bad grant in provision-db.sh is
+      #                         the tier doctrine undone.
       #   scripts/              One file: `gen-schema.sh`. It renders the tier
       #                         grants into `schema.sql` on purpose (see its own
       #                         comment on --no-owner vs privileges), so the
