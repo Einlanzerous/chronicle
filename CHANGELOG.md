@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.0](https://github.com/Einlanzerous/chronicle/compare/v1.6.0...v1.7.0) (2026-09-05)
+
+
+### Features
+
+* **triage:** HOLD parks a decision, DISCARD marks without destroying (CHRN-34) ([#53](https://github.com/Einlanzerous/chronicle/issues/53)) ([935317c](https://github.com/Einlanzerous/chronicle/commit/935317c4db9d9a8ded9d421f73723516fbef66c7))
+
 ## [1.6.0](https://github.com/Einlanzerous/chronicle/compare/v1.5.0...v1.6.0) (2026-09-05)
 
 
