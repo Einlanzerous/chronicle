@@ -285,13 +285,71 @@ func TestTheTierHalvesDoNotReachIntoEachOther(t *testing.T) {
 		t.Fatal("the tier-1 file names tier2.memo_links — proposals are read on the tier-1 " +
 			"pool and decisions are written on the main one, and nothing may span them")
 	}
-	for _, f := range []string{"memolink.go", "triage.go"} {
-		src := readSource(t, f)
-		// tier1.memo_proposals is the only tier-1 table; naming it from a
-		// tier-2 write path would be a join across two pools that cannot exist.
-		if strings.Contains(src, "tier1.") {
-			t.Fatalf("%s reaches into tier 1 from a tier-2 write path", f)
+	// memolink.go IS the tier-2 write path, and it names no tier-1 table at
+	// all. Strictest of the three rules and the one that matters most: a
+	// statement here that touched tier 1 would be a decision write reaching
+	// across the boundary in the same transaction.
+	if src := readSource(t, "memolink.go"); strings.Contains(src, "tier1.") {
+		t.Fatal("memolink.go reaches into tier 1 from a tier-2 write path")
+	}
+
+	// triage.go is READ-ONLY and runs on the MAIN pool, which owns both
+	// schemas — so it may name a tier-1 table, and must never write one.
+	//
+	// This used to be a flat ban on the string `tier1.`, which was a proxy for
+	// the real property and was narrowed by CHRN-34 rather than deleted. The
+	// property is the one this test is named for: NO STATEMENT SPANS THE TWO
+	// POOLS. A ban on the string also forbade things that do not span them,
+	// and UntriagedMemos is exactly that case — it filters out CHRN-34's
+	// deferred memos with a NOT EXISTS against tier1.triage_holds, on the main
+	// role, in a query no tier-1 connection ever runs.
+	//
+	// Doing it in Go instead would not have been the safer option, which is
+	// worth recording because it looks like it would: the filter has to be
+	// inside LIMIT or `limit` stops meaning "a screen", and an operator who
+	// deferred twenty-five memos would get a permanently empty triage screen
+	// with a hundred still waiting.
+	//
+	// The write ban stays absolute, and it is what actually holds the line.
+	triageSrc := readSource(t, "triage.go")
+	for _, verb := range []string{"INSERT INTO tier1.", "UPDATE tier1.", "DELETE FROM tier1."} {
+		if strings.Contains(triageSrc, verb) {
+			t.Fatalf("triage.go writes tier 1 (%q) — it is the read side, and a tier-1 "+
+				"write belongs beside the pool that owns it", verb)
 		}
+	}
+	// And the read it is allowed is the one that was argued for. A second
+	// tier-1 table appearing here is a new argument, not this one's precedent.
+	for _, ref := range tierOneRefs(triageSrc) {
+		if ref != "tier1.triage_holds" {
+			t.Fatalf("triage.go names %s; the only tier-1 read argued for here is "+
+				"tier1.triage_holds (CHRN-34). Make the case before adding another.", ref)
+		}
+	}
+}
+
+// tierOneRefs returns every distinct `tier1.<table>` named in src.
+func tierOneRefs(src string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for i := 0; ; {
+		j := strings.Index(src[i:], "tier1.")
+		if j < 0 {
+			return out
+		}
+		i += j
+		end := i + len("tier1.")
+		for end < len(src) && (src[end] == '_' ||
+			(src[end] >= 'a' && src[end] <= 'z') ||
+			(src[end] >= 'A' && src[end] <= 'Z') ||
+			(src[end] >= '0' && src[end] <= '9')) {
+			end++
+		}
+		if ref := src[i:end]; !seen[ref] {
+			seen[ref] = true
+			out = append(out, ref)
+		}
+		i = end
 	}
 }
 

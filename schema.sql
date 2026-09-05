@@ -339,6 +339,25 @@ COMMENT ON TABLE tier1.memo_uploads IS 'CHRN-20. Uploads in flight: what the cli
 
 
 --
+-- Name: triage_holds; Type: TABLE; Schema: tier1; Owner: -
+--
+
+CREATE TABLE tier1.triage_holds (
+    memo_id uuid NOT NULL,
+    held_by uuid NOT NULL,
+    reason text,
+    held_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: TABLE triage_holds; Type: COMMENT; Schema: tier1; Owner: -
+--
+
+COMMENT ON TABLE tier1.triage_holds IS 'A routing decision deferred. TIER 1 because it is the ABSENCE of a decision: delete every row and the memos simply reappear on the triage screen. The memo itself stays `transcribed` — tier2.memos `held` means transcription failed and is a different thing (CHRN-34).';
+
+
+--
 -- Name: watch_seen; Type: TABLE; Schema: tier1; Owner: -
 --
 
@@ -540,6 +559,14 @@ ALTER TABLE ONLY tier1.memo_uploads
 
 
 --
+-- Name: triage_holds triage_holds_pkey; Type: CONSTRAINT; Schema: tier1; Owner: -
+--
+
+ALTER TABLE ONLY tier1.triage_holds
+    ADD CONSTRAINT triage_holds_pkey PRIMARY KEY (memo_id);
+
+
+--
 -- Name: watch_seen watch_seen_pkey; Type: CONSTRAINT; Schema: tier1; Owner: -
 --
 
@@ -673,6 +700,13 @@ CREATE INDEX memo_uploads_activity ON tier1.memo_uploads USING btree (last_activ
 --
 
 CREATE UNIQUE INDEX memo_uploads_key ON tier1.memo_uploads USING btree (author_id, idempotency_key);
+
+
+--
+-- Name: triage_holds_age; Type: INDEX; Schema: tier1; Owner: -
+--
+
+CREATE INDEX triage_holds_age ON tier1.triage_holds USING btree (held_at);
 
 
 --
@@ -861,6 +895,13 @@ GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE tier1.memo_proposals TO chronicle_tie
 --
 
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE tier1.memo_uploads TO chronicle_tier1;
+
+
+--
+-- Name: TABLE triage_holds; Type: ACL; Schema: tier1; Owner: -
+--
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE tier1.triage_holds TO chronicle_tier1;
 
 
 --

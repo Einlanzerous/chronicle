@@ -89,6 +89,18 @@ func (s *Store) UntriagedMemos(ctx context.Context, authorID uuid.UUID, limit in
 		        ) t ON TRUE
 		  WHERE m.state = $5
 		    AND ($1::uuid IS NULL OR m.author_id = $1)
+		    -- CHRN-34's HOLD, and it is filtered HERE rather than in the
+		    -- service for one reason: the limit has to keep meaning "a screen".
+		    -- Fetching 25 and dropping the deferred ones in Go would hand back
+		    -- 15 cards on an evening when 10 were parked, and the operator
+		    -- would have to page to reach work that was never hidden from them.
+		    --
+		    -- A tier-2 read filtering on a tier-1 table is not the doctrine's
+		    -- line being crossed. The line is about WRITES (0007: "SELECT is
+		    -- not a write path"), and this statement runs on the main role,
+		    -- which owns both schemas. What the doctrine forbids is a foreign
+		    -- key, and there is none — see 0009.
+		    AND NOT EXISTS (SELECT 1 FROM tier1.triage_holds h WHERE h.memo_id = m.id)
 		  ORDER BY m.captured_at
 		  LIMIT $6`,
 		author, SufficientRunners, SufficientModels, excerptBudget, StateTranscribed, limit)
@@ -372,7 +384,11 @@ func (s *Store) TriageBacklog(ctx context.Context) (TriageBacklog, error) {
 		   FROM tier2.memos m
 		  WHERE m.state = $1
 		    AND EXISTS (SELECT 1 FROM tier2.transcripts
-		                 WHERE memo_id = m.id AND `+DurableClause+`)`,
+		                 WHERE memo_id = m.id AND `+DurableClause+`)
+		    -- Deferred memos are counted by CountTriageHolds and must not also
+		    -- appear here, or the backlog an operator is trying to drive to
+		    -- zero includes the memos they deliberately set aside.
+		    AND NOT EXISTS (SELECT 1 FROM tier1.triage_holds h WHERE h.memo_id = m.id)`,
 		StateTranscribed, SufficientRunners, SufficientModels).
 		Scan(&b.Total, &b.Today, &b.ThisWeek, &b.Older, &b.OldestCapturedAt)
 	if err != nil {
