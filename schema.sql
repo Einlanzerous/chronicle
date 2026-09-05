@@ -186,6 +186,56 @@ $$;
 
 
 --
+-- Name: pages_guard(); Type: FUNCTION; Schema: tier2; Owner: -
+--
+
+CREATE FUNCTION tier2.pages_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    ancestor UUID;
+    hops     INT := 0;
+BEGIN
+    IF TG_OP = 'UPDATE' THEN
+        -- Identity is immutable. parent_id and slug deliberately are NOT:
+        -- changing them is what a move and a rename ARE.
+        IF NEW.id IS DISTINCT FROM OLD.id THEN
+            RAISE EXCEPTION 'a page id is immutable'
+                USING ERRCODE = 'CH051';
+        END IF;
+        NEW.updated_at := now();
+    END IF;
+
+    -- A CYCLE IS THE ONE STRUCTURAL ERROR THAT HIDES. A page made its own
+    -- ancestor is still a perfectly valid row, its children still resolve to
+    -- it, and every query that walks UP from a leaf runs forever while every
+    -- query that walks DOWN from a root simply never reaches it. The subtree
+    -- and all the notes in it become unreachable and unnameable without a
+    -- single constraint being violated, which is why this is a trigger and not
+    -- a rule in Go.
+    ancestor := NEW.parent_id;
+    WHILE ancestor IS NOT NULL LOOP
+        IF ancestor = NEW.id THEN
+            RAISE EXCEPTION 'a page may not be its own ancestor (page %)', NEW.id
+                USING ERRCODE = 'CH050';
+        END IF;
+        hops := hops + 1;
+        IF hops > 64 THEN
+            -- Unreachable while this trigger has always been armed, and it is
+            -- here so that a pre-existing cycle raises instead of hanging the
+            -- connection that found it.
+            RAISE EXCEPTION 'page ancestry exceeds 64 levels, which means a cycle'
+                USING ERRCODE = 'CH050';
+        END IF;
+        SELECT parent_id INTO ancestor FROM tier2.pages WHERE id = ancestor;
+    END LOOP;
+
+    RETURN NEW;
+END
+$$;
+
+
+--
 -- Name: retention_rank(text); Type: FUNCTION; Schema: tier2; Owner: -
 --
 
@@ -466,6 +516,32 @@ CREATE TABLE tier2.memos (
 
 
 --
+-- Name: page_redirects; Type: TABLE; Schema: tier2; Owner: -
+--
+
+CREATE TABLE tier2.page_redirects (
+    from_path text NOT NULL,
+    page_id uuid NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT page_redirects_from_path_check CHECK ((from_path <> ''::text))
+);
+
+
+--
+-- Name: pages; Type: TABLE; Schema: tier2; Owner: -
+--
+
+CREATE TABLE tier2.pages (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    parent_id uuid,
+    slug text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT pages_slug_check CHECK ((slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$'::text))
+);
+
+
+--
 -- Name: transcripts; Type: TABLE; Schema: tier2; Owner: -
 --
 
@@ -604,6 +680,22 @@ ALTER TABLE ONLY tier2.memo_links
 
 ALTER TABLE ONLY tier2.memos
     ADD CONSTRAINT memos_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: page_redirects page_redirects_pkey; Type: CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.page_redirects
+    ADD CONSTRAINT page_redirects_pkey PRIMARY KEY (from_path);
+
+
+--
+-- Name: pages pages_pkey; Type: CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.pages
+    ADD CONSTRAINT pages_pkey PRIMARY KEY (id);
 
 
 --
@@ -752,6 +844,34 @@ CREATE UNIQUE INDEX memos_author_content ON tier2.memos USING btree (author_id, 
 
 
 --
+-- Name: page_redirects_page; Type: INDEX; Schema: tier2; Owner: -
+--
+
+CREATE INDEX page_redirects_page ON tier2.page_redirects USING btree (page_id);
+
+
+--
+-- Name: pages_parent; Type: INDEX; Schema: tier2; Owner: -
+--
+
+CREATE INDEX pages_parent ON tier2.pages USING btree (parent_id);
+
+
+--
+-- Name: pages_root_slug; Type: INDEX; Schema: tier2; Owner: -
+--
+
+CREATE UNIQUE INDEX pages_root_slug ON tier2.pages USING btree (slug) WHERE (parent_id IS NULL);
+
+
+--
+-- Name: pages_sibling_slug; Type: INDEX; Schema: tier2; Owner: -
+--
+
+CREATE UNIQUE INDEX pages_sibling_slug ON tier2.pages USING btree (parent_id, slug) WHERE (parent_id IS NOT NULL);
+
+
+--
 -- Name: transcripts_durable; Type: INDEX; Schema: tier2; Owner: -
 --
 
@@ -801,6 +921,13 @@ CREATE TRIGGER memos_guard BEFORE INSERT OR UPDATE ON tier2.memos FOR EACH ROW E
 
 
 --
+-- Name: pages pages_guard; Type: TRIGGER; Schema: tier2; Owner: -
+--
+
+CREATE TRIGGER pages_guard BEFORE INSERT OR UPDATE ON tier2.pages FOR EACH ROW EXECUTE FUNCTION tier2.pages_guard();
+
+
+--
 -- Name: transcripts transcripts_guard; Type: TRIGGER; Schema: tier2; Owner: -
 --
 
@@ -837,6 +964,22 @@ ALTER TABLE ONLY tier2.memo_links
 
 ALTER TABLE ONLY tier2.memos
     ADD CONSTRAINT memos_author_id_fkey FOREIGN KEY (author_id) REFERENCES tier2.users(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: page_redirects page_redirects_page_id_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.page_redirects
+    ADD CONSTRAINT page_redirects_page_id_fkey FOREIGN KEY (page_id) REFERENCES tier2.pages(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: pages pages_parent_id_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.pages
+    ADD CONSTRAINT pages_parent_id_fkey FOREIGN KEY (parent_id) REFERENCES tier2.pages(id) ON DELETE RESTRICT;
 
 
 --
