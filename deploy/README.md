@@ -8,7 +8,9 @@ Lyceum's (SERV-60), and the database is provisioned the way Purser's is.
 
 ## The deploy configuration is not in this repo
 
-`construct-server` is the source of truth and the only copy. It declares every service inline in `docker-compose.yml` and every router in `config/traefik/dynamic/routers.yml`; nothing is assembled from service-repo fragments at deploy time.
+`construct-server` is the source of truth. It declares every service inline in `docker-compose.yml` and every router in `config/traefik/dynamic/routers.yml`; nothing is assembled from service-repo fragments at deploy time.
+
+**One in-repo copy remains, and it is not this directory's:** `asr/deploy/compose.asr.yml`, in the sealed ASR subtree. It carries the same rationale these files did, and it has drifted the dangerous way — its healthcheck is still `["CMD", "/usr/local/bin/asrd", "version"]` under a comment arguing for `/healthz`, while the deployed block runs an actual `/healthz` GET asserting a 200. construct-server's own comment on that block explains the change: `asrd version` *"prints a string and exits 0 from a bare container with no GPU, no database, no config and no server — verified — so it reports healthy for a wedged process for ever."* Its models-volume default is `~/tools/...` where the deployment pins an absolute path, because prod compose runs from `/opt/construct-server` and `~` expands to the wrong home. **Do not deploy ASR from that file.** CHRN-90 removes it; `asr/` is a sealed subtree with its own release, so it is a ticket of its own rather than a reach from this one.
 
 This directory used to carry `compose.chronicle.yml` and `traefik-chronicle.yml` — copies of both, kept so Chronicle's deploy shape was reviewable in Chronicle's own repo. The intent was right and the mechanism was not. **Nothing checked that the copies agreed with the deployment, and by the time they were removed (CHRN-89) both had diverged, in opposite directions:**
 
@@ -28,7 +30,7 @@ Two documents making one claim, with the second going stale, is the CHRN-79 shap
 ## Order
 
 1. **Database** — `signet exec --secret construct-server/CHRONICLE_DB_PASSWORD --secret construct-server/CHRONICLE_TIER1_DB_PASSWORD -- deploy/provision-db.sh`
-2. **Secret on disk** — the compose file reads `${CHRONICLE_DB_PASSWORD}`, so Signet needs file targets:
+2. **Secret on disk** — `construct-server`'s `docker-compose.yml` reads `${CHRONICLE_DB_PASSWORD}`, so Signet needs file targets:
    ```
    signet target add-key --project construct-server --path /home/magos/construct-server/.env --name CHRONICLE_DB_PASSWORD
    signet target add-key --project construct-server --path /opt/construct-server/.env      --name CHRONICLE_DB_PASSWORD
