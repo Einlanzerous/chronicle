@@ -250,7 +250,22 @@ COMMENT ON TABLE tier1.memo_jobs IS
   'no reference into tier 2.';
 
 -- Tier 2 is revoked from the regeneration role explicitly, as 0002 and 0003
--- did: redundant against 0001, and stated anyway as documentation of intent at
+-- did: redundant when written, and stated anyway as documentation of intent at
 -- the boundary. tier1.memo_jobs gets no REVOKE for the mirror-image reason —
 -- it is a tier-1 table and chronicle_tier1 is supposed to reach it.
+--
+-- WHAT MADE IT REDUNDANT IS NARROWER THAN "0001 REVOKED THE SCHEMA", and 0007
+-- is why the difference matters: 0007:52 re-granted USAGE on schema tier2, so
+-- the schema is not a wall and has not been one since E4. What holds instead
+-- is table privileges — 0007 deliberately added no ALTER DEFAULT PRIVILEGES on
+-- schema tier2, so a tier-2 table is unreachable by chronicle_tier1 until some
+-- migration grants it BY NAME.
+--
+-- AND FOR tier2.transcripts, ONE LATER DID. 0007:53 is a single statement
+-- granting chronicle_tier1 SELECT on tier2.memos AND tier2.transcripts so
+-- Scribe can read its input. This table is the second half of that grant, and
+-- the grant supersedes this line; 0003 carries the same correction for the
+-- first half. Do not read this REVOKE as evidence that the role cannot see
+-- transcripts today: it can, by name and on purpose. schema.sql:1384 carries
+-- the resulting ACL and is the current state; this file is when.
 REVOKE ALL ON tier2.transcripts FROM chronicle_tier1;
