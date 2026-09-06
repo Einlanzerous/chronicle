@@ -224,9 +224,25 @@ func TestRestoreCannotCrossNotes(t *testing.T) {
 	a := mkNote(t, s, ctx, page, author, "A", "a")
 	b := mkNote(t, s, ctx, page, author, "B", "b")
 
+	// RestoreRevision fronts this with its own source lookup, so this half
+	// only proves the Go path.
 	_, err := s.RestoreRevision(ctx, a.ID, b.CurrentRevisionID, author)
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("cross-note restore = %v, want ErrNotFound", err)
+	}
+
+	// THE CONSTRAINT ITSELF, which is what the criterion actually asks for —
+	// "refused by the database, not by Go". This is the defence that has to
+	// hold for a caller the Go pre-check does not front, which is exactly what
+	// CHRN-67's write scopes will add.
+	_, err = s.Pool().Exec(ctx, `
+		INSERT INTO tier2.note_revisions
+		            (note_id, seq, title, body, author_id, confirmed_by, restored_from)
+		VALUES ($1, 2, 'stolen', 'stolen', $2, $2, $3)`,
+		a.ID, author, b.CurrentRevisionID)
+	if got := sqlState(err); got != pgForeignKeyViolation {
+		t.Errorf("cross-note restored_from SQLSTATE = %q (%v), want %s",
+			got, err, pgForeignKeyViolation)
 	}
 }
 
@@ -303,11 +319,17 @@ func TestASoftDeletedNoteLeavesEveryReadSurface(t *testing.T) {
 	if err := s.TagNote(ctx, n.ID, "birds"); err != nil {
 		t.Fatalf("TagNote: %v", err)
 	}
+	// BOTH are deleted, and for different reasons. n exercises NotesOnPage,
+	// Search and NotesByTag; pointer is the note that HOLDS a reference, and
+	// notelink.go's new filter is on the source of a link, not its target — so
+	// deleting the target alone would leave the Backlinks filter unexercised.
 	pointer := mkNote(t, s, ctx, page, author, "Pointer", "see "+n.Ref())
-	_ = pointer
 
 	if err := s.SoftDeleteNote(ctx, n.ID, author); err != nil {
 		t.Fatalf("SoftDeleteNote: %v", err)
+	}
+	if err := s.SoftDeleteNote(ctx, pointer.ID, author); err != nil {
+		t.Fatalf("SoftDeleteNote(pointer): %v", err)
 	}
 
 	onPage, err := s.NotesOnPage(ctx, page)
@@ -334,7 +356,9 @@ func TestASoftDeletedNoteLeavesEveryReadSurface(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Backlinks: %v", err)
 	}
-	_ = back // the deleted note is the TARGET here; see the dangling test.
+	if len(back) != 0 {
+		t.Errorf("Backlinks = %+v, want none — the note holding the reference is deleted", back)
+	}
 
 	tagged, err := s.NotesByTag(ctx, "birds")
 	if err != nil {
@@ -392,6 +416,9 @@ func TestADeletedNoteRefusesWrites(t *testing.T) {
 	elsewhere := mkPage(t, s, ctx, nil, "personal")
 
 	n := mkNote(t, s, ctx, page, author, "Naming", "body")
+	if err := s.TagNote(ctx, n.ID, "seen-before"); err != nil {
+		t.Fatalf("TagNote before delete: %v", err)
+	}
 	if err := s.SoftDeleteNote(ctx, n.ID, author); err != nil {
 		t.Fatalf("SoftDeleteNote: %v", err)
 	}
@@ -413,6 +440,12 @@ func TestADeletedNoteRefusesWrites(t *testing.T) {
 	// read as enforced while doing nothing.
 	if err := s.TagNote(ctx, n.ID, "birds"); !errors.Is(err, ErrNoteDeleted) {
 		t.Errorf("tag of deleted = %v, want ErrNoteDeleted", err)
+	}
+	// And removal, not only addition. tier2.note_tags has no journal, so an
+	// INSERT-only guard would let an agent strip the tags off a note nobody
+	// can see and leave nothing to recover them from.
+	if err := s.UntagNote(ctx, n.ID, "seen-before"); !errors.Is(err, ErrNoteDeleted) {
+		t.Errorf("untag of deleted = %v, want ErrNoteDeleted", err)
 	}
 
 	// And it all works again once the note is back.

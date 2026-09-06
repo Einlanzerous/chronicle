@@ -257,12 +257,17 @@ func (s *Store) TagNote(ctx context.Context, noteID uuid.UUID, tag string) error
 }
 
 // UntagNote removes a tag. Removing one that is not there is not an error.
+//
+// Removing one from a DELETED note is, though — note_tags_guard's CH060 covers
+// removal as well as addition. An INSERT-only guard would refuse adding a tag
+// to a note nobody can see while letting an agent strip its tags silently, and
+// tier2.note_tags has no journal to recover them from.
 func (s *Store) UntagNote(ctx context.Context, noteID uuid.UUID, tag string) error {
 	_, err := s.pool.Exec(ctx,
 		`DELETE FROM tier2.note_tags WHERE note_id = $1 AND tag = $2`,
 		noteID, NormaliseTag(tag))
 	if err != nil {
-		return fmt.Errorf("store: untag note: %w", err)
+		return noteError(err)
 	}
 	return nil
 }

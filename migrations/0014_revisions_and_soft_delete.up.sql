@@ -415,19 +415,39 @@ CREATE OR REPLACE TRIGGER note_deletions_guard
 -- notes row, so notes_guard — which fires on UPDATE of tier2.notes — cannot
 -- see the write at all. CH033 would never fire, and the rule would read as
 -- enforced while doing nothing.
+-- INSERT **OR DELETE**, and the second arm is not symmetry for its own sake.
+-- An INSERT-only guard refuses adding a tag to a deleted note while permitting
+-- its removal, and tier2.note_tags has no journal — so the tag would simply be
+-- gone, from a note no read surface shows. "An agent must not keep editing
+-- something nobody can see" is not a rule about additions.
+--
+-- NEW is unassigned on a DELETE, so the row is chosen by TG_OP rather than by
+-- COALESCE(NEW.note_id, ...), which would raise before it could be nullish.
 CREATE OR REPLACE FUNCTION tier2.note_tags_guard() RETURNS TRIGGER LANGUAGE plpgsql AS $fn$
+DECLARE
+    target UUID;
 BEGIN
+    IF TG_OP = 'DELETE' THEN
+        target := OLD.note_id;
+    ELSE
+        target := NEW.note_id;
+    END IF;
+
     IF EXISTS (SELECT 1 FROM tier2.notes
-                WHERE id = NEW.note_id AND deleted_at IS NOT NULL) THEN
-        RAISE EXCEPTION 'that note is deleted: undelete it before tagging it'
+                WHERE id = target AND deleted_at IS NOT NULL) THEN
+        RAISE EXCEPTION 'that note is deleted: undelete it before changing its tags'
             USING ERRCODE = 'CH060';
+    END IF;
+
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
     END IF;
     RETURN NEW;
 END
 $fn$;
 
 CREATE OR REPLACE TRIGGER note_tags_guard
-    BEFORE INSERT ON tier2.note_tags
+    BEFORE INSERT OR DELETE ON tier2.note_tags
     FOR EACH ROW EXECUTE FUNCTION tier2.note_tags_guard();
 
 -- ============================================================================

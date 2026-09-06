@@ -264,11 +264,23 @@ $$;
 CREATE FUNCTION tier2.note_tags_guard() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
+DECLARE
+    target UUID;
 BEGIN
+    IF TG_OP = 'DELETE' THEN
+        target := OLD.note_id;
+    ELSE
+        target := NEW.note_id;
+    END IF;
+
     IF EXISTS (SELECT 1 FROM tier2.notes
-                WHERE id = NEW.note_id AND deleted_at IS NOT NULL) THEN
-        RAISE EXCEPTION 'that note is deleted: undelete it before tagging it'
+                WHERE id = target AND deleted_at IS NOT NULL) THEN
+        RAISE EXCEPTION 'that note is deleted: undelete it before changing its tags'
             USING ERRCODE = 'CH060';
+    END IF;
+
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
     END IF;
     RETURN NEW;
 END
@@ -1399,7 +1411,7 @@ CREATE TRIGGER note_revisions_guard BEFORE INSERT OR DELETE OR UPDATE ON tier2.n
 -- Name: note_tags note_tags_guard; Type: TRIGGER; Schema: tier2; Owner: -
 --
 
-CREATE TRIGGER note_tags_guard BEFORE INSERT ON tier2.note_tags FOR EACH ROW EXECUTE FUNCTION tier2.note_tags_guard();
+CREATE TRIGGER note_tags_guard BEFORE INSERT OR DELETE ON tier2.note_tags FOR EACH ROW EXECUTE FUNCTION tier2.note_tags_guard();
 
 
 --
