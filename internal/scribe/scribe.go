@@ -94,7 +94,14 @@ var Verbs = []Verb{VerbCreate, VerbAppend, VerbSupersede, VerbRelate}
 // earlier reading that only `relate` carried a target: `append` and
 // `supersede` both act on a note that already exists, and `page_path` cannot
 // identify one because `NotesOnPage` exists precisely for a page holding many.
-func (v Verb) NeedsTarget() bool { return v != VerbCreate }
+//
+// THE ZERO VALUE ANSWERS false, because an absent verb means create and a
+// Proposal does not always come through Parse. `store.Proposal.Payload` is
+// decoded with a plain json.Unmarshal, so every row written before CHRN-94
+// deserialises with `Verb("")` and never passes the normalisation in Parse. A
+// bare `v != VerbCreate` would tell CHRN-95 that those rows need a target they
+// were never able to carry.
+func (v Verb) NeedsTarget() bool { return v != VerbCreate && v != "" }
 
 // Status is the proposal row's state, and it is not the memo's.
 //

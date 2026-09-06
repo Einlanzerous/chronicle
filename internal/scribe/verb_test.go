@@ -1,6 +1,7 @@
 package scribe
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -196,5 +197,59 @@ func TestACreateIsNotBlockedByAnEmptyCorpus(t *testing.T) {
 	}
 	if len(cleared) != 0 {
 		t.Fatalf("nothing should have been cleared: %+v", cleared)
+	}
+}
+
+// STAGE 1 MUST STORE WHAT IT APPROVED. Validating a trimmed copy and keeping
+// the padded original is the same hole IsNoteRef closes, entered from the
+// other side: the reference passes stage 1, reaches HasNote with its space
+// intact, fails to resolve, and is cleared with "no such live note" — about a
+// note that is right there, and not as a retryable error the model could fix.
+// Found by the reviewer of PR #67.
+func TestAPaddedTargetIsNormalisedAndStillResolves(t *testing.T) {
+	p, err := Parse(note(`"verb":"append","target_note":"  CHR-0311\t"`))
+	if err != nil {
+		t.Fatalf("a padded reference was rejected rather than normalised: %v", err)
+	}
+	if p.TargetNote == nil || *p.TargetNote != "CHR-0311" {
+		t.Fatalf("target_note = %q, want the trimmed value written back", *p.TargetNote)
+	}
+
+	cat := fakeCatalogue{notes: map[string]bool{"CHR-0311": true}}
+	cleared, status := Reconcile(p, cat)
+	if status != StatusValid {
+		t.Fatalf("status %q — the note it names is in the catalogue, and the padding was the only difference", status)
+	}
+	if len(cleared) != 0 {
+		t.Fatalf("cleared %+v — a person would be told the note does not exist", cleared)
+	}
+}
+
+// The overflow case, at the contract's own boundary rather than only in the
+// cross-package guard: a number no int64 can hold cannot name a note.
+func TestATargetTooLargeToBeANoteNumberIsRefused(t *testing.T) {
+	if IsNoteRef("CHR-99999999999999999999") {
+		t.Fatal("a reference that overflows int64 was accepted as well-formed")
+	}
+	if _, err := Parse(note(`"verb":"append","target_note":"CHR-99999999999999999999"`)); err == nil {
+		t.Fatal("Parse accepted a note number no int64 can hold")
+	}
+}
+
+// A Proposal does not always come through Parse: store.Proposal.Payload is
+// decoded with a plain json.Unmarshal, so every row written before CHRN-94
+// deserialises with the zero value and never sees the normalisation. If the
+// zero value claimed to need a target, CHRN-95 would be told those rows want
+// something they were never able to carry. Found by the reviewer of PR #67.
+func TestTheZeroValueVerbNeedsNoTargetEither(t *testing.T) {
+	if Verb("").NeedsTarget() {
+		t.Fatal(`Verb("").NeedsTarget() is true, but an absent verb means create`)
+	}
+	var decoded Proposal
+	if err := json.Unmarshal([]byte(`{"destination":"NOTE","body":"x"}`), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Verb.NeedsTarget() {
+		t.Fatal("a payload decoded outside Parse claims to need a target")
 	}
 }

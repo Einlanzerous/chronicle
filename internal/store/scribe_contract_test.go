@@ -68,10 +68,15 @@ func TestTheNoteReferenceSyntaxIsTheSameOnBothSides(t *testing.T) {
 		// Accepted by both: the lenient spellings a person actually writes.
 		"CHR-0311", "chr-0311", "CHR-311", "chr-311", "CHR-00311", "Chr-1",
 		"CHR-10000", "CHR-0001",
-		// Rejected by both.
+		// Rejected by both. `CHR-0` and the int64 overflow are here because a
+		// pattern cannot see either without restating the store's arithmetic
+		// in a second notation — which is why IsNoteRef parses rather than
+		// matching. Both were found by the reviewer of PR #67 against a version
+		// that only matched.
 		"", "311", "CHR-", "CHR-0", "chr-0", "CHR-000", "CHR-abc", "CHR_311",
 		"CHR-311x", " CHR-311", "CHR-311 ", "CHR--311", "CHR-3.11", "CHR--1",
 		"AMB-311", "CHRN-311",
+		"CHR-99999999999999999999", "CHR-9223372036854775808",
 	}
 	for _, c := range cases {
 		_, err := ParseNoteRef(c)

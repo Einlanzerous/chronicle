@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -21,20 +22,31 @@ import (
 // Resolution is NOT here. A well-formed reference to a note that does not
 // exist is a stage-2 clearing, because the world moving is not the model's
 // mistake and must not cost a retry.
-var noteRefPattern = regexp.MustCompile(`^(?i:chr)-0*[1-9][0-9]*$`)
+var noteRefPattern = regexp.MustCompile(`^(?i:chr)-([0-9]+)$`)
 
 // IsNoteRef reports whether s is well-formed as a note reference.
 //
 // SYNTAX ONLY — it says nothing about whether the note exists, which is
 // HasNote's question and stage 2's.
 //
-// The `0*[1-9]` is not decoration. store.ParseNoteRef rejects `CHR-0` with
-// "note numbers start at 1", so a pattern of bare `[0-9]+` would admit here
-// what the store cannot resolve there — a value that passes stage 1, survives
-// to stage 2 and clears as though the world had moved, when in fact the model
-// wrote something that can never name a note. Leading zeros stay legal because
+// IT PARSES RATHER THAN MATCHING, and that is the point. Anything this admits
+// and store.ParseNoteRef refuses is a value that passes stage 1, survives to
+// stage 2 and clears as though the world had moved — when in fact the model
+// wrote something that can never name a note, and a person is handed a false
+// reason. A pattern alone is not enough to rule that out: `CHR-0` parses to a
+// number the store rejects, and `CHR-99999999999999999999` overflows int64,
+// and neither is visible to a regex without encoding the same arithmetic in a
+// second notation. Doing the identical conversion is how the two sides stay
+// one rule rather than two that agree today. Leading zeros stay legal because
 // CHR-00311 is note 311.
-func IsNoteRef(s string) bool { return noteRefPattern.MatchString(s) }
+func IsNoteRef(s string) bool {
+	m := noteRefPattern.FindStringSubmatch(s)
+	if m == nil {
+		return false
+	}
+	n, err := strconv.ParseInt(m[1], 10, 64)
+	return err == nil && n > 0
+}
 
 // Validation happens in TWO STAGES that fail differently, because one is about
 // shape and the other is about the world.
@@ -197,9 +209,18 @@ func Parse(raw []byte) (*Proposal, error) {
 			break
 		}
 
+		// TRIMMED AND WRITTEN BACK, not trimmed and discarded. Validating a
+		// trimmed copy while storing the padded original is the same hole
+		// IsNoteRef exists to close, entered from the other side: `"CHR-0311 "`
+		// would pass stage 1, reach HasNote with its space intact, fail to
+		// resolve, and be cleared with the reason "no such live note" — about a
+		// note that is right there. Whitespace round a JSON string is a
+		// formatting artefact and not something to spend one of three attempts
+		// on, so it is normalised rather than refused.
 		target := ""
 		if p.TargetNote != nil {
 			target = strings.TrimSpace(*p.TargetNote)
+			*p.TargetNote = target
 		}
 		switch {
 		case p.Verb.NeedsTarget() && target == "":
