@@ -97,7 +97,8 @@ FROM (
       FROM tier2.notes n
       JOIN tier2.note_revisions r ON r.id = n.current_revision_id
      CROSS JOIN q
-     WHERE (setweight(to_tsvector('english', r.title), 'A') ||
+     WHERE n.deleted_at IS NULL
+       AND (setweight(to_tsvector('english', r.title), 'A') ||
             setweight(to_tsvector('english', r.body),  'B')) @@ q.tsq
 
     UNION ALL

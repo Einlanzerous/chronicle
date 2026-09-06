@@ -186,6 +186,50 @@ $$;
 
 
 --
+-- Name: note_deletions_guard(); Type: FUNCTION; Schema: tier2; Owner: -
+--
+
+CREATE FUNCTION tier2.note_deletions_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        RAISE EXCEPTION 'a deletion record is not removable'
+            USING ERRCODE = 'CH070';
+    END IF;
+
+    IF TG_OP = 'UPDATE' THEN
+        -- The only legal UPDATE is closing an open record out.
+        IF NEW.id         IS DISTINCT FROM OLD.id
+        OR NEW.note_id    IS DISTINCT FROM OLD.note_id
+        OR NEW.deleted_at IS DISTINCT FROM OLD.deleted_at
+        OR NEW.deleted_by IS DISTINCT FROM OLD.deleted_by THEN
+            RAISE EXCEPTION 'a deletion record is immutable except for being closed out'
+                USING ERRCODE = 'CH070';
+        END IF;
+        IF OLD.undeleted_at IS NOT NULL THEN
+            RAISE EXCEPTION 'that deletion record is already closed'
+                USING ERRCODE = 'CH070';
+        END IF;
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM tier2.users
+                    WHERE id = NEW.deleted_by AND kind = 'person') THEN
+        RAISE EXCEPTION 'a note is deleted by a person, not by an agent'
+            USING ERRCODE = 'CH041';
+    END IF;
+    IF NEW.undeleted_by IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM tier2.users
+                     WHERE id = NEW.undeleted_by AND kind = 'person') THEN
+        RAISE EXCEPTION 'a note is undeleted by a person, not by an agent'
+            USING ERRCODE = 'CH041';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+
+--
 -- Name: note_revisions_guard(); Type: FUNCTION; Schema: tier2; Owner: -
 --
 
@@ -193,8 +237,40 @@ CREATE FUNCTION tier2.note_revisions_guard() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
-    RAISE EXCEPTION 'a note revision is append-only: % is refused', TG_OP
-        USING ERRCODE = 'CH040';
+    IF TG_OP IN ('UPDATE', 'DELETE') THEN
+        RAISE EXCEPTION 'a note revision is append-only: % is refused', TG_OP
+            USING ERRCODE = 'CH040';
+    END IF;
+
+    -- INSERT.
+    IF NEW.confirmed_by IS NULL THEN
+        RAISE EXCEPTION 'a note revision needs a confirming person: nothing lands in authored text unattended'
+            USING ERRCODE = 'CH041';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM tier2.users
+                    WHERE id = NEW.confirmed_by AND kind = 'person') THEN
+        RAISE EXCEPTION 'a note revision is confirmed by a person, not by an agent'
+            USING ERRCODE = 'CH041';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+
+--
+-- Name: note_tags_guard(); Type: FUNCTION; Schema: tier2; Owner: -
+--
+
+CREATE FUNCTION tier2.note_tags_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM tier2.notes
+                WHERE id = NEW.note_id AND deleted_at IS NOT NULL) THEN
+        RAISE EXCEPTION 'that note is deleted: undelete it before tagging it'
+            USING ERRCODE = 'CH060';
+    END IF;
+    RETURN NEW;
 END
 $$;
 
@@ -206,16 +282,89 @@ $$;
 CREATE FUNCTION tier2.notes_guard() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
+DECLARE
+    changed  TEXT;
+    old_seq  INTEGER;
+    new_seq  INTEGER;
 BEGIN
     IF TG_OP = 'UPDATE' THEN
-        -- Identity is immutable. page_id and current_revision_id deliberately
-        -- are NOT: changing the first is a move, changing the second is an
-        -- edit, and those are the two things a note is supposed to survive.
+        -- Identity first, and kept byte-identical to 0011. It is a subset of
+        -- the enumeration below, and it stays because it names the rule a
+        -- caller has actually broken instead of listing a column.
         IF NEW.id        IS DISTINCT FROM OLD.id
         OR NEW.number    IS DISTINCT FROM OLD.number
         OR NEW.author_id IS DISTINCT FROM OLD.author_id THEN
             RAISE EXCEPTION 'note identity is immutable (id, number, author)'
                 USING ERRCODE = 'CH030';
+        END IF;
+
+        -- THE ALLOW LIST. page_id is a move, current_revision_id is an edit,
+        -- deleted_at/deleted_by are a soft delete, updated_at is maintained
+        -- below. Everything else — including every column added after this
+        -- migration — is refused.
+        SELECT string_agg(n.key, ', ' ORDER BY n.key) INTO changed
+          FROM jsonb_each(to_jsonb(NEW)) n
+          JOIN jsonb_each(to_jsonb(OLD)) o ON o.key = n.key
+         WHERE n.value IS DISTINCT FROM o.value
+           AND n.key <> ALL (ARRAY['page_id', 'current_revision_id',
+                                   'deleted_at', 'deleted_by', 'updated_at']);
+        IF changed IS NOT NULL THEN
+            RAISE EXCEPTION
+                'tier2.notes permits updating page_id, current_revision_id, deleted_at, deleted_by only; refused: %',
+                changed
+                USING ERRCODE = 'CH031';
+        END IF;
+
+        -- A DELETED NOTE IS NOT EDITABLE. Undelete first — which is itself
+        -- recorded, in tier2.note_deletions. Without this an agent holding a
+        -- CHRN-67 write scope can go on editing a note nobody can see, and
+        -- every read surface filters it out so nobody would.
+        --
+        -- Note this permits the undelete itself: that UPDATE touches only
+        -- deleted_at and deleted_by, neither of which is tested here.
+        IF OLD.deleted_at IS NOT NULL
+        AND (NEW.current_revision_id IS DISTINCT FROM OLD.current_revision_id
+          OR NEW.page_id             IS DISTINCT FROM OLD.page_id) THEN
+            RAISE EXCEPTION 'note % is deleted: undelete it before writing to it', OLD.number
+                USING ERRCODE = 'CH033';
+        END IF;
+
+        -- FORWARD ONLY (ruling 1). A restore APPENDS a new revision carrying
+        -- the old text, so current_revision_id never needs to move backwards,
+        -- and refusing it here makes a silent rewind unrepresentable rather
+        -- than merely un-coded. This is what stops a CHRN-67 writer moving the
+        -- pointer back and leaving no trace that anything happened.
+        --
+        -- BOTH LOOKUPS ARE SCOPED TO THIS NOTE, and that is load-bearing
+        -- rather than tidy. A pointer at ANOTHER note's revision is not a
+        -- rewind, it is nonsense, and 0011's composite notes_current_revision
+        -- is what refuses it — with 23503, which CHRN-38's criterion 3 asserts
+        -- on. Unscoped, this would find that revision's seq, compare it, and
+        -- raise CH032 first, so a cross-note pointer would report itself as a
+        -- failed restore. Scoped, new_seq comes back NULL and the guard steps
+        -- aside for the foreign key that owns the question.
+        IF NEW.current_revision_id IS DISTINCT FROM OLD.current_revision_id THEN
+            SELECT seq INTO old_seq FROM tier2.note_revisions
+             WHERE id = OLD.current_revision_id AND note_id = OLD.id;
+            SELECT seq INTO new_seq FROM tier2.note_revisions
+             WHERE id = NEW.current_revision_id AND note_id = OLD.id;
+            IF new_seq IS NOT NULL AND old_seq IS NOT NULL AND new_seq <= old_seq THEN
+                RAISE EXCEPTION
+                    'note % cannot move from revision % back to %: restore by appending',
+                    OLD.number, old_seq, new_seq
+                    USING ERRCODE = 'CH032';
+            END IF;
+        END IF;
+
+        -- A PERSON DELETES, AND A PERSON UNDELETES (ruling 4). Same rule and
+        -- same code as the confirmer on a revision, because it is the same
+        -- rule: no agent removes authored text from view unattended.
+        IF NEW.deleted_by IS DISTINCT FROM OLD.deleted_by AND NEW.deleted_by IS NOT NULL THEN
+            IF NOT EXISTS (SELECT 1 FROM tier2.users
+                            WHERE id = NEW.deleted_by AND kind = 'person') THEN
+                RAISE EXCEPTION 'a note is deleted by a person, not by an agent'
+                    USING ERRCODE = 'CH041';
+            END IF;
         END IF;
 
         -- As memos_guard, transcripts_guard and memo_links_guard all do.
@@ -579,6 +728,28 @@ CREATE TABLE tier2.memos (
 
 
 --
+-- Name: note_deletions; Type: TABLE; Schema: tier2; Owner: -
+--
+
+CREATE TABLE tier2.note_deletions (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    note_id uuid NOT NULL,
+    deleted_at timestamp with time zone DEFAULT now() NOT NULL,
+    deleted_by uuid NOT NULL,
+    undeleted_at timestamp with time zone,
+    undeleted_by uuid,
+    CONSTRAINT note_deletions_undeleted_pair CHECK (((undeleted_at IS NULL) = (undeleted_by IS NULL)))
+);
+
+
+--
+-- Name: TABLE note_deletions; Type: COMMENT; Schema: tier2; Owner: -
+--
+
+COMMENT ON TABLE tier2.note_deletions IS 'CHRN-39, ruling 5. One row per deletion of a note, closed out on undelete. Tier 2 — a record of a person''s act on authored text, regenerable from nothing. tier2.notes.deleted_at is the current state; this is the history.';
+
+
+--
 -- Name: note_number_seq; Type: SEQUENCE; Schema: tier2; Owner: -
 --
 
@@ -603,8 +774,34 @@ CREATE TABLE tier2.note_revisions (
     memo_id uuid,
     author_id uuid NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT note_revisions_seq_check CHECK ((seq > 0))
+    confirmed_by uuid,
+    verb text,
+    restored_from uuid,
+    CONSTRAINT note_revisions_seq_check CHECK ((seq > 0)),
+    CONSTRAINT note_revisions_verb CHECK (((verb IS NULL) OR (verb = ANY (ARRAY['create'::text, 'append'::text, 'supersede'::text, 'relate'::text])))),
+    CONSTRAINT note_revisions_verb_seq CHECK (((verb IS NULL) OR ((seq = 1) = (verb = ANY (ARRAY['create'::text, 'relate'::text])))))
 );
+
+
+--
+-- Name: COLUMN note_revisions.confirmed_by; Type: COMMENT; Schema: tier2; Owner: -
+--
+
+COMMENT ON COLUMN tier2.note_revisions.confirmed_by IS 'CHRN-39. Who agreed to this text landing — never an agent, enforced by CH041. Distinct from author_id, which is whose words these are and may legitimately be an agent. NULL only on rows written before 0014.';
+
+
+--
+-- Name: COLUMN note_revisions.verb; Type: COMMENT; Schema: tier2; Owner: -
+--
+
+COMMENT ON COLUMN tier2.note_revisions.verb IS 'CHRN-39. What a person confirmed about a Scribe proposal: create, append, supersede or relate. NULL means authored directly.';
+
+
+--
+-- Name: COLUMN note_revisions.restored_from; Type: COMMENT; Schema: tier2; Owner: -
+--
+
+COMMENT ON COLUMN tier2.note_revisions.restored_from IS 'CHRN-39. The revision this one was restored from. A restore APPENDS rather than rewinding (ruling 1), so this is what distinguishes a restore from an ordinary edit that happens to reproduce old text.';
 
 
 --
@@ -630,7 +827,10 @@ CREATE TABLE tier2.notes (
     current_revision_id uuid NOT NULL,
     author_id uuid NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    deleted_at timestamp with time zone,
+    deleted_by uuid,
+    CONSTRAINT notes_deleted_pair CHECK (((deleted_at IS NULL) = (deleted_by IS NULL)))
 );
 
 
@@ -815,6 +1015,14 @@ ALTER TABLE ONLY tier2.memo_links
 
 ALTER TABLE ONLY tier2.memos
     ADD CONSTRAINT memos_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: note_deletions note_deletions_pkey; Type: CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.note_deletions
+    ADD CONSTRAINT note_deletions_pkey PRIMARY KEY (id);
 
 
 --
@@ -1041,6 +1249,20 @@ CREATE UNIQUE INDEX memos_author_content ON tier2.memos USING btree (author_id, 
 
 
 --
+-- Name: note_deletions_note; Type: INDEX; Schema: tier2; Owner: -
+--
+
+CREATE INDEX note_deletions_note ON tier2.note_deletions USING btree (note_id, deleted_at DESC);
+
+
+--
+-- Name: note_deletions_open; Type: INDEX; Schema: tier2; Owner: -
+--
+
+CREATE UNIQUE INDEX note_deletions_open ON tier2.note_deletions USING btree (note_id) WHERE (undeleted_at IS NULL);
+
+
+--
 -- Name: note_revisions_fts; Type: INDEX; Schema: tier2; Owner: -
 --
 
@@ -1069,10 +1291,10 @@ CREATE INDEX note_tags_tag ON tier2.note_tags USING btree (tag);
 
 
 --
--- Name: notes_page; Type: INDEX; Schema: tier2; Owner: -
+-- Name: notes_page_live; Type: INDEX; Schema: tier2; Owner: -
 --
 
-CREATE INDEX notes_page ON tier2.notes USING btree (page_id);
+CREATE INDEX notes_page_live ON tier2.notes USING btree (page_id) WHERE (deleted_at IS NULL);
 
 
 --
@@ -1160,10 +1382,24 @@ CREATE TRIGGER memos_guard BEFORE INSERT OR UPDATE ON tier2.memos FOR EACH ROW E
 
 
 --
+-- Name: note_deletions note_deletions_guard; Type: TRIGGER; Schema: tier2; Owner: -
+--
+
+CREATE TRIGGER note_deletions_guard BEFORE INSERT OR DELETE OR UPDATE ON tier2.note_deletions FOR EACH ROW EXECUTE FUNCTION tier2.note_deletions_guard();
+
+
+--
 -- Name: note_revisions note_revisions_guard; Type: TRIGGER; Schema: tier2; Owner: -
 --
 
-CREATE TRIGGER note_revisions_guard BEFORE DELETE OR UPDATE ON tier2.note_revisions FOR EACH ROW EXECUTE FUNCTION tier2.note_revisions_guard();
+CREATE TRIGGER note_revisions_guard BEFORE INSERT OR DELETE OR UPDATE ON tier2.note_revisions FOR EACH ROW EXECUTE FUNCTION tier2.note_revisions_guard();
+
+
+--
+-- Name: note_tags note_tags_guard; Type: TRIGGER; Schema: tier2; Owner: -
+--
+
+CREATE TRIGGER note_tags_guard BEFORE INSERT ON tier2.note_tags FOR EACH ROW EXECUTE FUNCTION tier2.note_tags_guard();
 
 
 --
@@ -1220,11 +1456,43 @@ ALTER TABLE ONLY tier2.memos
 
 
 --
+-- Name: note_deletions note_deletions_deleted_by_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.note_deletions
+    ADD CONSTRAINT note_deletions_deleted_by_fkey FOREIGN KEY (deleted_by) REFERENCES tier2.users(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: note_deletions note_deletions_note_id_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.note_deletions
+    ADD CONSTRAINT note_deletions_note_id_fkey FOREIGN KEY (note_id) REFERENCES tier2.notes(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: note_deletions note_deletions_undeleted_by_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.note_deletions
+    ADD CONSTRAINT note_deletions_undeleted_by_fkey FOREIGN KEY (undeleted_by) REFERENCES tier2.users(id) ON DELETE RESTRICT;
+
+
+--
 -- Name: note_revisions note_revisions_author_id_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
 --
 
 ALTER TABLE ONLY tier2.note_revisions
     ADD CONSTRAINT note_revisions_author_id_fkey FOREIGN KEY (author_id) REFERENCES tier2.users(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: note_revisions note_revisions_confirmed_by_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.note_revisions
+    ADD CONSTRAINT note_revisions_confirmed_by_fkey FOREIGN KEY (confirmed_by) REFERENCES tier2.users(id) ON DELETE RESTRICT;
 
 
 --
@@ -1241,6 +1509,14 @@ ALTER TABLE ONLY tier2.note_revisions
 
 ALTER TABLE ONLY tier2.note_revisions
     ADD CONSTRAINT note_revisions_note_id_fkey FOREIGN KEY (note_id) REFERENCES tier2.notes(id) ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: note_revisions note_revisions_restored_from; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.note_revisions
+    ADD CONSTRAINT note_revisions_restored_from FOREIGN KEY (restored_from, note_id) REFERENCES tier2.note_revisions(id, note_id);
 
 
 --
@@ -1265,6 +1541,14 @@ ALTER TABLE ONLY tier2.notes
 
 ALTER TABLE ONLY tier2.notes
     ADD CONSTRAINT notes_current_revision FOREIGN KEY (current_revision_id, id) REFERENCES tier2.note_revisions(id, note_id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: notes notes_deleted_by_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.notes
+    ADD CONSTRAINT notes_deleted_by_fkey FOREIGN KEY (deleted_by) REFERENCES tier2.users(id) ON DELETE RESTRICT;
 
 
 --
