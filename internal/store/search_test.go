@@ -116,7 +116,7 @@ func TestSupersededTextIsNotFound(t *testing.T) {
 	n := mkNote(t, s, ctx, page, author, "Draft", "the original mentions aardvarks")
 
 	if _, err := s.AppendRevision(ctx, n.ID, NewRevision{
-		AuthorID: author, Title: "Draft", Body: "the revision mentions buffalo instead",
+		AuthorID: author, ConfirmedBy: author, Title: "Draft", Body: "the revision mentions buffalo instead",
 	}); err != nil {
 		t.Fatalf("AppendRevision: %v", err)
 	}
@@ -297,12 +297,13 @@ func seedNotes(t *testing.T, s *Store, ctx context.Context, page, author uuid.UU
 		    SELECT gen_random_uuid() AS nid, gen_random_uuid() AS rid, i
 		      FROM generate_series(1, $1) i
 		), r AS (
-		    INSERT INTO tier2.note_revisions (id, note_id, seq, title, body, author_id)
+		    INSERT INTO tier2.note_revisions
+		                (id, note_id, seq, title, body, author_id, confirmed_by)
 		    SELECT rid, nid, 1,
 		           'seed note ' || i,
 		           'filler prose about estates and conventions and services number ' || i ||
 		           CASE WHEN i = 1 THEN ' chiffchaff' ELSE '' END,
-		           $3
+		           $3, $3
 		      FROM ids
 		)
 		INSERT INTO tier2.notes (id, page_id, current_revision_id, author_id)

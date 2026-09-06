@@ -24,7 +24,7 @@ func notePage(t *testing.T, s *Store, ctx context.Context, email string) (uuid.U
 func mkNote(t *testing.T, s *Store, ctx context.Context, page, author uuid.UUID, title, body string) Note {
 	t.Helper()
 	n, _, err := s.CreateNote(ctx, NewNote{
-		PageID: page, AuthorID: author, Title: title, Body: body,
+		PageID: page, AuthorID: author, ConfirmedBy: author, Title: title, Body: body,
 	})
 	if err != nil {
 		t.Fatalf("CreateNote: %v", err)
@@ -83,7 +83,7 @@ func TestNoteNumbersAreNeverReused(t *testing.T) {
 	// A create against a page that does not exist fails on the notes insert —
 	// after the row, and therefore the sequence value, has been built.
 	if _, _, err := s.CreateNote(ctx, NewNote{
-		PageID: uuid.New(), AuthorID: author, Title: "Doomed", Body: "",
+		PageID: uuid.New(), AuthorID: author, ConfirmedBy: author, Title: "Doomed", Body: "",
 	}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("CreateNote against a missing page err = %v, want ErrNotFound", err)
 	}
@@ -123,7 +123,7 @@ func TestTheNoteRowHoldsNoAuthoredText(t *testing.T) {
 
 	n := mkNote(t, s, ctx, page, author, "Naming", "the original body")
 	if _, err := s.AppendRevision(ctx, n.ID, NewRevision{
-		AuthorID: author, Title: "Naming conventions", Body: "the original body",
+		AuthorID: author, ConfirmedBy: author, Title: "Naming conventions", Body: "the original body",
 	}); err != nil {
 		t.Fatalf("AppendRevision (rename): %v", err)
 	}
@@ -182,7 +182,7 @@ func TestCreateNoteIsAllOrNothing(t *testing.T) {
 
 	before := countRevisions(t, s, ctx)
 	if _, _, err := s.CreateNote(ctx, NewNote{
-		PageID: uuid.New(), AuthorID: author, Title: "Doomed", Body: "text that must not survive",
+		PageID: uuid.New(), AuthorID: author, ConfirmedBy: author, Title: "Doomed", Body: "text that must not survive",
 	}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("CreateNote against a missing page err = %v, want ErrNotFound", err)
 	}
@@ -226,7 +226,7 @@ func TestConcurrentAppendsBothLand(t *testing.T) {
 			defer wg.Done()
 			<-start
 			revs[i], errs[i] = s.AppendRevision(ctx, n.ID, NewRevision{
-				AuthorID: author, Title: "Contended", Body: "concurrent",
+				AuthorID: author, ConfirmedBy: author, Title: "Contended", Body: "concurrent",
 			})
 		}(i)
 	}
@@ -350,7 +350,7 @@ func TestProvenanceIsRecordedWhereItExists(t *testing.T) {
 	}
 
 	fromMemo, rev, err := s.CreateNote(ctx, NewNote{
-		PageID: page, AuthorID: author, Title: "From a memo", Body: "what somebody said",
+		PageID: page, AuthorID: author, ConfirmedBy: author, Title: "From a memo", Body: "what somebody said",
 		MemoID: &memo.ID,
 	})
 	if err != nil {
@@ -383,7 +383,7 @@ func TestProvenanceIsRecordedWhereItExists(t *testing.T) {
 			t.Errorf("NoteByRef(%s): %v", n.Ref(), err)
 		}
 		if _, err := s.AppendRevision(ctx, n.ID, NewRevision{
-			AuthorID: author, Title: "revised", Body: "revised",
+			AuthorID: author, ConfirmedBy: author, Title: "revised", Body: "revised",
 		}); err != nil {
 			t.Errorf("AppendRevision(%s): %v", n.Ref(), err)
 		}
@@ -397,13 +397,13 @@ func TestAMemoLandsInExactlyOneRevision(t *testing.T) {
 	memo := newTranscribableMemo(t, s, ctx, "ten-memo@example.com")
 
 	if _, _, err := s.CreateNote(ctx, NewNote{
-		PageID: page, AuthorID: author, Title: "First landing", Body: "x", MemoID: &memo.ID,
+		PageID: page, AuthorID: author, ConfirmedBy: author, Title: "First landing", Body: "x", MemoID: &memo.ID,
 	}); err != nil {
 		t.Fatalf("first landing: %v", err)
 	}
 
 	_, _, err := s.CreateNote(ctx, NewNote{
-		PageID: page, AuthorID: author, Title: "Second landing", Body: "x", MemoID: &memo.ID,
+		PageID: page, AuthorID: author, ConfirmedBy: author, Title: "Second landing", Body: "x", MemoID: &memo.ID,
 	})
 	if !errors.Is(err, ErrMemoAlreadyLanded) {
 		t.Errorf("second landing err = %v, want ErrMemoAlreadyLanded", err)
@@ -414,7 +414,7 @@ func TestAMemoLandsInExactlyOneRevision(t *testing.T) {
 	// the first pass created, not as a new note.
 	other := mkNote(t, s, ctx, page, author, "Somewhere else", "")
 	_, err = s.AppendRevision(ctx, other.ID, NewRevision{
-		AuthorID: author, Title: "Second landing", Body: "x", MemoID: &memo.ID,
+		AuthorID: author, ConfirmedBy: author, Title: "Second landing", Body: "x", MemoID: &memo.ID,
 	})
 	if !errors.Is(err, ErrMemoAlreadyLanded) {
 		t.Errorf("append with a landed memo err = %v, want ErrMemoAlreadyLanded", err)
@@ -471,7 +471,7 @@ func TestAnEmptyTitleAndBodyAreValues(t *testing.T) {
 	}
 
 	// Deliberately blanking a note that had text is a revision like any other.
-	if _, err := s.AppendRevision(ctx, n.ID, NewRevision{AuthorID: author}); err != nil {
+	if _, err := s.AppendRevision(ctx, n.ID, NewRevision{AuthorID: author, ConfirmedBy: author}); err != nil {
 		t.Fatalf("AppendRevision(blank): %v", err)
 	}
 	revs, err := s.NoteRevisions(ctx, n.ID)

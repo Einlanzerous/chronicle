@@ -101,7 +101,7 @@ func (s *Store) Backlinks(ctx context.Context, number int64) ([]Backlink, error)
 		  FROM tier1.note_links l
 		  JOIN tier2.notes n ON n.id = l.from_note_id
 		  JOIN tier2.note_revisions r ON r.id = n.current_revision_id
-		 WHERE l.to_number = $1
+		 WHERE l.to_number = $1 AND n.deleted_at IS NULL
 		 ORDER BY n.number`, number)
 	if err != nil {
 		return nil, fmt.Errorf("store: backlinks: %w", err)
@@ -123,11 +123,17 @@ func (s *Store) Backlinks(ctx context.Context, number int64) ([]Backlink, error)
 }
 
 // OutboundLinks lists what a note points at, resolved where it can be.
+//
+// A REFERENCE TO A DELETED NOTE RESOLVES AS DANGLING, exactly as a reference
+// to a note that was never created does — the condition is on the JOIN, not in
+// a WHERE, so the row survives with a nil Target. Dropping the row instead
+// would silently edit what the author wrote: they typed CHR-0311 and the
+// rendering would stop admitting it.
 func (s *Store) OutboundLinks(ctx context.Context, noteID uuid.UUID) ([]OutboundLink, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT l.to_number, n.id, n.number, r.title, n.page_id
 		  FROM tier1.note_links l
-		  LEFT JOIN tier2.notes n ON n.number = l.to_number
+		  LEFT JOIN tier2.notes n ON n.number = l.to_number AND n.deleted_at IS NULL
 		  LEFT JOIN tier2.note_revisions r ON r.id = n.current_revision_id
 		 WHERE l.from_note_id = $1
 		 ORDER BY l.to_number`, noteID)
@@ -231,6 +237,11 @@ func NormaliseTag(tag string) string {
 }
 
 // TagNote adds a tag. Tagging twice is not an error — it is the same claim.
+//
+// Tagging a DELETED note is refused, by note_tags_guard (CH060) rather than
+// here. It cannot be notes_guard's CH033: this writes tier2.note_tags and
+// never touches the note row, so the guard that fires on UPDATE of tier2.notes
+// would never see it and the rule would read as enforced while doing nothing.
 func (s *Store) TagNote(ctx context.Context, noteID uuid.UUID, tag string) error {
 	t := NormaliseTag(tag)
 	if !slugPattern.MatchString(t) {
@@ -240,18 +251,23 @@ func (s *Store) TagNote(ctx context.Context, noteID uuid.UUID, tag string) error
 		INSERT INTO tier2.note_tags (note_id, tag) VALUES ($1, $2)
 		ON CONFLICT (note_id, tag) DO NOTHING`, noteID, t)
 	if err != nil {
-		return fmt.Errorf("store: tag note: %w", err)
+		return noteError(err)
 	}
 	return nil
 }
 
 // UntagNote removes a tag. Removing one that is not there is not an error.
+//
+// Removing one from a DELETED note is, though — note_tags_guard's CH060 covers
+// removal as well as addition. An INSERT-only guard would refuse adding a tag
+// to a note nobody can see while letting an agent strip its tags silently, and
+// tier2.note_tags has no journal to recover them from.
 func (s *Store) UntagNote(ctx context.Context, noteID uuid.UUID, tag string) error {
 	_, err := s.pool.Exec(ctx,
 		`DELETE FROM tier2.note_tags WHERE note_id = $1 AND tag = $2`,
 		noteID, NormaliseTag(tag))
 	if err != nil {
-		return fmt.Errorf("store: untag note: %w", err)
+		return noteError(err)
 	}
 	return nil
 }
@@ -287,7 +303,7 @@ func (s *Store) NotesByTag(ctx context.Context, tag string) ([]Note, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+prefixed(noteColumns, "n")+`
 		  FROM tier2.note_tags t JOIN tier2.notes n ON n.id = t.note_id
-		 WHERE t.tag = $1
+		 WHERE t.tag = $1 AND n.deleted_at IS NULL
 		 ORDER BY n.number`, NormaliseTag(tag))
 	if err != nil {
 		return nil, fmt.Errorf("store: notes by tag: %w", err)
@@ -296,8 +312,7 @@ func (s *Store) NotesByTag(ctx context.Context, tag string) ([]Note, error) {
 	out := []Note{}
 	for rows.Next() {
 		var n Note
-		if err := rows.Scan(&n.ID, &n.Number, &n.PageID, &n.CurrentRevisionID,
-			&n.AuthorID, &n.CreatedAt, &n.UpdatedAt); err != nil {
+		if err := rows.Scan(noteDest(&n)...); err != nil {
 			return nil, fmt.Errorf("store: notes by tag: %w", err)
 		}
 		out = append(out, n)

@@ -36,7 +36,7 @@ func TestNotesRoundTripByteForByte(t *testing.T) {
 	for name, body := range bodies {
 		t.Run(name, func(t *testing.T) {
 			n, _, err := s.CreateNote(ctx, NewNote{
-				PageID: page, AuthorID: author, Title: name, Body: body,
+				PageID: page, AuthorID: author, ConfirmedBy: author, Title: name, Body: body,
 			})
 			if err != nil {
 				t.Fatalf("CreateNote: %v", err)
@@ -54,7 +54,7 @@ func TestNotesRoundTripByteForByte(t *testing.T) {
 
 			// And again through an append, since that is the other write path.
 			rev, err := s.AppendRevision(ctx, n.ID, NewRevision{
-				AuthorID: author, Title: name, Body: body,
+				AuthorID: author, ConfirmedBy: author, Title: name, Body: body,
 			})
 			if err != nil {
 				t.Fatalf("AppendRevision: %v", err)

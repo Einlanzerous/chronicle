@@ -95,7 +95,7 @@ func TestARenamedNoteKeepsBothDirections(t *testing.T) {
 
 	// Rename the TARGET, and move it to another page for good measure.
 	if _, err := s.AppendRevision(ctx, b.ID, NewRevision{
-		AuthorID: author, Title: "Naming conventions, renamed", Body: "the original",
+		AuthorID: author, ConfirmedBy: author, Title: "Naming conventions, renamed", Body: "the original",
 	}); err != nil {
 		t.Fatalf("rename target: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestARenamedNoteKeepsBothDirections(t *testing.T) {
 	}
 	// And rename the SOURCE, whose text still carries the reference.
 	if _, err := s.AppendRevision(ctx, a.ID, NewRevision{
-		AuthorID: author, Title: "Pointer, renamed", Body: "see " + b.Ref(),
+		AuthorID: author, ConfirmedBy: author, Title: "Pointer, renamed", Body: "see " + b.Ref(),
 	}); err != nil {
 		t.Fatalf("rename source: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestRemovingAReferenceRemovesTheEdge(t *testing.T) {
 		t.Fatalf("precondition: backlinks = %+v", back)
 	}
 	if _, err := s.AppendRevision(ctx, a.ID, NewRevision{
-		AuthorID: author, Title: "Source", Body: "the reference is gone now",
+		AuthorID: author, ConfirmedBy: author, Title: "Source", Body: "the reference is gone now",
 	}); err != nil {
 		t.Fatalf("AppendRevision: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestANoteMentioningCHR0IsStillSaveable(t *testing.T) {
 	page, author := notePage(t, s, ctx, "zero@example.com")
 
 	n, _, err := s.CreateNote(ctx, NewNote{
-		PageID: page, AuthorID: author, Title: "Numbering",
+		PageID: page, AuthorID: author, ConfirmedBy: author, Title: "Numbering",
 		Body: "note numbers start at 1, so CHR-0 is not one and CHR-00 is not either",
 	})
 	if err != nil {
@@ -196,7 +196,7 @@ func TestANoteMentioningCHR0IsStillSaveable(t *testing.T) {
 
 	// And through the append path, which reindexes the same way.
 	if _, err := s.AppendRevision(ctx, n.ID, NewRevision{
-		AuthorID: author, Title: "Numbering", Body: "still true: CHR-0 names nothing",
+		AuthorID: author, ConfirmedBy: author, Title: "Numbering", Body: "still true: CHR-0 names nothing",
 	}); err != nil {
 		t.Fatalf("AppendRevision with CHR-0 in the prose: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestANoteDoesNotLinkToItself(t *testing.T) {
 	page, author := notePage(t, s, ctx, "self@example.com")
 	n := mkNote(t, s, ctx, page, author, "Self", "x")
 	if _, err := s.AppendRevision(ctx, n.ID, NewRevision{
-		AuthorID: author, Title: "Self", Body: "this note, " + n.Ref() + ", is about itself",
+		AuthorID: author, ConfirmedBy: author, Title: "Self", Body: "this note, " + n.Ref() + ", is about itself",
 	}); err != nil {
 		t.Fatalf("AppendRevision: %v", err)
 	}
