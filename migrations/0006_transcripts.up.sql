@@ -266,6 +266,11 @@ COMMENT ON TABLE tier1.memo_jobs IS
 -- Scribe can read its input. This table is the second half of that grant, and
 -- the grant supersedes this line; 0003 carries the same correction for the
 -- first half. Do not read this REVOKE as evidence that the role cannot see
--- transcripts today: it can, by name and on purpose. schema.sql:1384 carries
--- the resulting ACL and is the current state; this file is when.
+-- transcripts today: it can, by name and on purpose. schema.sql carries the
+-- resulting ACL under "Name: TABLE transcripts; Type: ACL; Schema: tier2" and
+-- is the current state; this file is when. (No line number on purpose:
+-- schema.sql is generated, pg_dump orders ACL stanzas by schema and table, and
+-- a pointer into it goes stale on the next migration that adds an object
+-- sorting earlier — which is this ticket's own failure mode. 0003 states it
+-- without one for the same reason.)
 REVOKE ALL ON tier2.transcripts FROM chronicle_tier1;
