@@ -55,6 +55,47 @@ var Destinations = []Destination{DestNote, DestTicket, DestDiscussion, DestDisca
 // prompt unchanged (docs/salvage/vox-dictate/routing-prompt.md).
 var TicketTypes = []string{"spike", "task", "bug", "epic"}
 
+// Verb is what a NOTE proposal says should happen to the corpus.
+//
+// CHRN-39'S SET, NOT A NEW ONE. These are exactly the four values migration
+// 0014's `note_revisions_verb` CHECK admits, and they are declared here as
+// well as in internal/store because **store imports this package** — the
+// dependency runs one way and cannot be reversed for a constant.
+//
+// Two copies of an enum is the shape this repo distrusts, so it is guarded
+// rather than trusted: `TestScribeVerbsMatchTheColumn` in internal/store
+// compares the two sets and fails if either grows alone. That is CHRN-84's
+// pattern — the test loops over the exported set itself, so the advertised
+// vocabulary and the storable one cannot drift.
+//
+// What each one means is CHRN-39's plan and is not re-decided here:
+//
+//	create     — a new note on page_path. One revision, seq 1.
+//	append     — add to an existing note. Title carried forward unchanged.
+//	supersede  — replace an existing note's body. The old body is seq n-1.
+//	relate     — a DISTINCT idea belonging near an existing note; a new note
+//	             whose body references the target.
+type Verb string
+
+const (
+	VerbCreate    Verb = "create"
+	VerbAppend    Verb = "append"
+	VerbSupersede Verb = "supersede"
+	VerbRelate    Verb = "relate"
+)
+
+// Verbs is the set a NOTE proposal may carry, in the order the prompt teaches
+// them. Iterated by the validator, so adding one here is the only edit needed.
+var Verbs = []Verb{VerbCreate, VerbAppend, VerbSupersede, VerbRelate}
+
+// NeedsTarget reports whether this verb names an existing note.
+//
+// THREE OF FOUR, AND create IS THE ODD ONE OUT. CHRN-39's plan corrects an
+// earlier reading that only `relate` carried a target: `append` and
+// `supersede` both act on a note that already exists, and `page_path` cannot
+// identify one because `NotesOnPage` exists precisely for a page holding many.
+func (v Verb) NeedsTarget() bool { return v != VerbCreate }
+
 // Status is the proposal row's state, and it is not the memo's.
 //
 //   - Valid      — usable as it stands.
@@ -139,9 +180,39 @@ type Proposal struct {
 	// note can only ever land on a page somebody made earlier, and that is
 	// E5's call and not this contract's.
 	PagePath *string `json:"page_path,omitempty"`
-	Body     string  `json:"body,omitempty"`
+
+	// Verb is what should happen to the corpus, and it is REQUIRED for NOTE.
+	//
+	// CHRN-32 shipped this contract carrying page_path and no verb, on the
+	// stated grounds that the values were not knowable in advance and guessing
+	// would pre-decide E5. CHRN-39 defined them, so this is the field that
+	// refusal was holding open.
+	Verb Verb `json:"verb,omitempty"`
+
+	// TargetNote is the existing note the verb acts on, written CHR-0311.
+	//
+	// REQUIRED UNLESS THE VERB IS create, which is what NeedsTarget says. It
+	// is deliberately NOT a general `{kind, ref}` target: this struct is a
+	// discriminated union whose fields are grouped by destination and it
+	// carries no polymorphic field, so a general one would be the first, and
+	// `validate.go` would grow a kind switch with a branch no test can reach
+	// until threads exist. If E6 wants a memo routed into an existing
+	// discussion, the field is `target_thread` in the DISCUSSION block below.
+	// Decided by magos 2026-09-06; the argument is on CHRN-94.
+	//
+	// Syntax is checked here and RESOLUTION IS NOT: stage 2 asks the
+	// catalogue, exactly as page_path does. A note that was soft-deleted
+	// between proposal and acceptance is a stage-2 clearing, not a parse
+	// error.
+	TargetNote *string `json:"target_note,omitempty"`
+
+	Body string `json:"body,omitempty"`
 
 	// --- DISCUSSION ---
+	//
+	// No target field here yet, and that is E6's call rather than an omission:
+	// whether a thread gets a public ID namespace at all is CHRN-43's, and
+	// `target_thread` is the name reserved for it if it does.
 
 	OpeningPost string `json:"opening_post,omitempty"`
 }

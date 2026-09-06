@@ -3,9 +3,38 @@ package scribe
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 )
+
+// noteRefPattern is the SYNTAX of a note reference, and syntax is all it is.
+//
+// Deliberately lenient, and deliberately the same shape as
+// store.noteRefPattern: people quote these by hand, so CHR-311, chr-0311 and
+// CHR-00311 all name note 311. It is declared here rather than imported
+// because internal/store imports THIS package and the dependency cannot be
+// reversed — the same reason Verb is declared here. Guarded the same way, by
+// TestScribeVerbsMatchTheColumn's sibling in internal/store, so the reference
+// this package will accept and the one the store can resolve cannot drift.
+//
+// Resolution is NOT here. A well-formed reference to a note that does not
+// exist is a stage-2 clearing, because the world moving is not the model's
+// mistake and must not cost a retry.
+var noteRefPattern = regexp.MustCompile(`^(?i:chr)-0*[1-9][0-9]*$`)
+
+// IsNoteRef reports whether s is well-formed as a note reference.
+//
+// SYNTAX ONLY — it says nothing about whether the note exists, which is
+// HasNote's question and stage 2's.
+//
+// The `0*[1-9]` is not decoration. store.ParseNoteRef rejects `CHR-0` with
+// "note numbers start at 1", so a pattern of bare `[0-9]+` would admit here
+// what the store cannot resolve there — a value that passes stage 1, survives
+// to stage 2 and clears as though the world had moved, when in fact the model
+// wrote something that can never name a note. Leading zeros stay legal because
+// CHR-00311 is note 311.
+func IsNoteRef(s string) bool { return noteRefPattern.MatchString(s) }
 
 // Validation happens in TWO STAGES that fail differently, because one is about
 // shape and the other is about the world.
@@ -137,6 +166,54 @@ func Parse(raw []byte) (*Proposal, error) {
 		if strings.TrimSpace(p.Body) == "" {
 			bad("body", "is required for NOTE")
 		}
+
+		// VERB AND TARGET ARE OPTIONAL UNTIL THE PROMPT ASKS FOR THEM, and
+		// that is a sequencing decision rather than a soft contract.
+		//
+		// The prompt does not mention either field yet: adding them forces a
+		// `prompt.Version` bump, because `@v1` has attributed run 1 in
+		// CHRN-36 §2's log, and CHRN-87 is already going to rewrite the prompt
+		// and bump it once. Requiring a field nothing emits would make every
+		// NOTE a shape error and burn all three attempts. Decided by magos
+		// 2026-09-06 on CHRN-94; CHRN-87 inherits making them required.
+		//
+		// ABSENT MEANS create, and that default is safe in the one direction
+		// that matters: create acts on nothing that already exists, so a
+		// missing verb can never be read as permission to change authored
+		// text. The three verbs that can are exactly the three a model must
+		// name explicitly.
+		//
+		// NORMALISED HERE rather than left empty, so CHRN-95 reads a usable
+		// value instead of re-deriving the default at the landing site. The
+		// model's actual output is not lost: Parse takes bytes precisely so
+		// the row can store `raw_output` beside the payload, and that column
+		// is what says whether the model spoke or was never asked.
+		if p.Verb == "" {
+			p.Verb = VerbCreate
+		} else if !slices.Contains(Verbs, p.Verb) {
+			// A verb the model invented IS a shape error, and a retryable one.
+			// Only silence is defaulted.
+			bad("verb", "must be one of %v, got %q", Verbs, p.Verb)
+			break
+		}
+
+		target := ""
+		if p.TargetNote != nil {
+			target = strings.TrimSpace(*p.TargetNote)
+		}
+		switch {
+		case p.Verb.NeedsTarget() && target == "":
+			bad("target_note", "is required for %s — it names the existing note being acted on, "+
+				"and page_path cannot identify one because a page holds many", p.Verb)
+		case p.Verb.NeedsTarget() && !IsNoteRef(target):
+			// A retryable shape error on purpose. A model that answered "the
+			// smart calendar note" said something a person understands and the
+			// contract cannot use, and that is precisely what a retry with the
+			// error fed back is for.
+			bad("target_note", "must be a note reference like CHR-0311, got %q", target)
+		case !p.Verb.NeedsTarget() && target != "":
+			bad("target_note", "must be null for %s — it makes a new note and acts on nothing existing", p.Verb)
+		}
 	case DestDiscussion:
 		if strings.TrimSpace(p.OpeningPost) == "" {
 			bad("opening_post", "is required for DISCUSSION")
@@ -168,6 +245,19 @@ type Catalogue interface {
 	// implementation answers false to everything — which is not a special case
 	// here, just an empty catalogue.
 	HasPage(path string) bool
+
+	// HasNote reports whether a note reference resolves to a live note.
+	//
+	// LENIENT IN, EXACT OUT: the reference has already passed
+	// noteRefPattern, so an implementation may parse it with
+	// store.ParseNoteRef and need not re-check the syntax. A soft-deleted note
+	// is NOT live — CHRN-39 made deletion recoverable, but proposing an append
+	// to something a person deleted is a proposal that should reach them as
+	// needs_input rather than as a landing.
+	//
+	// An empty corpus answers false to everything, which is the same
+	// not-a-special-case as HasPage: there is no note to append to.
+	HasNote(ref string) bool
 }
 
 // ClearedField records something stage 2 removed, and why.
@@ -247,6 +337,20 @@ func Reconcile(p *Proposal, cat Catalogue) (cleared []ClearedField, status Statu
 		if p.PagePath != nil && *p.PagePath != "" && !hasLiveAncestor(*p.PagePath, cat) {
 			clear("page_path", *p.PagePath, "neither the page nor any ancestor of it is in the live catalogue", true)
 			p.PagePath = nil
+		}
+
+		// Also a target, so it blocks the same way. Every non-null target_note
+		// clears while the corpus is empty, which is the correct answer and
+		// not a gap: there is no note to act on.
+		//
+		// THE VERB IS LEFT ALONE. Rewriting a cleared `append` into a `create`
+		// would turn a proposal to change authored text into a proposal to
+		// write new text — a different act, chosen by the validator rather
+		// than by the person CHRN-39 requires to confirm it. needs_input is
+		// the honest state: a person supplies the target the model meant.
+		if p.Verb.NeedsTarget() && p.TargetNote != nil && *p.TargetNote != "" && !cat.HasNote(*p.TargetNote) {
+			clear("target_note", *p.TargetNote, "no such live note in the catalogue", true)
+			p.TargetNote = nil
 		}
 
 	case DestDiscussion, DestDiscard:

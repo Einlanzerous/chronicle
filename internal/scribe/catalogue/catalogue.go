@@ -27,6 +27,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/Einlanzerous/chronicle/internal/store"
 )
 
 // Project is one routable destination, as the prompt renders it.
@@ -50,6 +52,18 @@ type Snapshot struct {
 	Version  int       `yaml:"version" json:"version"`
 	Projects []Project `yaml:"projects" json:"projects"`
 	Pages    []string  `yaml:"pages" json:"pages"`
+
+	// Notes are the CHR-#### references a NOTE proposal's `target_note` may
+	// name — CHRN-94's half of "one fetch, two readers".
+	//
+	// A LIST, AND THEREFORE A BOUNDED ONE. Pages are a tree and stay small;
+	// notes grow without limit, so rendering every note in the corpus into
+	// every prompt does not scale and this field is not where that is solved.
+	// Choosing WHICH notes are candidates for a given memo is retrieval over
+	// the corpus, which CHRN-36 §7 assigns to CHRN-41 and which no ticket has
+	// yet picked up. Until then this is empty and every non-`create` verb
+	// clears at stage 2, which is the correct answer rather than a gap.
+	Notes []string `yaml:"notes" json:"notes"`
 
 	// sha is the hash of the bytes this snapshot was read from, or computed
 	// over its content when it came from a live fetch.
@@ -117,6 +131,21 @@ func Parse(b []byte) (*Snapshot, error) {
 		}
 		seen[p.Key] = true
 	}
+	// Notes are validated for SHAPE only, on the projects' pattern: a
+	// malformed entry here would be offered to the model and then cleared by
+	// stage 2, which reads as a hallucination the model did not commit.
+	seenNote := map[int64]bool{}
+	for i, n := range s.Notes {
+		num, err := store.ParseNoteRef(n)
+		if err != nil {
+			return nil, fmt.Errorf("catalogue: notes[%d]: %w", i, err)
+		}
+		if seenNote[num] {
+			return nil, fmt.Errorf("catalogue: note %s appears twice", store.FormatNoteRef(num))
+		}
+		seenNote[num] = true
+	}
+
 	sum := sha256.Sum256(b)
 	s.sha = hex.EncodeToString(sum[:])
 	return &s, nil
@@ -156,6 +185,27 @@ func (s *Snapshot) HasPage(path string) bool {
 	return false
 }
 
+// HasNote reports whether a note reference resolves. Third of
+// scribe.Catalogue.
+//
+// COMPARED BY NUMBER AND NOT BY STRING, because the reference is lenient by
+// design: CHR-311, chr-0311 and CHR-00311 are one note, and a string compare
+// would resolve whichever spelling the catalogue happened to hold and clear
+// the other two. `store.ParseNoteRef` is the parse, and this package may call
+// it because nothing in internal/store imports this one.
+func (s *Snapshot) HasNote(ref string) bool {
+	want, err := store.ParseNoteRef(ref)
+	if err != nil {
+		return false
+	}
+	for _, n := range s.Notes {
+		if got, err := store.ParseNoteRef(n); err == nil && got == want {
+			return true
+		}
+	}
+	return false
+}
+
 // RenderProjects is the prompt's half of "one fetch, two readers".
 //
 // One line per project, no truncation. The salvage cut descriptions at 150
@@ -187,6 +237,25 @@ func (s *Snapshot) RenderPages() string {
 	var b strings.Builder
 	for _, p := range s.Pages {
 		b.WriteString("- " + p + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// RenderNotes is the third reader, and it is explicit when empty for exactly
+// RenderPages' reason.
+//
+// The empty text names the CONSEQUENCE rather than the absence, because the
+// consequence is what constrains the answer: with no note to act on, `create`
+// is the only verb that can be satisfied, and a model told merely that the
+// list is empty will still reach for `append` on a memo that plainly refers
+// back to something.
+func (s *Snapshot) RenderNotes() string {
+	if len(s.Notes) == 0 {
+		return "(none — no notes exist yet, so `verb` MUST be `create` and `target_note` MUST be null)"
+	}
+	var b strings.Builder
+	for _, n := range s.Notes {
+		b.WriteString("- " + n + "\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
