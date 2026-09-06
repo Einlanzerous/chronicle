@@ -30,6 +30,12 @@ import (
 // not offered under its old path — needs a page tree, and there is none until
 // CHRN-37 in E5. Pages come back empty, which scribe.Reconcile already treats
 // as the ordinary case rather than a special one.
+//
+// NEITHER IS THE NOTE HALF, for a different reason. The page tree now exists,
+// but a live note list is not a fetch — it is retrieval over the corpus for a
+// given memo (CHRN-36 §7 points at CHRN-41), and a Fetch that returned every
+// note would not fit a prompt. Notes come back empty and stage 2 treats that
+// as the ordinary case too.
 type Live struct{ sw *switchyard.Client }
 
 // maxDescription is the per-project prompt budget, and it is A NUMBER SOMEBODY
@@ -78,7 +84,7 @@ func (l *Live) Fetch(ctx context.Context) (*Snapshot, error) {
 		return nil, fmt.Errorf("catalogue: Switchyard returned no live projects, so every TICKET would answer with an empty project_key")
 	}
 
-	s := &Snapshot{Version: 1, Pages: []string{}}
+	s := &Snapshot{Version: 1, Pages: []string{}, Notes: []string{}}
 	for _, p := range ps {
 		// THE SAME INVARIANT Parse ENFORCES, and it is here because the two
 		// constructors of one Snapshot were disagreeing about a rule only one

@@ -14,10 +14,12 @@ import (
 type fakeCatalogue struct {
 	projects map[string]bool
 	pages    map[string]bool
+	notes    map[string]bool
 }
 
 func (c fakeCatalogue) HasProject(k string) bool { return c.projects[k] }
 func (c fakeCatalogue) HasPage(p string) bool    { return c.pages[p] }
+func (c fakeCatalogue) HasNote(r string) bool    { return c.notes[strings.ToUpper(r)] }
 
 // A minimal valid proposal of each kind, as JSON, so the tests below can break
 // one field at a time.
@@ -392,3 +394,4 @@ type emptyCatalogue struct{}
 
 func (emptyCatalogue) HasProject(string) bool { return false }
 func (emptyCatalogue) HasPage(string) bool    { return false }
+func (emptyCatalogue) HasNote(string) bool    { return false }
