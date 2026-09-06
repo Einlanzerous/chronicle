@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.9.0](https://github.com/Einlanzerous/chronicle/compare/v1.8.0...v1.9.0) (2026-09-06)
+
+
+### Features
+
+* **notes:** restore by appending, soft delete that is journaled, and the verb set (CHRN-39) ([#65](https://github.com/Einlanzerous/chronicle/issues/65)) ([7dbeb31](https://github.com/Einlanzerous/chronicle/commit/7dbeb31882b1aa7e6d1cf5572388458f9b62d8b4))
+* **scribe:** the CHRN-39 verb set and note target in the proposal contract (CHRN-94) ([#67](https://github.com/Einlanzerous/chronicle/issues/67)) ([2f76eea](https://github.com/Einlanzerous/chronicle/commit/2f76eea283c0513c530d33d66b2b11d6abc34bf9))
+
 ## [1.8.0](https://github.com/Einlanzerous/chronicle/compare/v1.7.0...v1.8.0) (2026-09-05)
 
 
