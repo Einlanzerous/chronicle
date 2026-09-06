@@ -217,9 +217,23 @@ CREATE OR REPLACE TRIGGER note_revisions_guard
 -- schema tier2 — so a tier-2 table created today is unreachable by
 -- chronicle_tier1 on table privileges alone, whatever it holds on the schema.
 --
--- NOTE FOR CHRN-41: its index reads these tables as chronicle_tier1 and will
--- need GRANT SELECT. That grant is CHRN-41's to raise and CHRN-52's to issue —
--- see CHRN-32 §1.1, which named CHRN-41 as the ticket that hits the question
--- hardest. Nothing here grants anything.
+-- CHRN-41 HAS SHIPPED, AND IT DECIDED THE OTHER WAY. This note used to say
+-- that CHRN-41's index would read these tables as chronicle_tier1 and would
+-- therefore need GRANT SELECT — CHRN-41's to raise and CHRN-52's to issue, per
+-- CHRN-32 §1.1, which named CHRN-41 as the ticket that hits the question
+-- hardest.
+--
+-- 0012_search.up.sql:21-24 DISSOLVED that question rather than answering it: a
+-- Postgres expression index is an access path on the table it is on, maintained
+-- by the server inside the same transaction as the write, so nothing in 0012 or
+-- in Store.Search runs as chronicle_tier1 and no GRANT was added. 0007:53
+-- remains the only tier-2 table grant in any migration, and tier2.notes is not
+-- in it — which is what makes the paragraph above still true HERE.
+--
+-- So a GRANT on tier2.notes or tier2.note_revisions is an OPEN QUESTION rather
+-- than an expected step, and REVIEW.md §1 applies to one at full weight. If a
+-- later ticket wants derived search artefacts that are ROWS — extracted
+-- entities, embeddings, a ranking cache — it meets the question again,
+-- unchanged and undecided. Nothing here grants anything.
 REVOKE ALL ON tier2.notes, tier2.note_revisions FROM chronicle_tier1;
 REVOKE ALL ON SEQUENCE tier2.note_number_seq FROM chronicle_tier1;
