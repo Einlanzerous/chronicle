@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -57,6 +58,23 @@ func TestARevisionNeedsAConfirmingPerson(t *testing.T) {
 	if !errors.Is(err, ErrConfirmerRequired) {
 		t.Errorf("AppendRevision with no confirmer = %v, want ErrConfirmerRequired", err)
 	}
+	// A caller that supplied nobody is told so, rather than told its nobody
+	// is not a person.
+	if err == nil || !strings.Contains(err.Error(), "no actor was supplied") {
+		t.Errorf("no-confirmer message = %v, want it to say nobody was supplied", err)
+	}
+
+	// THE TRIGGER'S OWN NULL ARM, which Go no longer reaches: it is the
+	// defence for a direct writer, and it must say the right thing too.
+	_, err = s.Pool().Exec(ctx, `
+		INSERT INTO tier2.note_revisions (note_id, seq, title, body, author_id)
+		VALUES ($1, 2, 't', 'b', $2)`, n.ID, author)
+	if got := sqlState(err); got != pgConfirmerRequired {
+		t.Errorf("NULL confirmed_by SQLSTATE = %q (%v), want %s", got, err, pgConfirmerRequired)
+	}
+	if err == nil || !strings.Contains(err.Error(), "needs a confirming person") {
+		t.Errorf("NULL confirmed_by message = %v, want the 'needs a confirming person' arm", err)
+	}
 }
 
 // An agent may be the AUTHOR — for a Scribe-routed memo it legitimately is —
@@ -72,6 +90,9 @@ func TestAnAgentCannotConfirmButCanAuthor(t *testing.T) {
 	})
 	if !errors.Is(err, ErrConfirmerRequired) {
 		t.Errorf("agent as confirmer = %v, want ErrConfirmerRequired", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "not by an agent") {
+		t.Errorf("agent-confirmer message = %v, want the 'not by an agent' arm", err)
 	}
 
 	// The mirror image: agent authors, person confirms. This is the shape a
@@ -499,7 +520,15 @@ func TestDeleteAndUndeleteAreJournaled(t *testing.T) {
 	page, author := notePage(t, s, ctx, "journal@example.com")
 	restorer := person(t, s, ctx, "restorer@example.com")
 
-	n := mkNote(t, s, ctx, page, author, "Naming", "body")
+	// n is the note that comes back, and it is set up to appear on every
+	// read surface: on the page, in search (a word nothing else says), as a
+	// BACKLINK SOURCE (the filter is on the note holding the reference, so n
+	// must be the one pointing), and under a tag.
+	target := mkNote(t, s, ctx, page, author, "Target", "the target")
+	n := mkNote(t, s, ctx, page, author, "Naming", "the chiffchaff note, see "+target.Ref())
+	if err := s.TagNote(ctx, n.ID, "birds"); err != nil {
+		t.Fatalf("TagNote: %v", err)
+	}
 	before, err := s.NoteRevisions(ctx, n.ID)
 	if err != nil {
 		t.Fatalf("NoteRevisions: %v", err)
@@ -543,14 +572,107 @@ func TestDeleteAndUndeleteAreJournaled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NotesOnPage: %v", err)
 	}
-	var found bool
-	for _, g := range onPage {
-		if g.ID == n.ID {
-			found = true
+	if !hasNote(onPage, n.ID) {
+		t.Error("NotesOnPage does not list the undeleted note")
+	}
+	hits, err := s.Search(ctx, "chiffchaff", 10)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	var searched bool
+	for _, h := range hits {
+		if h.NoteID != nil && *h.NoteID == n.ID {
+			searched = true
 		}
 	}
-	if !found {
-		t.Error("NotesOnPage does not list the undeleted note")
+	if !searched {
+		t.Error("Search does not return the undeleted note")
+	}
+	back, err := s.Backlinks(ctx, target.Number)
+	if err != nil {
+		t.Fatalf("Backlinks: %v", err)
+	}
+	var linked bool
+	for _, b := range back {
+		if b.NoteID == n.ID {
+			linked = true
+		}
+	}
+	if !linked {
+		t.Error("Backlinks does not list the undeleted note as a source")
+	}
+	tagged, err := s.NotesByTag(ctx, "birds")
+	if err != nil {
+		t.Fatalf("NotesByTag: %v", err)
+	}
+	if !hasNote(tagged, n.ID) {
+		t.Error("NotesByTag does not list the undeleted note")
+	}
+}
+
+func hasNote(notes []Note, id uuid.UUID) bool {
+	for _, n := range notes {
+		if n.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// tier2.notes.deleted_at/deleted_by and tier2.note_deletions must agree. The
+// store writes both in one transaction; these are the defences for a writer
+// that does not go through the store.
+func TestTheNoteRowAndTheJournalCannotDisagree(t *testing.T) {
+	s, ctx := newTestStore(t)
+	page, author := notePage(t, s, ctx, "agree@example.com")
+	other := person(t, s, ctx, "other@example.com")
+
+	// 1 · The pair cannot be rewritten while set — only cleared. Without
+	// this a direct UPDATE could name a deleter the journal never recorded.
+	n := mkNote(t, s, ctx, page, author, "Naming", "body")
+	if err := s.SoftDeleteNote(ctx, n.ID, author); err != nil {
+		t.Fatalf("SoftDeleteNote: %v", err)
+	}
+	_, err := s.Pool().Exec(ctx,
+		`UPDATE tier2.notes SET deleted_at = now(), deleted_by = $2 WHERE id = $1`, n.ID, other)
+	if got := sqlState(err); got != pgNoteDeleted {
+		t.Errorf("rewrite of the deletion pair SQLSTATE = %q (%v), want %s", got, err, pgNoteDeleted)
+	}
+	got, err := s.NoteByID(ctx, n.ID)
+	if err != nil {
+		t.Fatalf("NoteByID: %v", err)
+	}
+	if got.DeletedBy == nil || *got.DeletedBy != author {
+		t.Errorf("deleted_by = %v after a refused rewrite, want %v", got.DeletedBy, author)
+	}
+
+	// 2 · A note is not born deleted: an INSERT with the pair set would skip
+	// the person test and the journal alike.
+	_, err = s.Pool().Exec(ctx, `
+		INSERT INTO tier2.notes (id, page_id, current_revision_id, author_id, deleted_at, deleted_by)
+		VALUES (gen_random_uuid(), $1, gen_random_uuid(), $2, now(), $2)`, page, author)
+	if got := sqlState(err); got != pgNoteDeleted {
+		t.Errorf("born-deleted INSERT SQLSTATE = %q (%v), want %s", got, err, pgNoteDeleted)
+	}
+
+	// 3 · An undelete that would close nothing is refused, and the note stays
+	// deleted rather than half-restored. The only way to reach this is a
+	// delete written outside the store, which is what this UPDATE is.
+	m := mkNote(t, s, ctx, page, author, "Unjournaled", "body")
+	if _, err := s.Pool().Exec(ctx,
+		`UPDATE tier2.notes SET deleted_at = now(), deleted_by = $2 WHERE id = $1`, m.ID, author); err != nil {
+		t.Fatalf("direct delete: %v", err)
+	}
+	err = s.UndeleteNote(ctx, m.ID, author)
+	if !errors.Is(err, ErrDeletionUnjournaled) {
+		t.Errorf("undelete with no journal record = %v, want ErrDeletionUnjournaled", err)
+	}
+	still, err := s.NoteByID(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("NoteByID: %v", err)
+	}
+	if !still.Deleted() {
+		t.Error("an undelete that closed no record still cleared the note row")
 	}
 }
 

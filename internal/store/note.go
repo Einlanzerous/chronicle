@@ -54,6 +54,25 @@ var ErrRewind = errors.New("store: a note cannot be moved back to an earlier rev
 // unattended, and an agent is never a valid confirmer.
 var ErrConfirmerRequired = errors.New("store: authored text needs a confirming person")
 
+// ErrDeletionUnjournaled is returned by UndeleteNote when tier2.notes says a
+// note is deleted and tier2.note_deletions has no open record of it. The store
+// writes both in one transaction, so this is only reachable when something
+// else wrote the note row — and undeleting it silently would close nothing and
+// leave the journal claiming the note was never gone.
+var ErrDeletionUnjournaled = errors.New("store: a note is deleted with no open deletion record")
+
+// requireActor is a message, not the enforcement. The triggers refuse a nil or
+// agent actor regardless (CH041); this exists because a zero uuid.UUID is a
+// caller that supplied NOBODY, and without it that reaches the trigger as
+// 00000000-… and is reported as "not a person" — true, and misleading. CHRN-67
+// will be wiring these actors and should be told which mistake it made.
+func requireActor(id uuid.UUID) error {
+	if id == uuid.Nil {
+		return fmt.Errorf("%w: no actor was supplied", ErrConfirmerRequired)
+	}
+	return nil
+}
+
 // Note-guard SQLSTATEs. CH030 and CH040 are 0011's; the rest are 0014's.
 const (
 	pgNoteIdentity        = "CH030"
@@ -257,6 +276,9 @@ func scanRevision(row pgx.Row) (NoteRevision, error) {
 // Generating both ids here and leaning on the two DEFERRABLE foreign keys
 // makes "a note with no current revision" unrepresentable instead.
 func (s *Store) CreateNote(ctx context.Context, in NewNote) (Note, NoteRevision, error) {
+	if err := requireActor(in.ConfirmedBy); err != nil {
+		return Note{}, NoteRevision{}, err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Note{}, NoteRevision{}, fmt.Errorf("store: create note: %w", err)
@@ -312,6 +334,9 @@ func (s *Store) CreateNote(ctx context.Context, in NewNote) (Note, NoteRevision,
 // supersede / relate), what each does to history, and the rule that nothing
 // appends to authored text unattended.
 func (s *Store) AppendRevision(ctx context.Context, noteID uuid.UUID, in NewRevision) (NoteRevision, error) {
+	if err := requireActor(in.ConfirmedBy); err != nil {
+		return NoteRevision{}, err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return NoteRevision{}, fmt.Errorf("store: append revision: %w", err)
@@ -469,6 +494,9 @@ func (s *Store) NotesOnPage(ctx context.Context, pageID uuid.UUID) ([]Note, erro
 // words are these" and the words are unchanged. confirmedBy answers who agreed
 // to them landing again, which is the part that is new.
 func (s *Store) RestoreRevision(ctx context.Context, noteID, revisionID, confirmedBy uuid.UUID) (NoteRevision, error) {
+	if err := requireActor(confirmedBy); err != nil {
+		return NoteRevision{}, err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return NoteRevision{}, fmt.Errorf("store: restore revision: %w", err)
@@ -542,10 +570,15 @@ func (s *Store) RestoreRevision(ctx context.Context, noteID, revisionID, confirm
 // IDEMPOTENT, AND IT DOES NOT OVERWRITE. Deleting an already-deleted note is a
 // no-op rather than an error — the house pattern TagNote sets — but crucially
 // it leaves the original deleted_at and deleted_by alone, so a second caller
-// cannot quietly become the recorded deleter. 0014's note_deletions_open
-// partial unique index makes that a property of the database rather than a
-// promise this function keeps.
+// cannot quietly become the recorded deleter. That is a property of the
+// database rather than a promise this function keeps, on both tables: 0014's
+// note_deletions_open partial unique index refuses a second open journal row,
+// and notes_guard's CH033 refuses rewriting the pair on the note row while it
+// is set.
 func (s *Store) SoftDeleteNote(ctx context.Context, noteID, deletedBy uuid.UUID) error {
+	if err := requireActor(deletedBy); err != nil {
+		return err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("store: soft delete note: %w", err)
@@ -593,15 +626,20 @@ func (s *Store) SoftDeleteNote(ctx context.Context, noteID, deletedBy uuid.UUID)
 // exactly the property RestoreRevision refuses for revisions. Idempotent for
 // the same reason SoftDeleteNote is.
 func (s *Store) UndeleteNote(ctx context.Context, noteID, undeletedBy uuid.UUID) error {
+	if err := requireActor(undeletedBy); err != nil {
+		return err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("store: undelete note: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	var number int64
 	var deletedAt *time.Time
 	err = tx.QueryRow(ctx,
-		`SELECT deleted_at FROM tier2.notes WHERE id = $1 FOR UPDATE`, noteID).Scan(&deletedAt)
+		`SELECT number, deleted_at FROM tier2.notes WHERE id = $1 FOR UPDATE`,
+		noteID).Scan(&number, &deletedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -616,12 +654,21 @@ func (s *Store) UndeleteNote(ctx context.Context, noteID, undeletedBy uuid.UUID)
 	// note_deletions_guard) refuses the whole transaction before the note is
 	// visible again. notes_guard cannot make that check — the undelete sets
 	// notes.deleted_by to NULL, so there is no new value there to test.
-	if _, err := tx.Exec(ctx, `
+	closed, err := tx.Exec(ctx, `
 		UPDATE tier2.note_deletions
 		   SET undeleted_at = now(), undeleted_by = $2
 		 WHERE note_id = $1 AND undeleted_at IS NULL`,
-		noteID, undeletedBy); err != nil {
+		noteID, undeletedBy)
+	if err != nil {
 		return noteError(err)
+	}
+	// EXACTLY ONE, and it is checked. note_deletions_open guarantees at most
+	// one open record; this guarantees at least one. A note row that says
+	// deleted with nothing open in the journal was not written by this store,
+	// and undeleting it anyway would clear the row while the journal goes on
+	// saying the note was never gone.
+	if closed.RowsAffected() != 1 {
+		return fmt.Errorf("%w: %s", ErrDeletionUnjournaled, FormatNoteRef(number))
 	}
 
 	if _, err := tx.Exec(ctx,

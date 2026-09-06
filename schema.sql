@@ -327,18 +327,34 @@ BEGIN
                 USING ERRCODE = 'CH031';
         END IF;
 
-        -- A DELETED NOTE IS NOT EDITABLE. Undelete first — which is itself
-        -- recorded, in tier2.note_deletions. Without this an agent holding a
-        -- CHRN-67 write scope can go on editing a note nobody can see, and
-        -- every read surface filters it out so nobody would.
+        -- A DELETED NOTE IS NOT EDITABLE, AND ITS DELETION PAIR IS NOT
+        -- REWRITABLE. Undelete first — which is itself recorded, in
+        -- tier2.note_deletions.
         --
-        -- Note this permits the undelete itself: that UPDATE touches only
-        -- deleted_at and deleted_by, neither of which is tested here.
-        IF OLD.deleted_at IS NOT NULL
-        AND (NEW.current_revision_id IS DISTINCT FROM OLD.current_revision_id
-          OR NEW.page_id             IS DISTINCT FROM OLD.page_id) THEN
-            RAISE EXCEPTION 'note % is deleted: undelete it before writing to it', OLD.number
-                USING ERRCODE = 'CH033';
+        -- The first arm is for an agent holding a CHRN-67 write scope: without
+        -- it, it can go on editing a note nobody can see, and every read
+        -- surface filters it out so nobody would.
+        --
+        -- The second arm is for a direct writer. The store keeps this row and
+        -- the journal in step by writing both in one transaction, but that is
+        -- a promise Go keeps; an UPDATE that replaced deleted_at or deleted_by
+        -- on an already-deleted note would leave this row naming a deleter the
+        -- journal never heard of. So while deleted, the ONLY accepted change
+        -- to the pair is clearing it — the undelete — which is what makes
+        -- "a second caller cannot become the recorded deleter" a property of
+        -- the database on this table too, not only on the journal.
+        IF OLD.deleted_at IS NOT NULL THEN
+            IF NEW.current_revision_id IS DISTINCT FROM OLD.current_revision_id
+            OR NEW.page_id             IS DISTINCT FROM OLD.page_id THEN
+                RAISE EXCEPTION 'note % is deleted: undelete it before writing to it', OLD.number
+                    USING ERRCODE = 'CH033';
+            END IF;
+            IF NEW.deleted_at IS NOT NULL
+            AND (NEW.deleted_at IS DISTINCT FROM OLD.deleted_at
+              OR NEW.deleted_by IS DISTINCT FROM OLD.deleted_by) THEN
+                RAISE EXCEPTION 'note % is already deleted: its deletion pair is not rewritable, only cleared', OLD.number
+                    USING ERRCODE = 'CH033';
+            END IF;
         END IF;
 
         -- FORWARD ONLY (ruling 1). A restore APPENDS a new revision carrying
@@ -382,6 +398,16 @@ BEGIN
         -- As memos_guard, transcripts_guard and memo_links_guard all do.
         -- Without it, updated_at is a column nothing maintains.
         NEW.updated_at := now();
+    END IF;
+
+    -- A NOTE IS NOT BORN DELETED. Deletion is an act on a note that already
+    -- exists, done by a person and journaled; an INSERT arriving with the pair
+    -- already set would skip the person test above (which reads OLD) and the
+    -- journal alike. CreateNote never does this — the arm is for a direct
+    -- writer, and it is the INSERT-side twin of the rewrite refusal above.
+    IF TG_OP = 'INSERT' AND NEW.deleted_at IS NOT NULL THEN
+        RAISE EXCEPTION 'a note is not created deleted: delete it after it exists, so the deletion is journaled'
+            USING ERRCODE = 'CH033';
     END IF;
     RETURN NEW;
 END
