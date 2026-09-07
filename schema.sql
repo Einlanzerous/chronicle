@@ -82,6 +82,203 @@ $$;
 
 
 --
+-- Name: discussion_participants_guard(); Type: FUNCTION; Schema: tier2; Owner: -
+--
+
+CREATE FUNCTION tier2.discussion_participants_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    changed TEXT;
+BEGIN
+    IF TG_OP = 'UPDATE' THEN
+        SELECT string_agg(n.key, ', ' ORDER BY n.key) INTO changed
+          FROM jsonb_each(to_jsonb(NEW)) n
+          JOIN jsonb_each(to_jsonb(OLD)) o ON o.key = n.key
+         WHERE n.value IS DISTINCT FROM o.value
+           AND n.key <> ALL (ARRAY['removed_at', 'removed_by']);
+        IF changed IS NOT NULL THEN
+            RAISE EXCEPTION
+                'tier2.discussion_participants permits updating removed_at, removed_by only; added_at and added_by mean FIRST added; refused: %',
+                changed
+                USING ERRCODE = 'CH100',
+                      CONSTRAINT = 'discussion_participants_update_allow_list';
+        END IF;
+    END IF;
+
+    -- A PERSON ADDS AND A PERSON REMOVES. Membership decides who is expected
+    -- to read a thread, and an agent quietly removing a person from a
+    -- conversation is the shape CH041 exists to refuse one table over. Both
+    -- ends, because an INSERT-only test would leave the removal half reading
+    -- as enforced while doing nothing — 0014:378-384's failure, named there.
+    --
+    -- CONSTRAINT named for CH080's reason, one function up.
+    IF NOT EXISTS (SELECT 1 FROM tier2.users
+                    WHERE id = NEW.added_by AND kind = 'person') THEN
+        RAISE EXCEPTION 'a participant is added by a person, not by an agent'
+            USING ERRCODE = 'CH100',
+                  CONSTRAINT = 'discussion_participants_actor_is_a_person';
+    END IF;
+    IF NEW.removed_by IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM tier2.users
+                     WHERE id = NEW.removed_by AND kind = 'person') THEN
+        RAISE EXCEPTION 'a participant is removed by a person, not by an agent'
+            USING ERRCODE = 'CH100',
+                  CONSTRAINT = 'discussion_participants_actor_is_a_person';
+    END IF;
+
+    RETURN NEW;
+END
+$$;
+
+
+--
+-- Name: discussion_turns_guard(); Type: FUNCTION; Schema: tier2; Owner: -
+--
+
+CREATE FUNCTION tier2.discussion_turns_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    kind      TEXT;
+    prev_kind TEXT;
+    resolved  TIMESTAMPTZ;
+    thread    BIGINT;
+BEGIN
+    IF TG_OP IN ('UPDATE', 'DELETE') THEN
+        RAISE EXCEPTION 'a discussion turn is insert-only: % is refused; a correction is another turn', TG_OP
+            USING ERRCODE = 'CH090';
+    END IF;
+
+    -- CH092 — author_kind IS THE TRIGGER'S TO SET. The column is NOT NULL with
+    -- no default, so a caller that omits it arrives here with NULL and a
+    -- caller that supplied one arrives with a value. That is the whole test,
+    -- and it is only available because NOT NULL is checked after BEFORE
+    -- triggers run.
+    IF NEW.author_kind IS NOT NULL THEN
+        RAISE EXCEPTION 'author_kind is derived from the author''s account, not supplied by the caller'
+            USING ERRCODE = 'CH092';
+    END IF;
+
+    SELECT u.kind INTO kind FROM tier2.users u WHERE u.id = NEW.author_id;
+    IF kind IS NULL THEN
+        -- The foreign key owns this question, but it is checked at the end of
+        -- the statement — AFTER the NOT NULL on author_kind, which would
+        -- otherwise report a missing author as a null-constraint failure on a
+        -- column the caller is forbidden to set. Raising 23503 here gives the
+        -- store the same SQLSTATE it already maps to ErrNotFound (note.go:755).
+        RAISE EXCEPTION 'no such author: %', NEW.author_id
+            USING ERRCODE = '23503';
+    END IF;
+    NEW.author_kind := kind;
+
+    -- CH093 — RULING 6. Free, because AppendTurn already holds this row.
+    SELECT d.resolved_at, d.number INTO resolved, thread
+      FROM tier2.discussions d WHERE d.id = NEW.discussion_id;
+    IF resolved IS NOT NULL THEN
+        RAISE EXCEPTION 'discussion %: resolved on %, and a resolved thread takes no more turns; open a new one citing it',
+            thread, resolved
+            USING ERRCODE = 'CH093';
+    END IF;
+
+    -- CH091 — RULING 3. Reads the PRECEDING TURN'S OWN author_kind, with no
+    -- join to tier2.users and so no dependency on a mutable column. seq 1
+    -- finds nothing, which refuses an agent opening a thread.
+    IF NEW.author_kind = 'agent' THEN
+        SELECT t.author_kind INTO prev_kind
+          FROM tier2.discussion_turns t
+         WHERE t.discussion_id = NEW.discussion_id AND t.seq = NEW.seq - 1;
+        IF prev_kind IS DISTINCT FROM 'person' THEN
+            RAISE EXCEPTION
+                'an agent turn must follow a person''s turn: discussion % seq % would follow %',
+                thread, NEW.seq, COALESCE(prev_kind, 'nothing')
+                USING ERRCODE = 'CH091';
+        END IF;
+    END IF;
+
+    RETURN NEW;
+END
+$$;
+
+
+--
+-- Name: discussions_guard(); Type: FUNCTION; Schema: tier2; Owner: -
+--
+
+CREATE FUNCTION tier2.discussions_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    changed TEXT;
+BEGIN
+    IF TG_OP = 'UPDATE' THEN
+        -- THE ALLOW LIST. Written over to_jsonb(NEW) rather than as a list of
+        -- IF statements for 0014:206-208's reason: a column that does not
+        -- exist yet still has to be caught.
+        SELECT string_agg(n.key, ', ' ORDER BY n.key) INTO changed
+          FROM jsonb_each(to_jsonb(NEW)) n
+          JOIN jsonb_each(to_jsonb(OLD)) o ON o.key = n.key
+         WHERE n.value IS DISTINCT FROM o.value
+           AND n.key <> ALL (ARRAY['title', 'page_id',
+                                   'resolved_at', 'resolved_by', 'resolved_note_id']);
+        IF changed IS NOT NULL THEN
+            RAISE EXCEPTION
+                'tier2.discussions permits updating title, page_id and the resolution triple only; refused: %',
+                changed
+                USING ERRCODE = 'CH080',
+                      CONSTRAINT = 'discussions_update_allow_list';
+        END IF;
+
+        -- SET ONCE, FROM NULL. Covers clearing and rewriting in one clause,
+        -- per column, so a resolution can be COMPLETED (a note linked later)
+        -- but never revised or withdrawn.
+        IF (OLD.resolved_at IS NOT NULL AND NEW.resolved_at IS DISTINCT FROM OLD.resolved_at)
+        OR (OLD.resolved_by IS NOT NULL AND NEW.resolved_by IS DISTINCT FROM OLD.resolved_by)
+        OR (OLD.resolved_note_id IS NOT NULL
+            AND NEW.resolved_note_id IS DISTINCT FROM OLD.resolved_note_id) THEN
+            RAISE EXCEPTION
+                'discussion %: a resolution is recorded once and is not rewritten or withdrawn',
+                OLD.number
+                USING ERRCODE = 'CH080',
+                      CONSTRAINT = 'discussions_resolution_once';
+        END IF;
+    END IF;
+
+    -- A PERSON RESOLVES A THREAD. The same rule CH041 states about a note's
+    -- confirmer and deleter, for the same reason: resolving decides what a
+    -- conversation concluded and writes it into the corpus, and no agent does
+    -- that unattended. CHRN-46 passes the actor; CHRN-67 may argue for more.
+    --
+    -- TESTED ON INSERT TOO, not only on UPDATE. A row that arrived already
+    -- resolved would otherwise skip this entirely — the same hole 0014:316-324
+    -- closes for a note born deleted. A discussion born resolved is not itself
+    -- forbidden (OpenDiscussion never writes one, and the plan does not ask
+    -- for the rule), but it does not get to name an agent.
+    --
+    -- THE CONSTRAINT NAME IS WHAT MAKES THIS ARM DISTINGUISHABLE IN GO. Both
+    -- arms of CH080 are CH080 because the plan's error table says so and
+    -- criterion 18 asserts it — but "you named an agent" and "that resolution
+    -- is already recorded" are different answers a handler owes a caller (403
+    -- against 409), and reading them apart by matching the message text would
+    -- be a string comparison against a sentence. RAISE ... USING CONSTRAINT
+    -- puts the distinction in pgconn.PgError.ConstraintName, which note.go:752
+    -- already reads for note_revisions_memo.
+    IF NEW.resolved_by IS NOT NULL
+    AND (TG_OP = 'INSERT' OR NEW.resolved_by IS DISTINCT FROM OLD.resolved_by) THEN
+        IF NOT EXISTS (SELECT 1 FROM tier2.users
+                        WHERE id = NEW.resolved_by AND kind = 'person') THEN
+            RAISE EXCEPTION 'a discussion is resolved by a person, not by an agent'
+                USING ERRCODE = 'CH080',
+                      CONSTRAINT = 'discussions_resolver_is_a_person';
+        END IF;
+    END IF;
+
+    RETURN NEW;
+END
+$$;
+
+
+--
 -- Name: memo_links_guard(); Type: FUNCTION; Schema: tier2; Owner: -
 --
 
@@ -681,6 +878,120 @@ COMMENT ON TABLE tier1.watch_seen IS 'CHRN-19. What the Copyparty watcher has al
 
 
 --
+-- Name: discussion_number_seq; Type: SEQUENCE; Schema: tier2; Owner: -
+--
+
+CREATE SEQUENCE tier2.discussion_number_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: discussion_participants; Type: TABLE; Schema: tier2; Owner: -
+--
+
+CREATE TABLE tier2.discussion_participants (
+    discussion_id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    added_at timestamp with time zone DEFAULT now() NOT NULL,
+    added_by uuid NOT NULL,
+    removed_at timestamp with time zone,
+    removed_by uuid,
+    CONSTRAINT discussion_participants_removed_pair CHECK (((removed_at IS NULL) = (removed_by IS NULL)))
+);
+
+
+--
+-- Name: TABLE discussion_participants; Type: COMMENT; Schema: tier2; Owner: -
+--
+
+COMMENT ON TABLE tier2.discussion_participants IS 'CHRN-43 / CHRN-44. Who is expected to READ a thread — CHRN-45''s question, not "who may write". Current state rather than a journal: a removed participant''s turns still render, so nothing is lost by not keeping the add/remove history. added_at and added_by are frozen and mean FIRST added.';
+
+
+--
+-- Name: discussion_turns; Type: TABLE; Schema: tier2; Owner: -
+--
+
+CREATE TABLE tier2.discussion_turns (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    discussion_id uuid NOT NULL,
+    seq integer NOT NULL,
+    author_id uuid NOT NULL,
+    author_kind text NOT NULL,
+    body text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    composed_at timestamp with time zone,
+    memo_id uuid,
+    CONSTRAINT discussion_turns_author_kind_check CHECK ((author_kind = ANY (ARRAY['person'::text, 'agent'::text]))),
+    CONSTRAINT discussion_turns_body_not_blank CHECK ((btrim(body) <> ''::text)),
+    CONSTRAINT discussion_turns_seq_positive CHECK ((seq >= 1))
+);
+
+
+--
+-- Name: TABLE discussion_turns; Type: COMMENT; Schema: tier2; Owner: -
+--
+
+COMMENT ON TABLE tier2.discussion_turns IS 'CHRN-43. One thing said in a thread. INSERT-ONLY (CH090): a conversation whose turns can be edited is a record that lies, and a correction is another turn. Ordered by seq, which the server assigns under the thread''s row lock; created_at is arrival and composed_at is the client''s claim, and neither orders anything.';
+
+
+--
+-- Name: COLUMN discussion_turns.author_kind; Type: COMMENT; Schema: tier2; Owner: -
+--
+
+COMMENT ON COLUMN tier2.discussion_turns.author_kind IS 'CHRN-43, ruling 5. The author''s kind AT THE TIME THE TURN WAS WRITTEN, set by discussion_turns_guard from tier2.users.kind and refused from a caller (CH092). Denormalised on purpose: CH091 is a safety rule and tier2.users.kind is mutable, so reading it live would let an account edit rewrite the verdict on turns already written.';
+
+
+--
+-- Name: COLUMN discussion_turns.composed_at; Type: COMMENT; Schema: tier2; Owner: -
+--
+
+COMMENT ON COLUMN tier2.discussion_turns.composed_at IS 'CHRN-43. When the client says this was written, for the phone that was offline for six hours. ADVISORY: unverifiable, nullable, and never sorted on — seq is arrival order and is the only ordering.';
+
+
+--
+-- Name: discussions; Type: TABLE; Schema: tier2; Owner: -
+--
+
+CREATE TABLE tier2.discussions (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    number bigint DEFAULT nextval('tier2.discussion_number_seq'::regclass) NOT NULL,
+    page_id uuid,
+    title text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    resolved_at timestamp with time zone,
+    resolved_by uuid,
+    resolved_note_id uuid,
+    CONSTRAINT discussions_note_needs_resolution CHECK (((resolved_note_id IS NULL) OR (resolved_at IS NOT NULL))),
+    CONSTRAINT discussions_resolved_pair CHECK (((resolved_at IS NULL) = (resolved_by IS NULL)))
+);
+
+
+--
+-- Name: TABLE discussions; Type: COMMENT; Schema: tier2; Owner: -
+--
+
+COMMENT ON TABLE tier2.discussions IS 'CHRN-43. One threaded conversation, addressed as DSC-####. Tier 2 — what people said, derivable from nothing. The turns are tier2.discussion_turns; the thread''s product, if it has one, is resolved_note_id.';
+
+
+--
+-- Name: COLUMN discussions.number; Type: COMMENT; Schema: tier2; Owner: -
+--
+
+COMMENT ON COLUMN tier2.discussions.number IS 'CHRN-43, ruling 2. The permanent handle, rendered DSC-0007. Sequence-allocated on tier2.note_number_seq''s rules: never reused, gaps correct, four digits as a minimum width rather than a cap.';
+
+
+--
+-- Name: COLUMN discussions.resolved_note_id; Type: COMMENT; Schema: tier2; Owner: -
+--
+
+COMMENT ON COLUMN tier2.discussions.resolved_note_id IS 'CHRN-43, ruling 4. The note this thread produced, new or pre-existing. It is also the PROVENANCE of the revision that resolution wrote: that revision carries verb NULL, and this column is what says where it came from — the shape 0014 already uses for a restore.';
+
+
+--
 -- Name: memo_arrivals; Type: TABLE; Schema: tier2; Owner: -
 --
 
@@ -832,7 +1143,7 @@ COMMENT ON COLUMN tier2.note_revisions.confirmed_by IS 'CHRN-39. Who agreed to t
 -- Name: COLUMN note_revisions.verb; Type: COMMENT; Schema: tier2; Owner: -
 --
 
-COMMENT ON COLUMN tier2.note_revisions.verb IS 'CHRN-39. What a person confirmed about a Scribe proposal: create, append, supersede or relate. NULL means authored directly.';
+COMMENT ON COLUMN tier2.note_revisions.verb IS 'CHRN-39. What a person confirmed about a Scribe proposal: create, append, supersede or relate. NULL means authored directly — or, since CHRN-43, written by resolving a discussion, where tier2.discussions.resolved_note_id is the provenance.';
 
 
 --
@@ -1021,6 +1332,46 @@ ALTER TABLE ONLY tier1.triage_holds
 
 ALTER TABLE ONLY tier1.watch_seen
     ADD CONSTRAINT watch_seen_pkey PRIMARY KEY (path);
+
+
+--
+-- Name: discussion_participants discussion_participants_pkey; Type: CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.discussion_participants
+    ADD CONSTRAINT discussion_participants_pkey PRIMARY KEY (discussion_id, user_id);
+
+
+--
+-- Name: discussion_turns discussion_turns_discussion_id_seq_key; Type: CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.discussion_turns
+    ADD CONSTRAINT discussion_turns_discussion_id_seq_key UNIQUE (discussion_id, seq);
+
+
+--
+-- Name: discussion_turns discussion_turns_pkey; Type: CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.discussion_turns
+    ADD CONSTRAINT discussion_turns_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: discussions discussions_number_key; Type: CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.discussions
+    ADD CONSTRAINT discussions_number_key UNIQUE (number);
+
+
+--
+-- Name: discussions discussions_pkey; Type: CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.discussions
+    ADD CONSTRAINT discussions_pkey PRIMARY KEY (id);
 
 
 --
@@ -1252,6 +1603,27 @@ CREATE INDEX watch_seen_content_hash ON tier1.watch_seen USING btree (content_ha
 
 
 --
+-- Name: discussion_turns_memo; Type: INDEX; Schema: tier2; Owner: -
+--
+
+CREATE UNIQUE INDEX discussion_turns_memo ON tier2.discussion_turns USING btree (memo_id) WHERE (memo_id IS NOT NULL);
+
+
+--
+-- Name: discussions_page; Type: INDEX; Schema: tier2; Owner: -
+--
+
+CREATE INDEX discussions_page ON tier2.discussions USING btree (page_id);
+
+
+--
+-- Name: discussions_resolved_note; Type: INDEX; Schema: tier2; Owner: -
+--
+
+CREATE INDEX discussions_resolved_note ON tier2.discussions USING btree (resolved_note_id) WHERE (resolved_note_id IS NOT NULL);
+
+
+--
 -- Name: memo_arrivals_key; Type: INDEX; Schema: tier2; Owner: -
 --
 
@@ -1406,6 +1778,27 @@ CREATE TRIGGER memo_proposals_guard BEFORE UPDATE ON tier1.memo_proposals FOR EA
 
 
 --
+-- Name: discussion_participants discussion_participants_guard; Type: TRIGGER; Schema: tier2; Owner: -
+--
+
+CREATE TRIGGER discussion_participants_guard BEFORE INSERT OR UPDATE ON tier2.discussion_participants FOR EACH ROW EXECUTE FUNCTION tier2.discussion_participants_guard();
+
+
+--
+-- Name: discussion_turns discussion_turns_guard; Type: TRIGGER; Schema: tier2; Owner: -
+--
+
+CREATE TRIGGER discussion_turns_guard BEFORE INSERT OR DELETE OR UPDATE ON tier2.discussion_turns FOR EACH ROW EXECUTE FUNCTION tier2.discussion_turns_guard();
+
+
+--
+-- Name: discussions discussions_guard; Type: TRIGGER; Schema: tier2; Owner: -
+--
+
+CREATE TRIGGER discussions_guard BEFORE INSERT OR UPDATE ON tier2.discussions FOR EACH ROW EXECUTE FUNCTION tier2.discussions_guard();
+
+
+--
 -- Name: memo_links memo_links_guard; Type: TRIGGER; Schema: tier2; Owner: -
 --
 
@@ -1459,6 +1852,86 @@ CREATE TRIGGER pages_guard BEFORE INSERT OR UPDATE ON tier2.pages FOR EACH ROW E
 --
 
 CREATE TRIGGER transcripts_guard BEFORE INSERT OR UPDATE ON tier2.transcripts FOR EACH ROW EXECUTE FUNCTION tier2.transcripts_guard();
+
+
+--
+-- Name: discussion_participants discussion_participants_added_by_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.discussion_participants
+    ADD CONSTRAINT discussion_participants_added_by_fkey FOREIGN KEY (added_by) REFERENCES tier2.users(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: discussion_participants discussion_participants_discussion_id_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.discussion_participants
+    ADD CONSTRAINT discussion_participants_discussion_id_fkey FOREIGN KEY (discussion_id) REFERENCES tier2.discussions(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: discussion_participants discussion_participants_removed_by_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.discussion_participants
+    ADD CONSTRAINT discussion_participants_removed_by_fkey FOREIGN KEY (removed_by) REFERENCES tier2.users(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: discussion_participants discussion_participants_user_id_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.discussion_participants
+    ADD CONSTRAINT discussion_participants_user_id_fkey FOREIGN KEY (user_id) REFERENCES tier2.users(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: discussion_turns discussion_turns_author_id_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.discussion_turns
+    ADD CONSTRAINT discussion_turns_author_id_fkey FOREIGN KEY (author_id) REFERENCES tier2.users(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: discussion_turns discussion_turns_discussion_id_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.discussion_turns
+    ADD CONSTRAINT discussion_turns_discussion_id_fkey FOREIGN KEY (discussion_id) REFERENCES tier2.discussions(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: discussion_turns discussion_turns_memo_id_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.discussion_turns
+    ADD CONSTRAINT discussion_turns_memo_id_fkey FOREIGN KEY (memo_id) REFERENCES tier2.memos(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: discussions discussions_page_id_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.discussions
+    ADD CONSTRAINT discussions_page_id_fkey FOREIGN KEY (page_id) REFERENCES tier2.pages(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: discussions discussions_resolved_by_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.discussions
+    ADD CONSTRAINT discussions_resolved_by_fkey FOREIGN KEY (resolved_by) REFERENCES tier2.users(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: discussions discussions_resolved_note_id_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.discussions
+    ADD CONSTRAINT discussions_resolved_note_id_fkey FOREIGN KEY (resolved_note_id) REFERENCES tier2.notes(id) ON DELETE RESTRICT;
 
 
 --
