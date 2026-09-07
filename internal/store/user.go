@@ -233,6 +233,81 @@ func (s *Store) GetOwner(ctx context.Context) (User, error) {
 	return u, nil
 }
 
+// ScribeEmail and ScribeDisplayName identify the built-in agent account —
+// CHRN-44, and the row `0002:19-22` was written for. That comment says the
+// whole reason tier2.users.kind exists is that "a locked IDEA-21 decision makes
+// the Scribe a participant in discussions rather than a process acting on
+// them", and until this ticket NOTHING CREATED THAT ROW. CHRN-47 cannot author
+// an agent turn without it.
+//
+// AN ADDRESS AT localhost, mirroring the owner's placeholder, because it is
+// deliberately not a mailbox: nothing is ever sent here and nobody signs in as
+// the Scribe. It is an identity for authorship, which is what `kind` means.
+const (
+	ScribeEmail       = "scribe@localhost"
+	ScribeDisplayName = "Scribe"
+)
+
+// ErrNotAnAgent is returned by EnsureAgent when the address it was asked to
+// claim already belongs to a person. Refusing is the only safe answer: silently
+// flipping a person's kind would rewrite what their existing authorship means,
+// and taking the row over would hand an account to a process.
+var ErrNotAnAgent = errors.New("store: that address already belongs to a person")
+
+// EnsureAgent returns the agent account at email, creating it if it is not
+// there. Idempotent, so boot may call it on every start.
+//
+// IT IS NOT SCRIBE-SPECIFIC, and that is the ticket's point rather than
+// generality for its own sake: "an agent is a participant, not a special case
+// bolted onto a human one." A second agent is a second row and nothing else.
+// Scribe is then just the well-known one.
+//
+// SEEDED AT BOOT AND NOT BY A MIGRATION, unlike the owner. Two reasons, and the
+// first is mechanical: migrations run downward as well as up, tier2.users is
+// dropped by 0002's down, and a seed migration landing after 0015 would have to
+// delete a row that discussion turns reference under ON DELETE RESTRICT — a
+// down that fails on a populated database. The second is that 0002's argument
+// for seeding in the migration ("so the row exists before anything can
+// reference it") does not transfer: nothing references the Scribe until a turn
+// is written, which is long after boot.
+func (s *Store) EnsureAgent(ctx context.Context, email, displayName string) (User, error) {
+	email = normalizeEmail(email)
+	if email == "" {
+		return User{}, fmt.Errorf("%w: email is required", ErrInvalidInput)
+	}
+	if displayName == "" {
+		displayName = email
+	}
+
+	existing, err := s.GetUserByEmail(ctx, email)
+	switch {
+	case err == nil && existing.Kind == KindAgent:
+		return existing, nil
+	case err == nil:
+		return existing, fmt.Errorf("%w: %s", ErrNotAnAgent, email)
+	case !errors.Is(err, ErrNotFound):
+		return User{}, err
+	}
+
+	u, err := s.CreateUser(ctx, email, displayName, KindAgent)
+	if errors.Is(err, ErrDuplicateEmail) {
+		// Another boot won the race. Read what it wrote rather than failing —
+		// and re-test the kind, because the winner might have been a person.
+		return s.EnsureAgent(ctx, email, displayName)
+	}
+	if err != nil {
+		return User{}, fmt.Errorf("store: ensure agent: %w", err)
+	}
+	return u, nil
+}
+
+// Scribe returns the built-in agent account, or ErrNotFound if boot has not
+// created it. Every agent turn in a discussion is authored as this account
+// until there is a second agent.
+func (s *Store) Scribe(ctx context.Context) (User, error) {
+	return s.GetUserByEmail(ctx, ScribeEmail)
+}
+
 // CountUsers reports how many accounts exist.
 func (s *Store) CountUsers(ctx context.Context) (int, error) {
 	var n int

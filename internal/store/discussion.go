@@ -181,6 +181,18 @@ type DiscussionParticipant struct {
 	DiscussionID uuid.UUID
 	UserID       uuid.UUID
 
+	// Kind and DisplayName are JOINED FROM tier2.users rather than stored here,
+	// which is the opposite of what a turn does and is right for the opposite
+	// reason (CHRN-44).
+	//
+	// A turn is HISTORY: it records who said something at a moment, so its
+	// author_kind is frozen at write time and a later account edit must not
+	// rewrite it. Membership is CURRENT STATE — "who is expected to read this,
+	// now" — so the current kind is the correct answer, and a frozen copy here
+	// would be the one that lied.
+	Kind        string
+	DisplayName string
+
 	// AddedAt and AddedBy mean FIRST added and are frozen by CH100: a re-add
 	// after a removal clears the removed pair and does not reattribute the
 	// original invitation.
@@ -193,6 +205,12 @@ type DiscussionParticipant struct {
 
 // Active reports whether the participant is currently on the thread.
 func (p DiscussionParticipant) Active() bool { return p.RemovedAt == nil }
+
+// IsAgent reports whether this participant is an agent — the Scribe, or
+// whatever else CHRN-67 admits. A renderer needs this to mark an agent as one
+// without a second query, which is what "first-class, not a special case
+// bolted on" means at the read surface.
+func (p DiscussionParticipant) IsAgent() bool { return p.Kind == KindAgent }
 
 // NewDiscussion opens a thread and its first turn together.
 type NewDiscussion struct {
@@ -298,11 +316,14 @@ func scanTurn(row pgx.Row) (DiscussionTurn, error) {
 	return t, nil
 }
 
-const participantColumns = `discussion_id, user_id, added_at, added_by, removed_at, removed_by`
+// participantColumns carries the join. u.kind and u.display_name are read live
+// — see DiscussionParticipant on why that is correct here and wrong on a turn.
+const participantColumns = `p.discussion_id, p.user_id, u.kind, u.display_name,
+	p.added_at, p.added_by, p.removed_at, p.removed_by`
 
 func participantDest(p *DiscussionParticipant) []any {
-	return []any{&p.DiscussionID, &p.UserID, &p.AddedAt, &p.AddedBy,
-		&p.RemovedAt, &p.RemovedBy}
+	return []any{&p.DiscussionID, &p.UserID, &p.Kind, &p.DisplayName,
+		&p.AddedAt, &p.AddedBy, &p.RemovedAt, &p.RemovedBy}
 }
 
 // OpenDiscussion writes a thread and its first turn in one transaction.
@@ -600,8 +621,10 @@ func (s *Store) RemoveParticipant(ctx context.Context, discussionID, userID, rem
 func (s *Store) Participants(ctx context.Context, discussionID uuid.UUID) ([]DiscussionParticipant, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT `+participantColumns+`
-		   FROM tier2.discussion_participants WHERE discussion_id = $1
-		  ORDER BY added_at, user_id`,
+		   FROM tier2.discussion_participants p
+		   JOIN tier2.users u ON u.id = p.user_id
+		  WHERE p.discussion_id = $1
+		  ORDER BY p.added_at, p.user_id`,
 		discussionID)
 	if err != nil {
 		return nil, fmt.Errorf("store: participants: %w", err)
