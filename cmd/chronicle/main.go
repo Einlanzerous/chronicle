@@ -217,6 +217,14 @@ func runServe(args []string) error {
 		return err
 	}
 
+	// And the Scribe, which is an ACCOUNT rather than a process (CHRN-44).
+	// Migration 0002 gave tier2.users a `kind` column for exactly this and
+	// seeded no agent to put in it, so until now the participant an entire
+	// epic is designed around did not exist.
+	if err := bootstrapScribe(ctx, st, logger); err != nil {
+		return err
+	}
+
 	// Announced rather than silent: with no proxy secret the sign-in limiter
 	// keys on Traefik's own address, so every browser and app request shares one
 	// bucket and a stranger hammering the direct host can lock the owner out.
@@ -668,6 +676,41 @@ func bootstrapOwner(ctx context.Context, st *store.Store, cfg config.Config, log
 		"invite_token", token,
 		"sign_in_url", invite.SignInURL(cfg.MobileBaseURL, token),
 		"expires_in", store.InviteTTL.String())
+	return nil
+}
+
+// bootstrapScribe makes sure the built-in agent account exists — CHRN-44.
+//
+// IT MINTS NOTHING, and the contrast with bootstrapOwner above is the point.
+// The owner gets an invite because a person has to sign in; the Scribe is an
+// identity for AUTHORSHIP and never signs in at all. `0002:19` says it in the
+// schema: "'agent' is not a permission level, it is an authorship fact."
+//
+// A CONFLICT IS A WARNING AND NOT A BOOT FAILURE. If somebody has taken
+// scribe@localhost as a person, refusing to start would take the whole service
+// down over an account name; the discussion surface degrades to human-only,
+// which is loud enough in the logs and recoverable by renaming that account.
+func bootstrapScribe(ctx context.Context, st *store.Store, logger *slog.Logger) error {
+	before, err := st.CountUsers(ctx)
+	if err != nil {
+		return fmt.Errorf("count users: %w", err)
+	}
+
+	scribe, err := st.EnsureAgent(ctx, store.ScribeEmail, store.ScribeDisplayName)
+	if errors.Is(err, store.ErrNotAnAgent) {
+		logger.Warn("the scribe address belongs to a person; agents cannot author discussion turns",
+			"address", store.ScribeEmail,
+			"remedy", "rename that account, then restart")
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("ensure scribe: %w", err)
+	}
+
+	// Announced only when it actually created the row, so a restart is quiet.
+	if after, err := st.CountUsers(ctx); err == nil && after > before {
+		logger.Info("created the scribe account", "id", scribe.ID, "address", scribe.Email)
+	}
 	return nil
 }
 
