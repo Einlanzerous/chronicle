@@ -493,23 +493,52 @@ func (s *Store) Turns(ctx context.Context, discussionID uuid.UUID) ([]Discussion
 // owns it. resolved_at and resolved_by are coalesced because a later call
 // linking a note would otherwise send its own now() and actor into that same
 // clause and be refused for a rewrite it never intended.
+//
+// AND THE COALESCE IS WHY THE ACTOR IS TESTED IN THE WHERE. CH080's person test
+// fires only when resolved_by CHANGES — which on a completion it does not,
+// because COALESCE keeps the original resolver. So on that path the trigger
+// never sees `by` at all, and an AGENT could link the note that says what a
+// conversation concluded. The trigger cannot close this: by the time it runs,
+// NEW.resolved_by is the person who resolved first.
+//
+// So the caller is tested where the caller is known, and still in SQL rather
+// than in Go — one EXISTS in the statement that does the write, so there is no
+// window between the check and the update.
 func (s *Store) ResolveDiscussion(ctx context.Context, id, by uuid.UUID, note *uuid.UUID) error {
 	if err := requireActor(by); err != nil {
 		return err
 	}
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE tier2.discussions
-		   SET resolved_at      = COALESCE(resolved_at, now()),
-		       resolved_by      = COALESCE(resolved_by, $2),
-		       resolved_note_id = $3
-		 WHERE id = $1`, id, by, note)
+	tag, err := s.pool.Exec(ctx, resolveStatement, id, by, note)
 	if err != nil {
 		return discussionError(err)
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrNotFound
+		return s.whyResolveMatchedNothing(ctx, id)
 	}
 	return nil
+}
+
+// resolveStatement is shared with CHRN-46's transactional resolve, so the actor
+// test cannot be present on one path and missing on the other.
+const resolveStatement = `
+	UPDATE tier2.discussions
+	   SET resolved_at      = COALESCE(resolved_at, now()),
+	       resolved_by      = COALESCE(resolved_by, $2),
+	       resolved_note_id = $3
+	 WHERE id = $1
+	   AND EXISTS (SELECT 1 FROM tier2.users WHERE id = $2 AND kind = 'person')`
+
+// whyResolveMatchedNothing turns zero rows into the honest reason, on the
+// FAILURE PATH ONLY so the ordinary case is still one statement.
+//
+// Two clauses can miss: the discussion is not there, or the actor is not a
+// person. Reporting either as the other is the kind of error that sends
+// somebody looking in the wrong place for an afternoon.
+func (s *Store) whyResolveMatchedNothing(ctx context.Context, id uuid.UUID) error {
+	if _, err := s.DiscussionByID(ctx, id); err != nil {
+		return err
+	}
+	return fmt.Errorf("%w: a discussion is resolved by a person, not by an agent", ErrConfirmerRequired)
 }
 
 // AddParticipant puts somebody on a thread, or brings them back.
@@ -562,10 +591,17 @@ func (s *Store) RemoveParticipant(ctx context.Context, discussionID, userID, rem
 // Participants lists everybody ever on a thread, oldest first. Removed
 // participants are INCLUDED and carry their removed pair: a reader rendering a
 // thread needs them, because their turns are still in it.
+//
+// ORDERED BY added_at THEN user_id, because added_at alone is not a total
+// order: now() is transaction-start time, so two participants added in one
+// transaction share it exactly and their order becomes whatever the plan
+// happens to return. A list that reshuffles between two identical reads is a
+// UI that flickers for no reason anybody can find.
 func (s *Store) Participants(ctx context.Context, discussionID uuid.UUID) ([]DiscussionParticipant, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT `+participantColumns+`
-		   FROM tier2.discussion_participants WHERE discussion_id = $1 ORDER BY added_at`,
+		   FROM tier2.discussion_participants WHERE discussion_id = $1
+		  ORDER BY added_at, user_id`,
 		discussionID)
 	if err != nil {
 		return nil, fmt.Errorf("store: participants: %w", err)

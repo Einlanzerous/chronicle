@@ -799,6 +799,112 @@ func TestOnlyAPersonResolvesOrChangesMembership(t *testing.T) {
 	}
 }
 
+// THE COMPLETION PATH, which the test above does not reach and which was
+// accepting an agent until the review of PR #68 found it.
+//
+// CH080's person test fires only when resolved_by CHANGES. On a completion it
+// does not — COALESCE keeps the original resolver — so the trigger never saw
+// the caller, and an agent could link the note that says what a conversation
+// concluded. Reproduced before the fix: the call returned nil and the note was
+// linked.
+//
+// The two refusals are asserted apart, because reporting either as the other
+// sends somebody looking in the wrong place.
+func TestAnAgentCannotCompleteSomebodyElsesResolution(t *testing.T) {
+	s, ctx := newTestStore(t)
+	person := discPerson(t, s, ctx, "completion-p@example.com")
+	agent := discAgent(t, s, ctx, "completion-a@example.com")
+	page := mkPage(t, s, ctx, nil, "estate")
+	note := mkNote(t, s, ctx, page.ID, person, "Conclusion", "thirty days")
+	d := openThread(t, s, ctx, person, "Completed by whom")
+
+	if err := s.ResolveDiscussion(ctx, d.ID, person, nil); err != nil {
+		t.Fatalf("the person's resolve: %v", err)
+	}
+
+	if err := s.ResolveDiscussion(ctx, d.ID, agent, &note.ID); !errors.Is(err, ErrConfirmerRequired) {
+		t.Errorf("an agent completing a resolution err = %v, want ErrConfirmerRequired", err)
+	}
+	got, err := s.DiscussionByID(ctx, d.ID)
+	if err != nil {
+		t.Fatalf("DiscussionByID: %v", err)
+	}
+	if got.ResolvedNoteID != nil {
+		t.Errorf("the agent linked %v; nothing should have been written", got.ResolvedNoteID)
+	}
+
+	// A person completing it is still accepted — the fix refuses the loop, not
+	// the feature.
+	if err := s.ResolveDiscussion(ctx, d.ID, person, &note.ID); err != nil {
+		t.Fatalf("a person completing the resolution: %v", err)
+	}
+
+	// And a missing discussion still reads as missing rather than as a bad
+	// actor, which is the half a WHERE clause makes easy to get wrong.
+	if err := s.ResolveDiscussion(ctx, uuid.New(), person, nil); !errors.Is(err, ErrNotFound) {
+		t.Errorf("resolving a thread that does not exist err = %v, want ErrNotFound", err)
+	}
+}
+
+// added_at alone is not a total order: now() is transaction-start time, so
+// participants added in ONE transaction share it exactly and the order becomes
+// whatever the plan returns. Found in the review of PR #68.
+func TestParticipantOrderIsStableWithinATransaction(t *testing.T) {
+	s, ctx := newTestStore(t)
+	owner := discPerson(t, s, ctx, "order-o@example.com")
+	d := openThread(t, s, ctx, owner, "Order")
+
+	added := []uuid.UUID{}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	for i := 0; i < 6; i++ {
+		u := discPerson(t, s, ctx, string(rune('a'+i))+"-order@example.com")
+		added = append(added, u)
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO tier2.discussion_participants (discussion_id, user_id, added_by)
+			 VALUES ($1, $2, $3)`, d.ID, u, owner); err != nil {
+			t.Fatalf("insert participant: %v", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// They share added_at exactly, which is the precondition that makes the
+	// tie-break matter rather than a detail of this test.
+	var distinct int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(DISTINCT added_at) FROM tier2.discussion_participants WHERE discussion_id = $1`,
+		d.ID).Scan(&distinct); err != nil {
+		t.Fatalf("count distinct added_at: %v", err)
+	}
+	if distinct != 1 {
+		t.Fatalf("%d distinct added_at values; the transaction did not share now() and this test proves nothing", distinct)
+	}
+
+	first, err := s.Participants(ctx, d.ID)
+	if err != nil {
+		t.Fatalf("Participants: %v", err)
+	}
+	if len(first) != len(added) {
+		t.Fatalf("%d participants, want %d", len(first), len(added))
+	}
+	for i := 0; i < 5; i++ {
+		again, err := s.Participants(ctx, d.ID)
+		if err != nil {
+			t.Fatalf("Participants: %v", err)
+		}
+		for j := range again {
+			if again[j].UserID != first[j].UserID {
+				t.Fatalf("read %d differs at position %d: %s then %s — the order is not total",
+					i, j, first[j].UserID, again[j].UserID)
+			}
+		}
+	}
+}
+
 // ============================================================================
 // Criterion 17 — resolving.
 // ============================================================================
