@@ -359,4 +359,28 @@ func TestAnAgentCannotResolveAThreadIntoANote(t *testing.T) {
 	if err := s.ResolveWithoutNote(ctx, d.ID, agent); !errors.Is(err, ErrConfirmerRequired) {
 		t.Errorf("ResolveWithoutNote by an agent err = %v, want ErrConfirmerRequired", err)
 	}
+
+	// THE COMPLETION PATH THROUGH THIS FILE, which is the one the review of
+	// PR #68 found open on the primitive. A person resolves with no note; an
+	// agent then tries to say what the thread produced. CH080 cannot see the
+	// caller here, because COALESCE leaves resolved_by unchanged.
+	if err := s.ResolveWithoutNote(ctx, d.ID, person); err != nil {
+		t.Fatalf("the person's resolve: %v", err)
+	}
+	before = countNotes(t, s, ctx)
+	if _, _, err := s.ResolveIntoNewNote(ctx, d.ID, agent, Resolution{
+		PageID: page.ID, Title: "Completed by a machine", Body: "x",
+	}); !errors.Is(err, ErrConfirmerRequired) {
+		t.Errorf("an agent completing a resolution err = %v, want ErrConfirmerRequired", err)
+	}
+	if after := countNotes(t, s, ctx); after != before {
+		t.Errorf("a refused completion left a note behind: %d -> %d", before, after)
+	}
+	got, err := s.DiscussionByID(ctx, d.ID)
+	if err != nil {
+		t.Fatalf("DiscussionByID: %v", err)
+	}
+	if got.ResolvedNoteID != nil {
+		t.Errorf("the agent linked %v; nothing should have been written", got.ResolvedNoteID)
+	}
 }

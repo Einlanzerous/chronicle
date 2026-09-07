@@ -135,23 +135,36 @@ func (s *Store) ResolveWithoutNote(ctx context.Context, discussionID, by uuid.UU
 
 // resolveTx records the resolution inside a caller's transaction.
 //
-// It mirrors ResolveDiscussion, including the asymmetric COALESCE: resolved_at
-// and resolved_by are kept if already set, so linking a note to a thread that
-// resolved without one COMPLETES the record rather than being refused as a
-// rewrite — while resolved_note_id is sent raw, so relinking to a DIFFERENT
-// note reaches CH080 instead of being silently dropped.
+// IT RUNS ResolveDiscussion'S OWN STATEMENT, verbatim, from the shared
+// constant. That is not tidiness: the statement carries the actor test that
+// CH080 cannot do on a completion (see ResolveDiscussion), and a hand-copied
+// second version is exactly how that test ends up present on one resolve path
+// and missing on the other.
+//
+// The asymmetric COALESCE comes with it: resolved_at and resolved_by are kept
+// if already set, so linking a note to a thread that resolved without one
+// COMPLETES the record rather than being refused as a rewrite — while
+// resolved_note_id is sent raw, so relinking to a DIFFERENT note reaches CH080
+// instead of being silently dropped.
 func resolveTx(ctx context.Context, tx pgx.Tx, discussionID, by uuid.UUID, note *uuid.UUID) error {
-	tag, err := tx.Exec(ctx, `
-		UPDATE tier2.discussions
-		   SET resolved_at      = COALESCE(resolved_at, now()),
-		       resolved_by      = COALESCE(resolved_by, $2),
-		       resolved_note_id = $3
-		 WHERE id = $1`, discussionID, by, note)
+	tag, err := tx.Exec(ctx, resolveStatement, discussionID, by, note)
 	if err != nil {
 		return discussionError(err)
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrNotFound
+		// Inside the caller's transaction, so the "which clause missed" read
+		// sees this transaction's own writes — which is what makes it correct
+		// here rather than merely convenient.
+		var exists bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM tier2.discussions WHERE id = $1)`,
+			discussionID).Scan(&exists); err != nil {
+			return discussionError(err)
+		}
+		if !exists {
+			return ErrNotFound
+		}
+		return fmt.Errorf("%w: a discussion is resolved by a person, not by an agent", ErrConfirmerRequired)
 	}
 	return nil
 }
