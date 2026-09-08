@@ -313,8 +313,31 @@ func (s *Store) EnsureAgent(ctx context.Context, email, displayName string) (Use
 // Scribe returns the built-in agent account, or ErrNotFound if boot has not
 // created it. Every agent turn in a discussion is authored as this account
 // until there is a second agent.
+//
+// IT RE-CHECKS THE KIND, and that one line is the whole of what makes
+// bootstrapScribe's tolerated conflict safe. EnsureAgent refuses a person's
+// address and boot only WARNS, deliberately — so the state where
+// scribe@localhost belongs to a person is one the service runs in. Without the
+// check this returns that person's row with a nil error, and a caller that
+// believes the sentence above appends a turn as their id. CH092 then derives
+// author_kind from tier2.users and writes it `person`, and CH090 makes
+// tier2.discussion_turns insert-only, so the misattribution is PERMANENT —
+// the correction is another turn, not an edit.
+//
+// That is the failure this ticket exists to prevent, in its own words: "an
+// agent's reply that reads as a human's is a small dishonesty that compounds."
+// It is also what makes boot's "the discussion surface degrades to human-only"
+// true — nothing degrades if this hands back a person instead.
 func (s *Store) Scribe(ctx context.Context) (User, error) {
-	return s.GetUserByEmail(ctx, ScribeEmail)
+	u, err := s.GetUserByEmail(ctx, ScribeEmail)
+	if err != nil {
+		return User{}, err
+	}
+	if u.Kind != KindAgent {
+		// The account holding the address, on ErrNotAnAgent's stated contract.
+		return u, fmt.Errorf("%w: %s", ErrNotAnAgent, ScribeEmail)
+	}
+	return u, nil
 }
 
 // CountUsers reports how many accounts exist.

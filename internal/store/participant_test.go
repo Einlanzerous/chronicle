@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"encoding/csv"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -110,6 +111,20 @@ func TestEnsureAgentRefusesAPersonsAddress(t *testing.T) {
 	}
 	if still.Kind != KindPerson {
 		t.Errorf("kind = %q, want %q — a person was quietly turned into an agent", still.Kind, KindPerson)
+	}
+
+	// AND Scribe() REFUSES TOO, which is the half that matters at runtime.
+	// bootstrapScribe makes this conflict a warning rather than a boot failure,
+	// so the service runs in this state — and a Scribe() that handed back the
+	// person's row would have CHRN-47 authoring agent turns as them. CH092
+	// would write those turns `person` and CH090 makes them permanent, so the
+	// misattribution could never be corrected, only appended to.
+	got, err = s.Scribe(ctx)
+	if !errors.Is(err, ErrNotAnAgent) {
+		t.Errorf("Scribe() err = %v, want ErrNotAnAgent — it handed back a person", err)
+	}
+	if got.ID != taken {
+		t.Errorf("the refusal did not name the account holding the address: %s", got.ID)
 	}
 }
 
