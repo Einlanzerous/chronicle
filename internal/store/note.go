@@ -276,14 +276,35 @@ func scanRevision(row pgx.Row) (NoteRevision, error) {
 // Generating both ids here and leaning on the two DEFERRABLE foreign keys
 // makes "a note with no current revision" unrepresentable instead.
 func (s *Store) CreateNote(ctx context.Context, in NewNote) (Note, NoteRevision, error) {
-	if err := requireActor(in.ConfirmedBy); err != nil {
-		return Note{}, NoteRevision{}, err
-	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Note{}, NoteRevision{}, fmt.Errorf("store: create note: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	note, rev, err := createNoteTx(ctx, tx, in)
+	if err != nil {
+		return Note{}, NoteRevision{}, err
+	}
+
+	// Both deferred foreign keys are checked here, not above.
+	if err := tx.Commit(ctx); err != nil {
+		return Note{}, NoteRevision{}, noteError(err)
+	}
+	return note, rev, nil
+}
+
+// createNoteTx is CreateNote's body, taking the transaction rather than opening
+// one.
+//
+// SEPARATED FOR CHRN-46, which resolves a thread into a NEW note and must write
+// the note and the resolution together: a note created without the link, or a
+// link to a note whose insert then failed, are both states that lie about what
+// a conversation concluded. Neither is reachable if it is one transaction.
+func createNoteTx(ctx context.Context, tx pgx.Tx, in NewNote) (Note, NoteRevision, error) {
+	if err := requireActor(in.ConfirmedBy); err != nil {
+		return Note{}, NoteRevision{}, err
+	}
 
 	noteID := uuid.New()
 	revID := uuid.New()
@@ -313,11 +334,6 @@ func (s *Store) CreateNote(ctx context.Context, in NewNote) (Note, NoteRevision,
 	if err := reindexLinks(ctx, tx, noteID, revID, note.Number, in.Title, in.Body); err != nil {
 		return Note{}, NoteRevision{}, err
 	}
-
-	// Both deferred foreign keys are checked here, not above.
-	if err := tx.Commit(ctx); err != nil {
-		return Note{}, NoteRevision{}, noteError(err)
-	}
 	return note, rev, nil
 }
 
@@ -334,19 +350,41 @@ func (s *Store) CreateNote(ctx context.Context, in NewNote) (Note, NoteRevision,
 // supersede / relate), what each does to history, and the rule that nothing
 // appends to authored text unattended.
 func (s *Store) AppendRevision(ctx context.Context, noteID uuid.UUID, in NewRevision) (NoteRevision, error) {
-	if err := requireActor(in.ConfirmedBy); err != nil {
-		return NoteRevision{}, err
-	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return NoteRevision{}, fmt.Errorf("store: append revision: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	rev, err := appendRevisionTx(ctx, tx, noteID, in)
+	if err != nil {
+		return NoteRevision{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return NoteRevision{}, noteError(err)
+	}
+	return rev, nil
+}
+
+// appendRevisionTx is AppendRevision's body, taking the transaction rather than
+// opening one — see createNoteTx. CHRN-46 resolves into an EXISTING note, which
+// is an append, and the revision and the resolution have to land together for
+// the same reason.
+//
+// LOCK ORDER, since this is now reachable inside a larger transaction: the NOTE
+// is locked here, and CHRN-46 takes the DISCUSSION afterwards. Nothing takes
+// them the other way round, which is what keeps two resolutions from
+// deadlocking on each other.
+func appendRevisionTx(ctx context.Context, tx pgx.Tx, noteID uuid.UUID, in NewRevision) (NoteRevision, error) {
+	if err := requireActor(in.ConfirmedBy); err != nil {
+		return NoteRevision{}, err
+	}
+
 	var locked uuid.UUID
 	var number int64
 	var deletedAt *time.Time
-	err = tx.QueryRow(ctx,
+	err := tx.QueryRow(ctx,
 		`SELECT id, number, deleted_at FROM tier2.notes WHERE id = $1 FOR UPDATE`,
 		noteID).Scan(&locked, &number, &deletedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -384,10 +422,6 @@ func (s *Store) AppendRevision(ctx context.Context, noteID uuid.UUID, in NewRevi
 	// Re-derived from the text that is now current — see CreateNote.
 	if err := reindexLinks(ctx, tx, noteID, rev.ID, number, in.Title, in.Body); err != nil {
 		return NoteRevision{}, err
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return NoteRevision{}, noteError(err)
 	}
 	return rev, nil
 }

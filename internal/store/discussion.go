@@ -83,6 +83,10 @@ const (
 	pgAuthorKindSupplied = "CH092"
 	pgTurnOnResolved     = "CH093"
 	pgParticipantGuard   = "CH100"
+
+	// Postgres' own, raised when two transactions each hold what the
+	// other is waiting for. Mapped beside 55P03 in discussionError.
+	pgDeadlockDetected = "40P01"
 )
 
 // CH080 and CH100 each cover two rules, because the plan's error table gives
@@ -654,7 +658,13 @@ func discussionError(err error) error {
 			case conParticipantAllowList:
 				return fmt.Errorf("%w: %v", ErrParticipantColumnFrozen, err)
 			}
-		case pgLockNotAvailable:
+		case pgLockNotAvailable, pgDeadlockDetected:
+			// Both mean "somebody else is mid-flight on this row, give up and
+			// retry" — which is what a caller does with either. A deadlock
+			// should be unreachable now that every path takes the discussion
+			// before the note (see resolve.go), and it is mapped anyway: an
+			// unmapped 40P01 arrives as an opaque `store: discussion: …` and
+			// sends a reader looking for a bug in the wrong place.
 			return fmt.Errorf("%w: %v", ErrLinkLocked, err)
 		case pgUniqueViolation:
 			if pgErr.ConstraintName == "discussion_turns_memo" {
