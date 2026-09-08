@@ -110,12 +110,18 @@ BEGIN
         -- MONOTONIC (ruling 5). The store never sends a decrease — it wraps the
         -- value in GREATEST — so this is unreachable through the package, the
         -- same shape CH031 has on tier2.notes and stated for the same reason.
-        IF NEW.last_read_seq IS NOT NULL
-        AND OLD.last_read_seq IS NOT NULL
-        AND NEW.last_read_seq < OLD.last_read_seq THEN
+        --
+        -- CLEARING IT IS A DECREASE, AND THE LARGEST ONE. A version of this
+        -- clause that tested only NEW < OLD accepted last_read_seq = NULL on a
+        -- row sitting at 3, which puts the whole thread back to unread — the
+        -- one decrease the rule was supposed to forbid and the only one nobody
+        -- would notice, because the row that results is indistinguishable from
+        -- a participant who has never read anything.
+        IF OLD.last_read_seq IS NOT NULL
+        AND (NEW.last_read_seq IS NULL OR NEW.last_read_seq < OLD.last_read_seq) THEN
             RAISE EXCEPTION
                 'a read marker only moves forward: % is behind %',
-                NEW.last_read_seq, OLD.last_read_seq
+                COALESCE(NEW.last_read_seq::text, 'never read'), OLD.last_read_seq
                 USING ERRCODE = 'CH100',
                       CONSTRAINT = 'discussion_participants_marker_forward';
         END IF;
@@ -962,14 +968,14 @@ COMMENT ON TABLE tier2.discussion_participants IS 'CHRN-43 / CHRN-44 / CHRN-45. 
 -- Name: COLUMN discussion_participants.last_read_seq; Type: COMMENT; Schema: tier2; Owner: -
 --
 
-COMMENT ON COLUMN tier2.discussion_participants.last_read_seq IS 'CHRN-45. How far this participant has read, as a tier2.discussion_turns.seq. NULL means never read, which is NOT the same as 0. Monotonic and bounded: it never decreases (CH100) and never exceeds the thread''s last turn (CH102). Always NULL for an agent (CH101).';
+COMMENT ON COLUMN tier2.discussion_participants.last_read_seq IS 'CHRN-45. How far this participant has read, as a tier2.discussion_turns.seq. NULL means never read, which is NOT the same as 0. Monotonic and bounded: it never decreases and is never cleared once set (CH100), and never exceeds the thread''s last turn (CH102). Always NULL for an agent (CH101).';
 
 
 --
 -- Name: COLUMN discussion_participants.last_read_at; Type: COMMENT; Schema: tier2; Owner: -
 --
 
-COMMENT ON COLUMN tier2.discussion_participants.last_read_at IS 'CHRN-45. When the marker last moved — the thread-list sort. Paired with last_read_seq by discussion_participants_read_pair.';
+COMMENT ON COLUMN tier2.discussion_participants.last_read_at IS 'CHRN-45. When this participant last LOOKED — the thread-list sort, and the plan''s wording. Not "when the marker moved": a stale mark-read is a no-op for last_read_seq (ruling 5) and still bumps this, because a phone reconnecting and reporting an old position did look at the thread. Paired with last_read_seq by discussion_participants_read_pair.';
 
 
 --

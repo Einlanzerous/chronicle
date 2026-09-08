@@ -439,6 +439,124 @@ func TestADirectRewindIsRefused(t *testing.T) {
 	}
 }
 
+// CLEARING THE MARKER IS A DECREASE, AND THE LARGEST ONE. Found in the review
+// of PR #71: the first version of the guard tested only NEW < OLD, so setting
+// last_read_seq back to NULL on a row at 3 was accepted and put the whole
+// thread back to unread. It is also the decrease nobody would notice, because
+// the row that results is indistinguishable from a participant who never read.
+func TestClearingTheMarkerIsRefused(t *testing.T) {
+	s, ctx := newTestStore(t)
+	person := discPerson(t, s, ctx, "clear@example.com")
+	d := openThread(t, s, ctx, person, "Clearing")
+	appendTurn(t, s, ctx, d.ID, person, "two")
+	appendTurn(t, s, ctx, d.ID, person, "three")
+
+	before := markerOf(t, s, ctx, d.ID, person)
+	if before == nil || *before != 3 {
+		t.Fatalf("marker = %v before the test, want 3", before)
+	}
+
+	_, err := s.pool.Exec(ctx, `
+		UPDATE tier2.discussion_participants SET last_read_seq = NULL, last_read_at = NULL
+		 WHERE discussion_id = $1 AND user_id = $2`, d.ID, person)
+	if got := sqlstate(err); got != pgParticipantGuard {
+		t.Errorf("clearing the marker: SQLSTATE = %q (err %v), want %s", got, err, pgParticipantGuard)
+	}
+	// The sentinel too, which is the other nit from that review: CH100's two
+	// arms should be distinguishable without a string comparison.
+	if !errors.Is(discussionError(err), ErrMarkerRewind) {
+		t.Errorf("clearing did not map to ErrMarkerRewind: %v", discussionError(err))
+	}
+	if after := markerOf(t, s, ctx, d.ID, person); after == nil || *after != 3 {
+		t.Errorf("marker = %v after the refused clear, want 3", after)
+	}
+	if got := unread(t, s, ctx, d.ID, person); got != 0 {
+		t.Errorf("unread = %d, want 0 — the thread was quietly made unread again", got)
+	}
+}
+
+// The two reads agree for an agent, and DELIBERATELY differ for a removed
+// participant. Both halves are asserted because the review of PR #71 found the
+// first disagreeing and two comments claiming otherwise.
+func TestTheTwoUnreadReadsAgreeWhereTheyShould(t *testing.T) {
+	s, ctx := newTestStore(t)
+	owner := discPerson(t, s, ctx, "agree-o@example.com")
+	scribe := discAgent(t, s, ctx, "agree-a@example.com")
+	guest := discPerson(t, s, ctx, "agree-g@example.com")
+	d := openThread(t, s, ctx, owner, "Agreement")
+	if err := s.AddParticipant(ctx, d.ID, scribe, owner); err != nil {
+		t.Fatalf("AddParticipant(agent): %v", err)
+	}
+	if err := s.AddParticipant(ctx, d.ID, guest, owner); err != nil {
+		t.Fatalf("AddParticipant(guest): %v", err)
+	}
+	appendTurn(t, s, ctx, d.ID, owner, "two")
+
+	// AN AGENT: 0 from both. Without the kind test the NULL marker COALESCEs
+	// to 0 and the per-thread read would say 2 while the badge said nothing.
+	if got := unread(t, s, ctx, d.ID, scribe); got != 0 {
+		t.Errorf("UnreadCount for an agent = %d, want 0 (ruling 4)", got)
+	}
+	agg, err := s.UnreadByDiscussion(ctx, scribe)
+	if err != nil {
+		t.Fatalf("UnreadByDiscussion(agent): %v", err)
+	}
+	if len(agg) != 0 {
+		t.Errorf("the agent's badge = %v, want empty", agg)
+	}
+
+	// A REMOVED PARTICIPANT: the badge omits the thread, the direct read still
+	// answers about it. Different questions, and CHRN-99 picks per surface.
+	if err := s.RemoveParticipant(ctx, d.ID, guest, owner); err != nil {
+		t.Fatalf("RemoveParticipant: %v", err)
+	}
+	if got := unread(t, s, ctx, d.ID, guest); got != 2 {
+		t.Errorf("UnreadCount for a removed participant = %d, want 2 — it is not filtered", got)
+	}
+	agg, err = s.UnreadByDiscussion(ctx, guest)
+	if err != nil {
+		t.Fatalf("UnreadByDiscussion(removed): %v", err)
+	}
+	if _, ok := agg[d.ID]; ok {
+		t.Errorf("the badge lists a thread they were removed from: %v", agg)
+	}
+}
+
+// last_read_at means "when did I last LOOK", not "when did the marker move" —
+// the plan's own wording. A stale mark-read is a no-op for the marker and still
+// bumps the timestamp, because the phone that reconnected did look.
+func TestAStaleMarkReadStillRecordsThatTheyLooked(t *testing.T) {
+	s, ctx := newTestStore(t)
+	person := discPerson(t, s, ctx, "looked@example.com")
+	other := discPerson(t, s, ctx, "looked-2@example.com")
+	d := openThread(t, s, ctx, person, "Looked")
+	if err := s.AddParticipant(ctx, d.ID, other, person); err != nil {
+		t.Fatalf("AddParticipant: %v", err)
+	}
+	appendTurn(t, s, ctx, d.ID, person, "two")
+	appendTurn(t, s, ctx, d.ID, person, "three")
+
+	if err := s.MarkRead(ctx, d.ID, other, 3); err != nil {
+		t.Fatalf("MarkRead(3): %v", err)
+	}
+	first := participantNamed(t, s, ctx, d.ID, other).LastReadAt
+	if first == nil {
+		t.Fatal("last_read_at is nil after marking")
+	}
+
+	if err := s.MarkRead(ctx, d.ID, other, 1); err != nil {
+		t.Fatalf("stale MarkRead(1): %v", err)
+	}
+	after := participantNamed(t, s, ctx, d.ID, other)
+	if after.LastReadSeq == nil || *after.LastReadSeq != 3 {
+		t.Errorf("marker = %v after a stale mark, want 3", after.LastReadSeq)
+	}
+	if after.LastReadAt == nil || !after.LastReadAt.After(*first) {
+		t.Errorf("last_read_at did not move on a stale mark (%v -> %v); it records looking, not the marker",
+			first, after.LastReadAt)
+	}
+}
+
 // Criterion 13 — THE UPPER BOUND, and the failure it prevents is silent.
 //
 // Ruling 5 only ever forbade a decrease. An unbounded increase means

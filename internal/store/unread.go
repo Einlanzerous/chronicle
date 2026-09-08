@@ -35,6 +35,13 @@ var ErrNotAParticipant = errors.New("store: not a participant of that discussion
 // unread threads would be that failure by another route.
 var ErrAgentHasNoMarker = errors.New("store: an agent carries no read marker")
 
+// ErrMarkerRewind is CH100's marker-forward arm — a decrease, including being
+// cleared back to "never read", which is the largest decrease there is.
+// Unreachable through this package, which wraps every write in GREATEST; it
+// exists so a caller can tell this refusal from the allow list's, which shares
+// the SQLSTATE.
+var ErrMarkerRewind = errors.New("store: a read marker only moves forward")
+
 // ErrMarkerPastTheThread is CH102. Unreachable through this package, which
 // clamps to the thread's last turn; it names the rule for a direct writer.
 var ErrMarkerPastTheThread = errors.New("store: a read marker cannot run past the thread")
@@ -131,10 +138,15 @@ func (s *Store) userKind(ctx context.Context, id uuid.UUID) (string, error) {
 	return kind, nil
 }
 
-// unreadExpr is the count, and it is shared by the single-thread read and the
-// aggregate so the two cannot disagree about what "unread" means. That is the
-// bug ruling 6 exists to prevent: one query for the thread view and another for
-// the badge, differing in whether they filter removed participants.
+// unreadExpr is the ARITHMETIC, shared by the single-thread read and the
+// aggregate so the two cannot disagree about how unread is computed — the bug
+// ruling 6 exists to prevent, which is a second hand-written subtraction
+// drifting from this one.
+//
+// IT IS NOT THE WHOLE ANSWER, and the difference matters: WHICH ROWS each
+// query asks about lives in its WHERE clause, and the two deliberately differ
+// there. The aggregate filters removed participants; UnreadCount does not. See
+// UnreadCount for why.
 const unreadExpr = `GREATEST(0,
 	(SELECT COALESCE(MAX(t.seq), 0) FROM tier2.discussion_turns t
 	  WHERE t.discussion_id = p.discussion_id)
@@ -145,9 +157,28 @@ const unreadExpr = `GREATEST(0,
 // A NEVER-READ PARTICIPANT IS BEHIND BY THE WHOLE THREAD, because COALESCE
 // treats their NULL as 0 — while the column stays distinguishably NULL for
 // anything that wants to ask whether they ever opened it.
+//
+// AN AGENT IS ALWAYS 0, which is ruling 4 rather than a convenience. Without
+// the test an agent's NULL marker would COALESCE to 0 and report the whole
+// thread unread — a number for something the ruling says has no unread, and
+// one that disagreed with UnreadByDiscussion's empty map for the same account.
+//
+// A REMOVED PARTICIPANT IS *NOT* FILTERED HERE, and that asymmetry with the
+// aggregate is deliberate rather than an oversight. They are different
+// questions: the badge asks "what should I look at", and removal is exactly a
+// statement that this thread is not that; asking directly about one thread is
+// answered about the thread, not about the roster. CHRN-99 inherits both and
+// should pick per surface.
 func (s *Store) UnreadCount(ctx context.Context, discussionID, userID uuid.UUID) (int, error) {
+	kind, err := s.userKind(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+	if kind == KindAgent {
+		return 0, nil
+	}
 	var n int
-	err := s.pool.QueryRow(ctx, `
+	err = s.pool.QueryRow(ctx, `
 		SELECT `+unreadExpr+`
 		  FROM tier2.discussion_participants p
 		 WHERE p.discussion_id = $1 AND p.user_id = $2`, discussionID, userID).Scan(&n)
@@ -171,9 +202,11 @@ func (s *Store) UnreadCount(ctx context.Context, discussionID, userID uuid.UUID)
 //   - THREADS WITH NOTHING UNREAD ARE OMITTED rather than returned as 0, so the
 //     map's length is the number of threads wanting attention and a caller does
 //     not have to filter it again to get that.
-//   - AGENTS GET AN EMPTY MAP, which falls out of ruling 4 rather than being
-//     special-cased: their marker is NULL and CH101 keeps it that way, so the
-//     kind test here is the honest short-circuit.
+//   - AGENTS GET AN EMPTY MAP, from the explicit kind test below and not from
+//     the marker. Worth being exact: an agent's marker is NULL, which COALESCEs
+//     to 0, so without the test the arithmetic would report every thread it is
+//     on at full count. Ruling 4 says an agent has no unread; the test is what
+//     makes that true here, as CH101 makes it true in the store.
 //
 // A RESOLVED THREAD CAN STILL BE UNREAD, deliberately. CH093 means the count
 // cannot move again, so what is left is a fixed number of turns somebody has

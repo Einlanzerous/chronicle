@@ -701,8 +701,10 @@ func discussionError(err error) error {
 			case conMarkerForward:
 				// Unreachable through this package — MarkRead wraps the value
 				// in GREATEST — so this names the rule for a direct writer,
-				// as CH031 does on tier2.notes.
-				return fmt.Errorf("store: a read marker only moves forward: %w", err)
+				// as CH031 does on tier2.notes. A sentinel rather than a bare
+				// wrap, because CH100's other arm has one and a caller should
+				// not have to tell them apart by string.
+				return fmt.Errorf("%w: %v", ErrMarkerRewind, err)
 			}
 		case pgAgentHasNoMarker:
 			return fmt.Errorf("%w: %v", ErrAgentHasNoMarker, err)
