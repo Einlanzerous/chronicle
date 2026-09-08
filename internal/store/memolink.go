@@ -95,6 +95,21 @@ type MemoLink struct {
 	TicketKey   *string
 	ConfirmedAt *time.Time
 
+	// What the memo BECAME, when what it became lives in this database
+	// (0017, CHRN-95 ruling 4). Each is nil for every destination but its own,
+	// and NOT nil once a row of that destination is confirmed.
+	//
+	// These are real references, which TicketKey could not be: a ticket key is
+	// a handle into another system, a note and a thread are rows here.
+	NoteID       *uuid.UUID
+	DiscussionID *uuid.UUID
+
+	// ConfirmedBy is the PERSON who agreed to a local landing, and CH023
+	// refuses an agent. Nil on a TICKET, which confirms through Switchyard and
+	// records no actor here — see 0017's part 2 for why the column is scoped
+	// that way rather than required outright.
+	ConfirmedBy *uuid.UUID
+
 	// What the sweep found. SweptAt with no candidates is "looked, found
 	// nothing" and is a different fact from "never looked".
 	SweptAt       *time.Time
@@ -144,7 +159,7 @@ type Decision struct {
 
 const memoLinkColumns = `id, memo_id, destination,
 	sent_project_key, sent_type, sent_title, sent_description, sent_idempotency_key,
-	ticket_key, confirmed_at, swept_at, candidate_keys,
+	ticket_key, note_id, discussion_id, confirmed_at, confirmed_by, swept_at, candidate_keys,
 	refused_at, refused_status, refused_reason, created_at, updated_at`
 
 func scanMemoLink(row pgx.Row) (MemoLink, error) { return scanMemoLinkWith(nil, row) }
@@ -157,7 +172,8 @@ func scanMemoLinkWith(extra *bool, row pgx.Row) (MemoLink, error) {
 	var refusedStatus *int32
 	dst := []any{&l.ID, &l.MemoID, &l.Destination,
 		&projectKey, &typ, &title, &desc, &l.SentIdempotencyKey,
-		&l.TicketKey, &l.ConfirmedAt, &l.SweptAt, &l.CandidateKeys,
+		&l.TicketKey, &l.NoteID, &l.DiscussionID, &l.ConfirmedAt, &l.ConfirmedBy,
+		&l.SweptAt, &l.CandidateKeys,
 		&l.RefusedAt, &refusedStatus, &refusedReason, &l.CreatedAt, &l.UpdatedAt}
 	if extra != nil {
 		dst = append(dst, extra)
@@ -223,13 +239,6 @@ func (c LinkClaim) Ours() bool { return c == ClaimInserted || c == ClaimRearmed 
 // caller is told the row is not theirs — which is the honest answer, because
 // re-sending an unchanged decision would be refused again for the same reason.
 func (s *Store) ClaimMemoLink(ctx context.Context, d Decision) (MemoLink, LinkClaim, error) {
-	switch {
-	case d.MemoID == uuid.Nil:
-		return MemoLink{}, ClaimExisting, fmt.Errorf("%w: decision has no memo", ErrInvalidInput)
-	case d.IdempotencyKey == "":
-		return MemoLink{}, ClaimExisting, fmt.Errorf("%w: decision has no idempotency key", ErrInvalidInput)
-	}
-
 	// T1 TAKES THE SAME DEADLINE T2'S WAITERS DO, and it needs one for the same
 	// reason one statement earlier.
 	//
@@ -250,6 +259,43 @@ func (s *Store) ClaimMemoLink(ctx context.Context, d Decision) (MemoLink, LinkCl
 	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '`+linkLockTimeout+`'`); err != nil {
 		return MemoLink{}, ClaimExisting, fmt.Errorf("store: claim memo link: %w", err)
+	}
+
+	l, claim, err := claimMemoLinkTx(ctx, tx, d)
+	if err != nil {
+		return MemoLink{}, ClaimExisting, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return MemoLink{}, ClaimExisting, translateLinkError(err)
+	}
+	return l, claim, nil
+}
+
+// claimMemoLinkTx is ClaimMemoLink's body, taking the transaction rather than
+// opening one.
+//
+// SEPARATED FOR CHRN-95, on createNoteTx's precedent and for a sharper reason
+// than reuse. A NOTE or DISCUSSION landing makes NO OUTWARD CALL, so the split
+// that T1 exists to survive — a create that succeeds remotely and fails to
+// record locally — cannot happen to it. Ruling 3 therefore puts the claim, the
+// write and the confirm in ONE transaction, and this is the door that lets it.
+//
+// What that buys is not tidiness. Committed on its own, the claim leaves a
+// PENDING NOTE ROW between the two commits, and sweepOne answers those before
+// every batch; a process that died in the gap would have its identical replay
+// answered with "already refused under its own key". Inside the landing's
+// transaction, a pending local row cannot exist at all.
+//
+// THE CALLER OWNS THE LOCK DEADLINE. This runs the same UNIQUE-index-blocking
+// upsert, so a caller that has not set `SET LOCAL lock_timeout` waits without
+// one — which is the failure the comment above describes. LandNote and
+// LandDiscussion both set it.
+func claimMemoLinkTx(ctx context.Context, tx pgx.Tx, d Decision) (MemoLink, LinkClaim, error) {
+	switch {
+	case d.MemoID == uuid.Nil:
+		return MemoLink{}, ClaimExisting, fmt.Errorf("%w: decision has no memo", ErrInvalidInput)
+	case d.IdempotencyKey == "":
+		return MemoLink{}, ClaimExisting, fmt.Errorf("%w: decision has no idempotency key", ErrInvalidInput)
 	}
 
 	var inserted bool
@@ -297,9 +343,6 @@ func (s *Store) ClaimMemoLink(ctx context.Context, d Decision) (MemoLink, LinkCl
 
 	switch {
 	case err == nil:
-		if err := tx.Commit(ctx); err != nil {
-			return MemoLink{}, ClaimExisting, translateLinkError(err)
-		}
 		if inserted {
 			return l, ClaimInserted, nil
 		}
@@ -315,9 +358,6 @@ func (s *Store) ClaimMemoLink(ctx context.Context, d Decision) (MemoLink, LinkCl
 		existing, err := scanMemoLink(tx.QueryRow(ctx,
 			`SELECT `+memoLinkColumns+` FROM tier2.memo_links WHERE memo_id = $1`, d.MemoID))
 		if err != nil {
-			return MemoLink{}, ClaimExisting, translateLinkError(err)
-		}
-		if err := tx.Commit(ctx); err != nil {
 			return MemoLink{}, ClaimExisting, translateLinkError(err)
 		}
 		return existing, ClaimExisting, nil

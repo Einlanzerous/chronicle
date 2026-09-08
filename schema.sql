@@ -351,12 +351,41 @@ BEGIN
     -- or a later batch could un-confirm a row, the key an operator was told
     -- about could stop being the ticket their memo became, and nothing would
     -- have logged the change.
+    --
+    -- note_id, discussion_id and confirmed_by joined this list in 0017
+    -- (CHRN-95, ruling 5).
+    -- A local landing has no outward call, so its whole record of what the
+    -- memo became is these two columns and the row they sit on: re-pointing
+    -- one silently is the same failure as re-pointing ticket_key, minus the
+    -- remote system that might have contradicted it.
     IF OLD.confirmed_at IS NOT NULL
        AND (NEW.confirmed_at IS DISTINCT FROM OLD.confirmed_at
             OR NEW.ticket_key IS DISTINCT FROM OLD.ticket_key
+            OR NEW.note_id IS DISTINCT FROM OLD.note_id
+            OR NEW.discussion_id IS DISTINCT FROM OLD.discussion_id
+            OR NEW.confirmed_by IS DISTINCT FROM OLD.confirmed_by
             OR NEW.destination IS DISTINCT FROM OLD.destination) THEN
         RAISE EXCEPTION 'a confirmed memo link is immutable (memo %)', OLD.memo_id
             USING ERRCODE = 'CH021';
+    END IF;
+
+    -- A PERSON CONFIRMS, ON CH041'S ARGUMENT AND IN ITS ABSENCE.
+    --
+    -- The NOTE arm cannot land without a person: every revision carries
+    -- confirmed_by and CH041 refuses an agent there. The DISCUSSION arm has no
+    -- such column to guard — ruling 9 kept a turn as conversation — so without
+    -- this the same landing path would be person-checked for one destination
+    -- and unchecked for the other, and the difference would be invisible.
+    --
+    -- Scoped to the local destinations because they are the ones this ticket
+    -- lands. A TICKET confirms through Switchyard with no actor recorded
+    -- today, and widening that is not this migration's business.
+    IF NEW.confirmed_by IS NOT NULL
+       AND NEW.confirmed_by IS DISTINCT FROM OLD.confirmed_by
+       AND NOT EXISTS (SELECT 1 FROM tier2.users
+                        WHERE id = NEW.confirmed_by AND kind = 'person') THEN
+        RAISE EXCEPTION 'a memo link is confirmed by a person, not by an agent (memo %)', NEW.memo_id
+            USING ERRCODE = 'CH023';
     END IF;
 
     -- RE-ARMING A REFUSED ROW MUST BE A WHOLE NEW DECISION.
@@ -1099,9 +1128,17 @@ CREATE TABLE tier2.memo_links (
     refused_reason text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    note_id uuid,
+    discussion_id uuid,
+    confirmed_by uuid,
+    CONSTRAINT memo_links_confirmed_discussion_has_a_thread CHECK (((confirmed_at IS NULL) OR (destination <> 'DISCUSSION'::text) OR (discussion_id IS NOT NULL))),
+    CONSTRAINT memo_links_confirmed_local_has_an_actor CHECK (((confirmed_at IS NULL) OR (destination <> ALL (ARRAY['NOTE'::text, 'DISCUSSION'::text])) OR (confirmed_by IS NOT NULL))),
+    CONSTRAINT memo_links_confirmed_note_has_a_note CHECK (((confirmed_at IS NULL) OR (destination <> 'NOTE'::text) OR (note_id IS NOT NULL))),
     CONSTRAINT memo_links_confirmed_ticket_has_a_key CHECK (((confirmed_at IS NULL) OR (destination <> 'TICKET'::text) OR (ticket_key IS NOT NULL))),
     CONSTRAINT memo_links_confirmed_xor_refused CHECK (((confirmed_at IS NULL) OR (refused_at IS NULL))),
     CONSTRAINT memo_links_destination_check CHECK ((destination = ANY (ARRAY['NOTE'::text, 'TICKET'::text, 'DISCUSSION'::text, 'DISCARD'::text]))),
+    CONSTRAINT memo_links_discussion_id_only_on_discussion CHECK (((discussion_id IS NULL) OR (destination = 'DISCUSSION'::text))),
+    CONSTRAINT memo_links_note_id_only_on_note CHECK (((note_id IS NULL) OR (destination = 'NOTE'::text))),
     CONSTRAINT memo_links_refusal_states_why CHECK (((refused_at IS NULL) = (refused_reason IS NULL))),
     CONSTRAINT memo_links_sent_idempotency_key_check CHECK ((sent_idempotency_key <> ''::text)),
     CONSTRAINT memo_links_ticket_key_only_on_ticket CHECK (((ticket_key IS NULL) OR (destination = 'TICKET'::text)))
@@ -1113,6 +1150,27 @@ CREATE TABLE tier2.memo_links (
 --
 
 COMMENT ON TABLE tier2.memo_links IS 'What a PERSON decided a memo becomes. Authored, not derived: nothing regenerates it. UNIQUE (memo_id) is the lock that keeps one memo from becoming two tickets.';
+
+
+--
+-- Name: COLUMN memo_links.note_id; Type: COMMENT; Schema: tier2; Owner: -
+--
+
+COMMENT ON COLUMN tier2.memo_links.note_id IS 'The note this memo became. On ticket_key''s pattern: what the decision PRODUCED, not what it was. Null for every destination but NOTE, and NOT NULL once a NOTE row is confirmed. Distinct from tier2.note_revisions.memo_id, which answers which TEXT came from this memo — 0011 is explicit that neither may be read as the other.';
+
+
+--
+-- Name: COLUMN memo_links.discussion_id; Type: COMMENT; Schema: tier2; Owner: -
+--
+
+COMMENT ON COLUMN tier2.memo_links.discussion_id IS 'The thread this memo opened. note_id''s twin; see that comment.';
+
+
+--
+-- Name: COLUMN memo_links.confirmed_by; Type: COMMENT; Schema: tier2; Owner: -
+--
+
+COMMENT ON COLUMN tier2.memo_links.confirmed_by IS 'The person who agreed to this landing. Required once a NOTE or DISCUSSION row is confirmed, and refused for an agent by CH023 — the link-row equivalent of CH041 on tier2.note_revisions. Null on a TICKET, which confirms through Switchyard and records no actor here.';
 
 
 --
@@ -2018,11 +2076,35 @@ ALTER TABLE ONLY tier2.memo_arrivals
 
 
 --
+-- Name: memo_links memo_links_confirmed_by_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.memo_links
+    ADD CONSTRAINT memo_links_confirmed_by_fkey FOREIGN KEY (confirmed_by) REFERENCES tier2.users(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: memo_links memo_links_discussion_id_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.memo_links
+    ADD CONSTRAINT memo_links_discussion_id_fkey FOREIGN KEY (discussion_id) REFERENCES tier2.discussions(id) ON DELETE RESTRICT;
+
+
+--
 -- Name: memo_links memo_links_memo_id_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
 --
 
 ALTER TABLE ONLY tier2.memo_links
     ADD CONSTRAINT memo_links_memo_id_fkey FOREIGN KEY (memo_id) REFERENCES tier2.memos(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: memo_links memo_links_note_id_fkey; Type: FK CONSTRAINT; Schema: tier2; Owner: -
+--
+
+ALTER TABLE ONLY tier2.memo_links
+    ADD CONSTRAINT memo_links_note_id_fkey FOREIGN KEY (note_id) REFERENCES tier2.notes(id) ON DELETE RESTRICT;
 
 
 --

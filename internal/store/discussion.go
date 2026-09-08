@@ -354,6 +354,22 @@ func (s *Store) OpenDiscussion(ctx context.Context, in NewDiscussion) (Discussio
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	d, t, err := openDiscussionTx(ctx, tx, in)
+	if err != nil {
+		return Discussion{}, DiscussionTurn{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return Discussion{}, DiscussionTurn{}, discussionError(err)
+	}
+	return d, t, nil
+}
+
+// openDiscussionTx is OpenDiscussion's body, taking the transaction rather than
+// opening one — createNoteTx's precedent, and CHRN-95's reason: a memo landing
+// as a discussion writes the thread, the back-pointer on tier2.memo_links and
+// the memo's advance together, or writes none of them.
+func openDiscussionTx(ctx context.Context, tx pgx.Tx, in NewDiscussion) (Discussion, DiscussionTurn, error) {
 	d, err := scanDiscussion(tx.QueryRow(ctx, `
 		INSERT INTO tier2.discussions (page_id, title)
 		VALUES ($1, $2)
@@ -378,10 +394,6 @@ func (s *Store) OpenDiscussion(ctx context.Context, in NewDiscussion) (Discussio
 	// Ruling 3 — posting is reading. The opener has read their own turn.
 	if err := advanceAuthorsMarker(ctx, tx, t); err != nil {
 		return Discussion{}, DiscussionTurn{}, err
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return Discussion{}, DiscussionTurn{}, discussionError(err)
 	}
 	return d, t, nil
 }

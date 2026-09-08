@@ -355,9 +355,33 @@ func Reconcile(p *Proposal, cat Catalogue) (cleared []ClearedField, status Statu
 		// stops a whole invented branch while still letting a note propose a
 		// new leaf. With no page tree at all (before CHRN-37) nothing has a
 		// live ancestor, so every non-null page_path clears here.
-		if p.PagePath != nil && *p.PagePath != "" && !hasLiveAncestor(*p.PagePath, cat) {
+		// AND A CREATE HAS A PAGE OR IT DOES NOT EXIST — tier2.notes.page_id is
+		// NOT NULL — while page_path is optional in the contract, so a valid,
+		// high-confidence create can arrive naming nowhere at all. There is no
+		// inbox page to fall back on, and inventing one would put a bucket in a
+		// tree CHRN-37 designed to be authored. CHRN-95 ruling 7.
+		//
+		// A CLEARING WITH NO VALUE TO CLEAR, deliberately: nothing was removed,
+		// but the client has to be told WHICH field to supply and Cleared is the
+		// channel it reads. The TICKET arm answers the same situation with a
+		// bare needs_input because project_key is a required field a model left
+		// empty; page_path is not required, so its absence has to be named or an
+		// operator sees only "a target no longer resolves".
+		//
+		// relate is exempt — it falls back to the target note's page, which is
+		// what "near" means — and so are append and supersede, whose note
+		// already has one.
+		//
+		// ONE CLEARING, NOT TWO. A create whose path has no live ancestor is
+		// cleared for THAT reason and not also for the absence the clearing
+		// just produced: an operator told both would be reading the first
+		// answer twice.
+		switch {
+		case p.PagePath != nil && *p.PagePath != "" && !hasLiveAncestor(*p.PagePath, cat):
 			clear("page_path", *p.PagePath, "neither the page nor any ancestor of it is in the live catalogue", true)
 			p.PagePath = nil
+		case p.Verb == VerbCreate && (p.PagePath == nil || *p.PagePath == ""):
+			clear("page_path", "", "a note must name the page it belongs on", true)
 		}
 
 		// Also a target, so it blocks the same way. Every non-null target_note

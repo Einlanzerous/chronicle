@@ -583,25 +583,31 @@ func TestAnOverrideToDiscardIsHonouredAndReplays(t *testing.T) {
 // What cannot land yet.
 // ============================================================================
 
-// NOTE and DISCUSSION need E5's page tree. REFUSED, not `failed`: a client that
-// retried would get the same answer every evening until CHRN-37 ships.
-func TestNoteAndDiscussionAreRefusedUntilTheyHaveSomewhereToLand(t *testing.T) {
+// CHRN-95 REPLACED THIS TEST'S SUBJECT. It used to assert that NOTE and
+// DISCUSSION were refused because the page tree had not shipped; the page tree
+// shipped in CHRN-37 and the refusal is gone from triage.go AND from sweep.go,
+// which carried the same string. What is asserted now is the property that
+// replaced it: both destinations reach a landing, and neither mentions a
+// ticket that closed.
+//
+// The landings themselves are in land_test.go. This one exists so that
+// deleting the refusal cannot be undone quietly.
+func TestNoteAndDiscussionAreNoLongerRefusedForAPageTreeThatShipped(t *testing.T) {
 	h := newHarness(t)
+	withCorpus(t, h, []string{"estate"}, nil)
 	for _, dest := range []string{"NOTE", "DISCUSSION"} {
 		m := h.ownMemo("a thought about " + dest)
 		h.propose(m.ID, ticketProposal("CHRN"))
 
-		o := Override{Destination: dest, Title: "A thought"}
+		o := Override{Destination: dest, Title: "A thought", Verb: "create",
+			PagePath: "estate", Body: "the body", OpeningPost: "the opening post"}
 		res := h.apply(h.owner, h.override(m.ID, o))
-		wantStatus(t, res[0], StatusRefused)
-		if !strings.Contains(res[0].Reason, "CHRN-37") {
-			t.Fatalf("%s: reason = %q, want it to name the ticket that unblocks it", dest, res[0].Reason)
+		wantStatus(t, res[0], StatusApplied)
+		if strings.Contains(res[0].Reason, "CHRN-37") {
+			t.Fatalf("%s: the expired refusal is still reachable: %q", dest, res[0].Reason)
 		}
-		if got := h.state(m.ID); got != store.StateTranscribed {
-			t.Fatalf("%s: memo is %q, want it untouched", dest, got)
-		}
-		if _, err := h.store.MemoLinkFor(h.ctx, m.ID); err == nil {
-			t.Fatalf("%s: a refusal before T1 left a row behind", dest)
+		if got := h.state(m.ID); got != store.StateTriaged {
+			t.Fatalf("%s: memo is %q, want triaged", dest, got)
 		}
 	}
 }

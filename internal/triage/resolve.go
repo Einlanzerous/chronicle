@@ -68,7 +68,7 @@ func (s *Service) decide(ctx context.Context, res Result, att store.LinkAttempt)
 	// a memo that moved BECAUSE OF THIS DECISION. The row is the authority on
 	// what happened to it; the memo's state is a consequence.
 	if link.Confirmed() {
-		return leave, s.applyLink(res, link), nil
+		return leave, s.applyLink(ctx, res, link), nil
 	}
 
 	// ---- 2 · The memo must still be where the operator left it. ----
@@ -142,7 +142,7 @@ func (s *Service) decide(ctx context.Context, res Result, att store.LinkAttempt)
 			Action:    store.LinkConfirm,
 			AdvanceTo: store.StateDiscarded,
 			Reason:    "discarded at triage",
-		}, s.applyLink(res, link), nil
+		}, s.applyLink(ctx, res, link), nil
 	}
 
 	if s.beforeCreate != nil {
@@ -191,7 +191,7 @@ func (s *Service) decide(ctx context.Context, res Result, att store.LinkAttempt)
 		return leave, failed(res, err.Error()), nil
 	}
 
-	out := s.applyLink(res, link)
+	out := s.applyLink(ctx, res, link)
 	out.TicketKey, out.TicketURL = t.Key, t.URL
 	return store.LinkResolution{
 		Action:    store.LinkConfirm,
@@ -203,9 +203,11 @@ func (s *Service) decide(ctx context.Context, res Result, att store.LinkAttempt)
 // applyLink answers `applied` from a link row, resolving the deep link from the
 // key rather than storing one. INVARIANT 2 in one line: the key is the handle,
 // the URL is derived from it at render time, and there is no column holding it.
-func (s *Service) applyLink(res Result, link store.MemoLink) Result {
+func (s *Service) applyLink(ctx context.Context, res Result, link store.MemoLink) Result {
 	out := applied(res, link)
 	out.TicketURL = s.tickets.TicketURL(out.TicketKey)
+
+	out.NoteRef, out.DiscussionRef = s.landedRef(ctx, link)
 	return out
 }
 

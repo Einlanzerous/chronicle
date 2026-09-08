@@ -2,6 +2,7 @@ package scribe
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -184,14 +185,16 @@ func TestAResolvableTargetLeavesTheProposalValid(t *testing.T) {
 	}
 }
 
-// A create has no target, so stage 2 has nothing to ask the catalogue and must
-// not invent a reason to block.
+// A create has no target, so an empty NOTE CORPUS must not block it. It still
+// needs a page, which is a different question and CHRN-95 ruling 7's — the
+// catalogue here has a live page and no notes at all, which is exactly the
+// state this test is about.
 func TestACreateIsNotBlockedByAnEmptyCorpus(t *testing.T) {
-	p, err := Parse(note(`"verb":"create","target_note":null,"page_path":null`))
+	p, err := Parse(note(`"verb":"create","target_note":null,"page_path":"ideas"`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	cleared, status := Reconcile(p, fakeCatalogue{})
+	cleared, status := Reconcile(p, fakeCatalogue{pages: map[string]bool{"ideas": true}})
 	if status != StatusValid {
 		t.Fatalf("status %q, want valid — a new note needs no existing one", status)
 	}
@@ -252,4 +255,99 @@ func TestTheZeroValueVerbNeedsNoTargetEither(t *testing.T) {
 	if decoded.Verb.NeedsTarget() {
 		t.Fatal("a payload decoded outside Parse claims to need a target")
 	}
+}
+
+// CHRN-95 RULING 1 — append and supersede are never pre-selected for ACCEPT
+// ALL, at any confidence.
+//
+// Asserted well ABOVE the floor so the verb is demonstrably the reason: a test
+// that used a low confidence would pass whether or not the gate existed.
+func TestAppendAndSupersedeAreNeverPreAcceptable(t *testing.T) {
+	const floor = 0.8
+	for _, tc := range []struct {
+		verb Verb
+		want bool
+	}{
+		{VerbCreate, true},
+		{VerbRelate, true},
+		{VerbAppend, false},
+		{VerbSupersede, false},
+	} {
+		p := &Proposal{
+			Destination: DestNote, Confidence: 0.99, Verb: tc.verb,
+			Title: "t", Body: "b", Reason: "r",
+		}
+		if got := p.PreAcceptable(StatusValid, floor); got != tc.want {
+			t.Errorf("PreAcceptable(%s) at confidence 0.99 = %v, want %v", tc.verb, got, tc.want)
+		}
+	}
+}
+
+// RULING 7 — a create that names no page has nowhere to land, so it needs a
+// person rather than a default. tier2.notes.page_id is NOT NULL and there is no
+// inbox page to fall back on.
+func TestACreateWithNoPageNeedsInput(t *testing.T) {
+	p, err := Parse(note(`"verb":"create","page_path":null`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleared, status := Reconcile(p, fakeCatalogue{pages: map[string]bool{"estate": true}})
+	if status != StatusNeedsInput {
+		t.Fatalf("status %q, want needs_input", status)
+	}
+	if len(cleared) != 1 || cleared[0].Field != "page_path" {
+		t.Fatalf("clearing does not name the field to supply: %+v", cleared)
+	}
+
+	// ONE CLEARING, NOT TWO. A path that exists but has no live ancestor is
+	// cleared for that reason alone; telling an operator both would be the
+	// first answer said twice.
+	p2, err := Parse(note(`"verb":"create","page_path":"invented/branch"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleared2, status2 := Reconcile(p2, fakeCatalogue{pages: map[string]bool{"estate": true}})
+	if status2 != StatusNeedsInput {
+		t.Fatalf("status %q, want needs_input", status2)
+	}
+	if len(cleared2) != 1 {
+		t.Errorf("%d clearings for one bad path: %+v", len(cleared2), cleared2)
+	}
+}
+
+// RULING 8 — target_thread stays reserved, and this is what the code can
+// actually assert.
+//
+// NOT STRICT REJECTION. scribe.Parse unmarshals into a map to check presence
+// and then into Proposal with a plain json.Unmarshal; neither refuses unknown
+// keys, and the only DisallowUnknownFields in the repo is on the HTTP decoder,
+// which a model's output never passes through. So a model emitting
+// target_thread has it silently dropped, exactly as it would any other unknown
+// key. Making Parse strict is a change to CHRN-94's contract and is filed
+// separately rather than smuggled in here.
+func TestTheContractStillHasNoTargetThread(t *testing.T) {
+	raw := []byte(`{"destination":"DISCUSSION","confidence":0.9,"reason":"a question",
+	    "title":"Worth discussing","nearest_page":null,"opening_post":"the post",
+	    "target_thread":"DSC-0007"}`)
+	p, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("an unknown key was rejected, which Parse does not do: %v", err)
+	}
+	if p.OpeningPost != "the post" {
+		t.Errorf("opening_post %q — the rest of the payload must decode normally", p.OpeningPost)
+	}
+	for _, f := range structFields(p) {
+		if strings.Contains(strings.ToLower(f), "targetthread") {
+			t.Errorf("Proposal has a %s field; ruling 8 keeps target_thread reserved", f)
+		}
+	}
+}
+
+func structFields(p *Proposal) []string {
+	rt := reflect.TypeOf(*p)
+	out := make([]string, 0, rt.NumField())
+	for i := 0; i < rt.NumField(); i++ {
+		out = append(out, rt.Field(i).Name)
+	}
+	return out
 }

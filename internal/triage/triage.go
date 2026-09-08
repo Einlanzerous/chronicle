@@ -32,6 +32,7 @@ package triage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -122,6 +123,14 @@ type Store interface {
 	ReleaseTriageHold(ctx context.Context, memoID uuid.UUID) error
 	DeferredMemos(ctx context.Context, authorID uuid.UUID, limit int) ([]store.DeferredMemo, error)
 	CountTriageHolds(ctx context.Context) (int, error)
+
+	// CHRN-95. The local landings, and the two reads that render what they
+	// produced — a handle is read from the row it belongs to rather than kept
+	// on the link.
+	LandNote(ctx context.Context, in store.NoteLanding) (store.MemoLink, store.Note, store.NoteRevision, error)
+	LandDiscussion(ctx context.Context, in store.DiscussionLanding) (store.MemoLink, store.Discussion, store.DiscussionTurn, error)
+	NoteByID(ctx context.Context, id uuid.UUID) (store.Note, error)
+	DiscussionByID(ctx context.Context, id uuid.UUID) (store.Discussion, error)
 }
 
 // Tier1 is the DERIVED surface, and it is a separate interface for the reason
@@ -263,6 +272,24 @@ type Item struct {
 
 	// Override is the operator's own decision. Nil means accept as shown.
 	Override *Override `json:"override"`
+
+	// ConfirmEdit is the deliberate tap on an append or a supersede, and it is
+	// legal on nothing else (CHRN-95 ruling 2).
+	//
+	// THE SERVER CANNOT OTHERWISE TELL ONE TAP FROM ACCEPT ALL. Both arrive
+	// here as an item with no override, so "these verbs are never pre-selected"
+	// would be a client convention rather than a property of this package —
+	// which is the opposite of what the rule is for. DISCARD answers the same
+	// problem by demanding an override, and that is cheap because a DISCARD
+	// override carries nothing; an append override would mean the operator
+	// re-typing the model's draft of somebody else's words under their own
+	// name, on a phone, on a triage evening.
+	//
+	// A batch path must never set it. That is the one half of this the server
+	// cannot check, and saying so is the honest limit of the guarantee: what is
+	// provable here is that the confirmation was per-item, not that a human
+	// made it.
+	ConfirmEdit bool `json:"confirm_edit,omitempty"`
 }
 
 // Override is a decision a person authored, bounded by the same limits stage 1
@@ -270,11 +297,25 @@ type Item struct {
 type Override struct {
 	Destination string `json:"destination"`
 
+	// Title is required for every destination but DISCARD.
+	Title string `json:"title"`
+
 	// TICKET only.
 	ProjectKey  string `json:"project_key"`
 	TicketType  string `json:"ticket_type"`
-	Title       string `json:"title"`
 	Description string `json:"description"`
+
+	// NOTE. CHRN-95: without these an operator could not finish the two things
+	// stage 2 clears most — a page_path with no live ancestor and a target_note
+	// naming no live note — so `needs_input` was a dead end for exactly the
+	// fields it exists to complete.
+	Verb       string `json:"verb"`
+	TargetNote string `json:"target_note"`
+	PagePath   string `json:"page_path"`
+	Body       string `json:"body"`
+
+	// DISCUSSION.
+	OpeningPost string `json:"opening_post"`
 }
 
 // Result is one item's outcome. Every batch answers 200 with one of these per
@@ -287,6 +328,12 @@ type Result struct {
 	Destination string `json:"destination,omitempty"`
 	TicketKey   string `json:"ticket_key,omitempty"`
 	TicketURL   string `json:"ticket_url,omitempty"`
+
+	// What the memo became, when it became something in this database. Without
+	// these an applied NOTE answered with a destination and no handle at all:
+	// the operator was told the memo was decided and not what it turned into.
+	NoteRef       string `json:"note_ref,omitempty"`
+	DiscussionRef string `json:"discussion_ref,omitempty"`
 
 	// Generation is the server's, and it is present for exactly two statuses:
 	// `stale`, where it is what the client should have echoed, and
@@ -418,7 +465,7 @@ func (s *Service) applyOne(ctx context.Context, actor store.User, it Item, cat *
 	// This one is an early-out, and it agrees with that one by construction.
 	switch link, err := s.store.MemoLinkFor(ctx, it.MemoID); {
 	case err == nil && link.Confirmed():
-		return s.applyLink(res, link)
+		return s.applyLink(ctx, res, link)
 	case err != nil && !errors.Is(err, store.ErrNotFound):
 		return s.fail(ctx, res, "read memo link", err)
 	}
@@ -474,7 +521,7 @@ func (s *Service) applyOne(ctx context.Context, actor store.User, it Item, cat *
 		}
 	}
 
-	// ---- 6 · T1: the pending row. THE LOCK. ----
+	// ---- 6a · The decision, in the shape the store takes. ----
 	d := store.Decision{
 		MemoID:         it.MemoID,
 		Destination:    string(decided.Destination),
@@ -488,6 +535,17 @@ func (s *Service) applyOne(ctx context.Context, actor store.User, it Item, cat *
 			d.ProjectKey = *decided.ProjectKey
 		}
 	}
+	// ---- 6 · The local destinations land in ONE transaction. ----
+	//
+	// Not T1-then-T2, and the difference is not a shortcut: there is no outward
+	// call here, so the pending row the split leaves behind would be reconciled
+	// by a sweep that has no reconciling to do. store.LandNote claims, writes
+	// and confirms together. CHRN-95 ruling 3.
+	switch decided.Destination {
+	case scribe.DestNote, scribe.DestDiscussion:
+		return s.land(ctx, res, actor, memo, decided, d)
+	}
+
 	link, claim, err := s.store.ClaimMemoLink(ctx, d)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
@@ -505,7 +563,7 @@ func (s *Service) applyOne(ctx context.Context, actor store.User, it Item, cat *
 		return s.fail(ctx, res, "claim memo link", err)
 	}
 
-	// ---- 7 · T2: lock, call, confirm, advance — one transaction. ----
+	// ---- 7 · TICKET only — T2: lock, call, confirm, advance. ----
 	return s.resolve(ctx, res, link.MemoID, claim)
 }
 
@@ -551,14 +609,24 @@ func (s *Service) decisionFor(res Result, it Item, stored store.Proposal, hasPro
 
 	res.Destination = string(decided.Destination)
 
-	// NOT YET LANDABLE. Both need E5's page tree (CHRN-37), and until it exists
-	// there is nowhere for a note or a discussion to go. REFUSED and not
-	// `failed`: a client that retried would get the same answer every evening
-	// until that ticket ships.
-	switch decided.Destination {
-	case scribe.DestNote, scribe.DestDiscussion:
+	// WRITING INTO TEXT SOMEBODY ALREADY WROTE COSTS A DELIBERATE TAP.
+	// CHRN-95 rulings 1 and 2; scribe.PreAcceptable keeps the screen honest and
+	// this keeps the server honest, because a client is not a guarantee.
+	//
+	// An override is already deliberate — the operator typed the decision — so
+	// it needs no second affirmative, exactly as a DISCARD override needs none.
+	editing := decided.Destination == scribe.DestNote &&
+		(decided.Verb == scribe.VerbAppend || decided.Verb == scribe.VerbSupersede)
+	switch {
+	case it.ConfirmEdit && !editing:
+		// Narrow on purpose. A field that could be set on anything would drift
+		// into being set on everything, and then it would confirm nothing.
+		return nil, refuse(res, "confirm_edit is only legal on an append or a supersede — "+
+			"this proposal writes a new note and touches nothing that exists"), false
+	case editing && it.Override == nil && !it.ConfirmEdit:
 		return nil, refuse(res, fmt.Sprintf(
-			"%s cannot land yet — it needs the page tree from CHRN-37", decided.Destination)), false
+			"a %s writes into a note somebody already wrote, so it is never part of ACCEPT ALL — "+
+				"confirm this one on its own, or decide it with an override", decided.Verb)), false
 	}
 	return decided, res, true
 }
@@ -614,7 +682,45 @@ func overrideProposal(o Override) (*scribe.Proposal, error) {
 			return nil, fmt.Errorf("an override to TICKET needs a description")
 		}
 	}
-	return p, nil
+
+	switch dest {
+	case scribe.DestNote:
+		p.Verb = scribe.Verb(strings.TrimSpace(o.Verb))
+		p.Body = o.Body
+		if t := strings.TrimSpace(o.TargetNote); t != "" {
+			p.TargetNote = &t
+		}
+		if path := strings.TrimSpace(o.PagePath); path != "" {
+			p.PagePath = &path
+		}
+	case scribe.DestDiscussion:
+		p.OpeningPost = o.OpeningPost
+	}
+
+	// A PERSON'S DECISION IS VALIDATED BY THE MODEL'S OWN VALIDATOR, and
+	// literally so rather than by a paraphrase of it.
+	//
+	// The comment on project_key above says a person's decision is validated
+	// like a model's "and the reason is not symmetry". While the contract was
+	// four fields, restating its rules here was cheap. It is not four fields
+	// any more — verb, target_note, page_path, body and opening_post each carry
+	// rules (the verb enum, IsNoteRef, the NeedsTarget pairing, a non-empty
+	// opening post), and a second copy of those is a second copy that drifts.
+	//
+	// So the proposal is marshalled and handed to Parse. It costs one round
+	// trip per overridden item and it cannot disagree with what a model is held
+	// to, which is the property worth paying for. The TICKET checks above run
+	// FIRST and keep their own wording: they predate this and say things about
+	// an operator's situation that the model's messages do not.
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return nil, fmt.Errorf("could not validate the override: %w", err)
+	}
+	validated, err := scribe.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	return validated, nil
 }
 
 func containsString(set []string, s string) bool {

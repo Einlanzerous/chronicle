@@ -94,6 +94,11 @@ type LinkState struct {
 	TicketKey string `json:"ticket_key,omitempty"`
 	TicketURL string `json:"ticket_url,omitempty"`
 
+	// What the memo became locally. A confirmed NOTE link rendered with no
+	// handle at all told a person their memo was decided and nothing else.
+	NoteRef       string `json:"note_ref,omitempty"`
+	DiscussionRef string `json:"discussion_ref,omitempty"`
+
 	// CandidateKeys is populated only for `ambiguous`, and it is the whole of
 	// what a person needs to resolve one.
 	CandidateKeys []string `json:"candidate_keys,omitempty"`
@@ -175,7 +180,7 @@ func (s *Service) Batch(ctx context.Context, actor store.User, limit int) ([]Bat
 			}
 		}
 		if m.Link != nil {
-			it.Link = s.linkState(*m.Link, flight[m.Link.ID])
+			it.Link = s.linkState(ctx, *m.Link, flight[m.Link.ID])
 		}
 		out = append(out, it)
 	}
@@ -184,7 +189,7 @@ func (s *Service) Batch(ctx context.Context, actor store.User, limit int) ([]Bat
 
 // linkState describes one decision row. The four pending states come from the
 // plan's own table, and only one of them is read from a lock.
-func (s *Service) linkState(l store.MemoLink, inFlight bool) *LinkState {
+func (s *Service) linkState(ctx context.Context, l store.MemoLink, inFlight bool) *LinkState {
 	st := &LinkState{
 		Destination:   l.Destination,
 		DecidedAt:     l.CreatedAt,
@@ -198,6 +203,7 @@ func (s *Service) linkState(l store.MemoLink, inFlight bool) *LinkState {
 		st.TicketKey = *l.TicketKey
 		st.TicketURL = s.tickets.TicketURL(*l.TicketKey)
 	}
+	st.NoteRef, st.DiscussionRef = s.landedRef(ctx, l)
 	switch {
 	case l.Confirmed():
 		st.State = LinkStateConfirmed
@@ -268,17 +274,17 @@ func (s *Service) Admin(ctx context.Context) (AdminReport, error) {
 	if err != nil {
 		return rep, err
 	}
-	rep.InFlight = s.linkStates(links.InFlight, true)
-	rep.Unresolved = s.linkStates(links.Unresolved, false)
-	rep.Ambiguous = s.linkStates(links.Ambiguous, false)
-	rep.Refused = s.linkStates(links.Refused, false)
+	rep.InFlight = s.linkStates(ctx, links.InFlight, true)
+	rep.Unresolved = s.linkStates(ctx, links.Unresolved, false)
+	rep.Ambiguous = s.linkStates(ctx, links.Ambiguous, false)
+	rep.Refused = s.linkStates(ctx, links.Refused, false)
 	return rep, nil
 }
 
-func (s *Service) linkStates(ls []store.MemoLink, inFlight bool) []LinkState {
+func (s *Service) linkStates(ctx context.Context, ls []store.MemoLink, inFlight bool) []LinkState {
 	out := make([]LinkState, 0, len(ls))
 	for _, l := range ls {
-		out = append(out, *s.linkState(l, inFlight))
+		out = append(out, *s.linkState(ctx, l, inFlight))
 	}
 	return out
 }
