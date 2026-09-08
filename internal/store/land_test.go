@@ -472,8 +472,15 @@ func TestALandingRefusesAMemoThatIsNoLongerAwaitingTriage(t *testing.T) {
 }
 
 // THE sent_* COLUMNS ARE WHAT CHRONICLE PUT ON THE WIRE, and a NOTE puts
-// nothing on one. A note body in sent_description would be a copy of tier 2
-// into a column whose own comment says it is not one.
+// nothing on one.
+//
+// THIS TEST CAN ONLY SHOW THE STORE DOES NOT INVENT THEM. It builds its own
+// Decision, so it proves a property of a struct literal written here rather
+// than of the caller that produces one in production — which is exactly how the
+// first version of this shipped while triage.go filled sent_title on every
+// landing. The assertion that matters is
+// TestALocalLandingFillsNoWireColumns in internal/triage, which goes through
+// applyOne; this one stays as the store's half of the pair.
 func TestALocalLandingSendsNothingOnAWire(t *testing.T) {
 	s, ctx := newTestStore(t)
 	memo, author, _ := landable(t, s, ctx, "sent-hash")
@@ -490,6 +497,56 @@ func TestALocalLandingSendsNothingOnAWire(t *testing.T) {
 	l := linkRow(t, s, ctx, memo)
 	if l.SentTitle != "" || l.SentDescription != "" || l.SentProjectKey != "" || l.SentType != "" {
 		t.Errorf("a local landing filled the wire columns: %+v", l)
+	}
+}
+
+// A relate whose target was deleted between the batch's snapshot and the POST
+// says so, rather than reporting the memo missing. landOntoNote already drew
+// this distinction; the fallback-page path has to agree with it.
+func TestARelateOntoADeletedTargetSaysSo(t *testing.T) {
+	s, ctx := newTestStore(t)
+	memo, author, page := landable(t, s, ctx, "relate-deleted")
+	confirmer := person(t, s, ctx, "rd@example.com")
+	gone := mkNote(t, s, ctx, page.ID, author, "About to go", "body")
+	if err := s.SoftDeleteNote(ctx, gone.ID, author); err != nil {
+		t.Fatalf("SoftDeleteNote: %v", err)
+	}
+
+	_, _, _, err := s.LandNote(ctx, NoteLanding{
+		Decision: noteDecision(memo, LinkNote), Verb: VerbRelate,
+		TargetNumber: &gone.Number, Title: "Nearby", Body: "text",
+		AuthorID: author, ConfirmedBy: confirmer,
+	})
+	if !errors.Is(err, ErrNoteDeleted) {
+		t.Fatalf("relate onto a deleted target = %v, want ErrNoteDeleted", err)
+	}
+}
+
+// CH023 fires on INSERT as well as UPDATE, which is what makes it the backstop
+// its name claims. A confirmed row written in one statement — the shape a
+// future caller with direct SQL would take — must meet the same rule the
+// landing meets.
+func TestAnAgentCannotBeInsertedAsAConfirmer(t *testing.T) {
+	s, ctx := newTestStore(t)
+	memo, author, page := landable(t, s, ctx, "insert-agent")
+	scribeID := agent(t, s, ctx, "scribe-insert@example.com")
+	note := mkNote(t, s, ctx, page.ID, author, "A note", "body")
+
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO tier2.memo_links
+		    (memo_id, destination, sent_idempotency_key, note_id, confirmed_at, confirmed_by)
+		VALUES ($1, 'NOTE', 'direct-sql', $2, now(), $3)`, memo, note.ID, scribeID)
+	if err == nil {
+		t.Fatal("an agent was inserted as a confirmer; CH023 only watches UPDATE")
+	}
+	if !strings.Contains(err.Error(), "CH023") && !strings.Contains(err.Error(), "person") {
+		t.Errorf("refused by %v, want CH023", err)
+	}
+
+	// And the ordinary INSERT still works — the TG_OP guard must not have
+	// turned CH020 into a refusal of every claim.
+	if _, _, err := s.ClaimMemoLink(ctx, noteDecision(memo, LinkNote)); err != nil {
+		t.Fatalf("ClaimMemoLink after widening the trigger: %v", err)
 	}
 }
 

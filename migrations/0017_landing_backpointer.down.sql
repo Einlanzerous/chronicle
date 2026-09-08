@@ -4,6 +4,8 @@
 -- function 0008 wrote; a down that removed only the columns would leave a
 -- CH021 arm behind that tests NEW.note_id on a table with no such column —
 -- and a CH023 arm reading NEW.confirmed_by on a table with no such column —
+-- and 0017 also WIDENED the trigger to BEFORE INSERT OR UPDATE, so the
+-- declaration is restored here beside the body —
 -- which plpgsql does not notice until the next UPDATE, and which
 -- up-then-down-then-up would not render byte-identically into schema.sql
 -- either. CI finds that a commit later, on somebody else's branch. CHRN-43 and
@@ -60,6 +62,10 @@ BEGIN
     RETURN NEW;
 END
 $fn$;
+
+CREATE OR REPLACE TRIGGER memo_links_guard
+    BEFORE UPDATE ON tier2.memo_links
+    FOR EACH ROW EXECUTE FUNCTION tier2.memo_links_guard();
 -- <<< 0008 VERBATIM <<<
 
 ALTER TABLE IF EXISTS tier2.memo_links

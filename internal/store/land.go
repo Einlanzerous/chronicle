@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -320,15 +321,25 @@ func landingPage(ctx context.Context, tx pgx.Tx, in NoteLanding) (uuid.UUID, err
 	if in.Verb != VerbRelate || in.TargetNumber == nil {
 		return uuid.Nil, ErrNoPage
 	}
+	// DELETED AND ABSENT ARE DIFFERENT ANSWERS, and the caller renders them as
+	// different sentences. Filtering deleted_at in the WHERE would collapse
+	// them into ErrNotFound, which triage reports as "no such memo" — telling
+	// an operator their memo does not exist when what happened is that somebody
+	// deleted the note they were relating to. landOntoNote already draws this
+	// distinction; the two arms have to agree.
 	var pageID uuid.UUID
+	var deletedAt *time.Time
 	err := tx.QueryRow(ctx,
-		`SELECT page_id FROM tier2.notes WHERE number = $1 AND deleted_at IS NULL`,
-		*in.TargetNumber).Scan(&pageID)
+		`SELECT page_id, deleted_at FROM tier2.notes WHERE number = $1`,
+		*in.TargetNumber).Scan(&pageID, &deletedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return uuid.Nil, ErrNotFound
 	}
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("store: landing page: %w", err)
+	}
+	if deletedAt != nil {
+		return uuid.Nil, ErrNoteDeleted
 	}
 	return pageID, nil
 }

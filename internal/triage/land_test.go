@@ -534,3 +534,51 @@ func TestATargetThatNoLongerResolvesIsCompletableByTheOperator(t *testing.T) {
 		t.Errorf("body %q did not gain the override's text", rev.Body)
 	}
 }
+
+// THE WIRE COLUMNS ARE FILLED ONLY BY A DECISION THAT GOES ON A WIRE, asserted
+// THROUGH applyOne because that is where the Decision is built.
+//
+// The store-level test of this criterion constructs its own Decision, so it
+// could never have caught the caller filling sent_title for every destination —
+// which is what it did until the PR review found it. This is the half that
+// fails if the caller regresses.
+func TestALocalLandingFillsNoWireColumns(t *testing.T) {
+	h := newHarness(t)
+	withCorpus(t, h, []string{"estate"}, nil)
+
+	note := h.ownMemo("a note whose title must not be recorded as sent")
+	h.propose(note.ID, noteProposal(scribe.VerbCreate, "estate", ""))
+	if res := h.apply(h.owner, h.accept(note.ID))[0]; res.Status != StatusApplied {
+		t.Fatalf("NOTE status %q (%s)", res.Status, res.Reason)
+	}
+	l := h.link(note.ID)
+	if l.SentTitle != "" || l.SentDescription != "" {
+		t.Errorf("a NOTE landing recorded %q / %q as sent — nothing was sent anywhere",
+			l.SentTitle, l.SentDescription)
+	}
+
+	// A DISCUSSION lands through the same branch and sends nothing either.
+	disc := h.ownMemo("a thread whose title must not be recorded as sent")
+	h.propose(disc.ID, &scribe.Proposal{
+		Destination: scribe.DestDiscussion, Confidence: 0.9,
+		Reason: "a question", Title: "Worth discussing", OpeningPost: "the post",
+	})
+	if res := h.apply(h.owner, h.accept(disc.ID))[0]; res.Status != StatusApplied {
+		t.Fatalf("DISCUSSION status %q (%s)", res.Status, res.Reason)
+	}
+	if l := h.link(disc.ID); l.SentTitle != "" || l.SentDescription != "" {
+		t.Errorf("a DISCUSSION landing recorded %q / %q as sent", l.SentTitle, l.SentDescription)
+	}
+
+	// AND THE TICKET ARM STILL FILLS THEM. They are what an operator is shown
+	// beside a live card as "what Chronicle sent", so gating them on the wire
+	// must not empty the one case that uses one.
+	tkt := h.ownMemo("a ticket that really does go on a wire")
+	h.propose(tkt.ID, ticketProposal("CHRN"))
+	if res := h.apply(h.owner, h.accept(tkt.ID))[0]; res.Status != StatusApplied {
+		t.Fatalf("TICKET status %q (%s)", res.Status, res.Reason)
+	}
+	if l := h.link(tkt.ID); l.SentTitle != "Do the thing" {
+		t.Errorf("sent_title %q on a TICKET, want the title that was sent", l.SentTitle)
+	}
+}

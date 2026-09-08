@@ -522,14 +522,27 @@ func (s *Service) applyOne(ctx context.Context, actor store.User, it Item, cat *
 	}
 
 	// ---- 6a · The decision, in the shape the store takes. ----
+	//
+	// THE sent_* COLUMNS ARE FILLED ONLY BY A DECISION THAT GOES ON A WIRE.
+	//
+	// 0008 defines them as "what Chronicle put on the wire", and ClaimMemoLink
+	// writes Title and Description straight into sent_title and
+	// sent_description. A NOTE sends nothing anywhere: filling them would put a
+	// second copy of authored text into the one table that exists to POINT AT
+	// where that text lives — and it is the copy that goes stale the first time
+	// a supersede retitles the note.
+	//
+	// So they are set on the TICKET branch rather than unset on the local one.
+	// A DISCARD is covered by the same rule and for the same reason; it puts
+	// nothing on a wire either.
 	d := store.Decision{
 		MemoID:         it.MemoID,
 		Destination:    string(decided.Destination),
-		Title:          decided.Title,
-		Description:    decided.Description,
 		IdempotencyKey: s.newKey(),
 	}
 	if decided.Destination == scribe.DestTicket {
+		d.Title = decided.Title
+		d.Description = decided.Description
 		d.Type = decided.TicketType
 		if decided.ProjectKey != nil {
 			d.ProjectKey = *decided.ProjectKey

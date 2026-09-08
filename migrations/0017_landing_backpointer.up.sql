@@ -161,6 +161,12 @@ ALTER TABLE tier2.memo_links
 CREATE OR REPLACE FUNCTION tier2.memo_links_guard() RETURNS trigger
 LANGUAGE plpgsql AS $fn$
 BEGIN
+    -- THE THREE 0008 ARMS READ OLD AND THEREFORE ONLY APPLY TO AN UPDATE.
+    -- Before 0017 the trigger fired on UPDATE alone and this was implicit;
+    -- CH023 needs INSERT too, so what was implicit is now stated. Without the
+    -- guard CH020 would raise on every INSERT, where OLD is NULL and every
+    -- column is DISTINCT FROM it.
+    IF TG_OP = 'UPDATE' THEN
     -- On tier1.memo_proposals' pattern and tier2.transcripts' before it: the
     -- identity is what makes the row mean anything, and a re-attributed
     -- decision is a decision credited to a memo nobody made it about.
@@ -195,25 +201,6 @@ BEGIN
             USING ERRCODE = 'CH021';
     END IF;
 
-    -- A PERSON CONFIRMS, ON CH041'S ARGUMENT AND IN ITS ABSENCE.
-    --
-    -- The NOTE arm cannot land without a person: every revision carries
-    -- confirmed_by and CH041 refuses an agent there. The DISCUSSION arm has no
-    -- such column to guard — ruling 9 kept a turn as conversation — so without
-    -- this the same landing path would be person-checked for one destination
-    -- and unchecked for the other, and the difference would be invisible.
-    --
-    -- Scoped to the local destinations because they are the ones this ticket
-    -- lands. A TICKET confirms through Switchyard with no actor recorded
-    -- today, and widening that is not this migration's business.
-    IF NEW.confirmed_by IS NOT NULL
-       AND NEW.confirmed_by IS DISTINCT FROM OLD.confirmed_by
-       AND NOT EXISTS (SELECT 1 FROM tier2.users
-                        WHERE id = NEW.confirmed_by AND kind = 'person') THEN
-        RAISE EXCEPTION 'a memo link is confirmed by a person, not by an agent (memo %)', NEW.memo_id
-            USING ERRCODE = 'CH023';
-    END IF;
-
     -- RE-ARMING A REFUSED ROW MUST BE A WHOLE NEW DECISION.
     --
     -- A refusal is an outcome, and the row keeps it so the operator can be told
@@ -228,8 +215,48 @@ BEGIN
         RAISE EXCEPTION 're-arming a refused memo link needs a fresh idempotency key (memo %)', OLD.memo_id
             USING ERRCODE = 'CH022';
     END IF;
+    END IF;
+
+    -- A PERSON CONFIRMS, ON CH041'S ARGUMENT AND IN ITS ABSENCE.
+    --
+    -- The NOTE arm cannot land without a person: every revision carries
+    -- confirmed_by and CH041 refuses an agent there. The DISCUSSION arm has no
+    -- such column to guard — ruling 9 kept a turn as conversation — so without
+    -- this the same landing path would be person-checked for one destination
+    -- and unchecked for the other, and the difference would be invisible.
+    --
+    -- Scoped to the local destinations because they are the ones this ticket
+    -- lands. A TICKET confirms through Switchyard with no actor recorded
+    -- today, and widening that is not this migration's business.
+    --
+    -- ON INSERT AS WELL AS UPDATE, which is why the trigger below is
+    -- re-declared. CH041 fires on INSERT OR UPDATE OR DELETE, and this arm is
+    -- named after it: an arm that only ever saw UPDATEs would be a backstop
+    -- that a single INSERT … (confirmed_at, confirmed_by) walks around, while
+    -- the row CHECK asks only that the column be non-null. Nothing in this
+    -- repo writes that row — the landing always confirms with an UPDATE — but
+    -- the whole argument for having CH023 is the caller that does not exist
+    -- yet.
+    -- OLD IS UNASSIGNED ON AN INSERT, so it may only be read once TG_OP has
+    -- said there is one. The check is "the actor is arriving now", which on an
+    -- insert is any non-null value and on an update is a changed one.
+    IF NEW.confirmed_by IS NOT NULL
+       AND (TG_OP = 'INSERT' OR NEW.confirmed_by IS DISTINCT FROM OLD.confirmed_by)
+       AND NOT EXISTS (SELECT 1 FROM tier2.users
+                        WHERE id = NEW.confirmed_by AND kind = 'person') THEN
+        RAISE EXCEPTION 'a memo link is confirmed by a person, not by an agent (memo %)', NEW.memo_id
+            USING ERRCODE = 'CH023';
+    END IF;
 
     NEW.updated_at := now();
     RETURN NEW;
 END
 $fn$;
+
+-- RE-DECLARED FOR THE INSERT ARM. 0008 wired this BEFORE UPDATE, which was
+-- right for the three arms it had; CH023 is a backstop and a backstop that only
+-- watches one verb is not one. The down migration restores 0008's declaration
+-- along with 0008's body.
+CREATE OR REPLACE TRIGGER memo_links_guard
+    BEFORE INSERT OR UPDATE ON tier2.memo_links
+    FOR EACH ROW EXECUTE FUNCTION tier2.memo_links_guard();
