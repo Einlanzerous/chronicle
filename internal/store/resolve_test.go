@@ -337,6 +337,66 @@ func TestResolvingWithoutANoteIsAllowedAndSaysSo(t *testing.T) {
 	}
 }
 
+// ============================================================================
+// Lock order — discussion, then note, on every path.
+// ============================================================================
+
+// THE ORDER IS NOT FREE TO CHOOSE. `resolved_note_id` is a non-deferrable
+// foreign key, so the resolving UPDATE's referential check takes a row lock on
+// the NOTE — which makes ResolveDiscussion discussion-then-note whatever this
+// package prefers. An earlier version of resolve.go took the note first
+// (appendRevisionTx) and the discussion second, which put a real cycle between
+// two legitimate callers resolving the same thread into the same note.
+//
+// This asserts the fix rather than the bug: with the DISCUSSION held, a resolve
+// gives up on the discussion — the first lock — instead of proceeding to take
+// the note and only then blocking. That ordering is what makes the cycle
+// unreachable, and the lock_timeout is what makes the wait bounded.
+func TestResolveTakesTheDiscussionBeforeTheNote(t *testing.T) {
+	s, ctx := newTestStore(t)
+	person := discPerson(t, s, ctx, "lockorder@example.com")
+	page := mkPage(t, s, ctx, nil, "estate")
+	note := mkNote(t, s, ctx, page.ID, person, "Target", "x")
+	d := openThread(t, s, ctx, person, "Lock order")
+
+	defer SetLinkLockTimeoutForTest("200ms")()
+
+	holder, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin holder: %v", err)
+	}
+	defer func() { _ = holder.Rollback(ctx) }()
+	if _, err := holder.Exec(ctx,
+		`SELECT id FROM tier2.discussions WHERE id = $1 FOR UPDATE`, d.ID); err != nil {
+		t.Fatalf("holder lock: %v", err)
+	}
+
+	before := countNotes(t, s, ctx)
+	if _, _, err := s.ResolveIntoNewNote(ctx, d.ID, person, Resolution{
+		PageID: page.ID, Title: "Blocked", Body: "x",
+	}); !errors.Is(err, ErrLinkLocked) {
+		t.Errorf("ResolveIntoNewNote against a held discussion err = %v, want ErrLinkLocked", err)
+	}
+	// It gave up BEFORE writing the note, which is the half that proves the
+	// discussion lock is taken first rather than merely taken.
+	if after := countNotes(t, s, ctx); after != before {
+		t.Errorf("a blocked resolve still wrote a note: %d -> %d", before, after)
+	}
+
+	if _, err := s.ResolveIntoExistingNote(ctx, d.ID, note.ID, person,
+		"Target", "y"); !errors.Is(err, ErrLinkLocked) {
+		t.Errorf("ResolveIntoExistingNote against a held discussion err = %v, want ErrLinkLocked", err)
+	}
+	// And no revision was appended to the note either.
+	revs, err := s.NoteRevisions(ctx, note.ID)
+	if err != nil {
+		t.Fatalf("NoteRevisions: %v", err)
+	}
+	if len(revs) != 1 {
+		t.Errorf("%d revisions after a blocked resolve, want 1 — the note was touched first", len(revs))
+	}
+}
+
 // An agent cannot decide what a conversation concluded — CH080, the same rule
 // CH041 states about a note's confirmer. Asserted on the ACT rather than only
 // on the primitive, because this is the path CHRN-67 would reach for.

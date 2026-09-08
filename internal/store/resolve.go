@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -22,9 +23,22 @@ import (
 // claiming a product it does not have. Both are the "second, worse archive"
 // the ticket exists to prevent, arrived at from opposite directions.
 //
-// LOCK ORDER IS NOTE THEN DISCUSSION, everywhere in this file. Nothing takes
-// them the other way round, which is what keeps two concurrent resolutions
-// from deadlocking.
+// LOCK ORDER IS DISCUSSION THEN NOTE, here and in ResolveDiscussion, and both
+// entry points take the discussion's row lock FIRST for that reason alone.
+//
+// The order is not free to choose, because one half of it is taken by the
+// database rather than by this code. `resolved_note_id` is a non-deferrable
+// foreign key to tier2.notes, so the resolving UPDATE's referential check takes
+// a row lock on the NOTE — verified: with a concurrent `SELECT … FROM
+// tier2.notes … FOR UPDATE` held, that UPDATE blocks and hits its lock_timeout
+// with 55P03. ResolveDiscussion therefore locks the discussion, then the note,
+// and nothing can make it do otherwise.
+//
+// An earlier version of this file did the reverse — appendRevisionTx took the
+// note first, then resolveTx took the discussion — which put a genuine cycle
+// between two legitimate callers resolving the same thread into the same note.
+// Taking the discussion up front REMOVES the cycle rather than bounding it; the
+// lock_timeout below is for ordinary contention, not for that.
 
 // Resolution is the note a thread concluded into, when that note is new.
 //
@@ -56,6 +70,10 @@ func (s *Store) ResolveIntoNewNote(ctx context.Context, discussionID, by uuid.UU
 		return Note{}, NoteRevision{}, fmt.Errorf("store: resolve into a new note: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := lockDiscussionForResolve(ctx, tx, discussionID); err != nil {
+		return Note{}, NoteRevision{}, err
+	}
 
 	note, rev, err := createNoteTx(ctx, tx, NewNote{
 		PageID:      in.PageID,
@@ -100,6 +118,10 @@ func (s *Store) ResolveIntoExistingNote(ctx context.Context, discussionID, noteI
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	if err := lockDiscussionForResolve(ctx, tx, discussionID); err != nil {
+		return NoteRevision{}, err
+	}
+
 	rev, err := appendRevisionTx(ctx, tx, noteID, NewRevision{
 		AuthorID:    by,
 		ConfirmedBy: by,
@@ -133,6 +155,34 @@ func (s *Store) ResolveWithoutNote(ctx context.Context, discussionID, by uuid.UU
 	return s.ResolveDiscussion(ctx, discussionID, by, nil)
 }
 
+// lockDiscussionForResolve takes the FIRST of the two row locks a resolution
+// needs, before any note is touched — see the lock-order note at the top.
+//
+// IT ALSO SETS lock_timeout, which these transactions previously did not.
+// AppendTurn sets one on the argument that "a statement run without one waits
+// forever" (memolink.go:49), and a resolution holds a transaction across TWO
+// row locks, so the argument applies here more than where it was written down.
+//
+// AND IT ANSWERS "no such thread" BEFORE A NOTE IS WRITTEN. Without it the
+// note is inserted, the resolving UPDATE matches nothing, and the whole thing
+// rolls back — correct, but it burns a note number to say ErrNotFound.
+// AppendTurn:388 refuses on the locked row for the same reason.
+func lockDiscussionForResolve(ctx context.Context, tx pgx.Tx, discussionID uuid.UUID) error {
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '`+linkLockTimeout+`'`); err != nil {
+		return fmt.Errorf("store: resolve: %w", err)
+	}
+	var id uuid.UUID
+	err := tx.QueryRow(ctx,
+		`SELECT id FROM tier2.discussions WHERE id = $1 FOR UPDATE`, discussionID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return discussionError(err)
+	}
+	return nil
+}
+
 // resolveTx records the resolution inside a caller's transaction.
 //
 // IT RUNS ResolveDiscussion'S OWN STATEMENT, verbatim, from the shared
@@ -147,6 +197,12 @@ func (s *Store) ResolveWithoutNote(ctx context.Context, discussionID, by uuid.UU
 // resolved_note_id is sent raw, so relinking to a DIFFERENT note reaches CH080
 // instead of being silently dropped.
 func resolveTx(ctx context.Context, tx pgx.Tx, discussionID, by uuid.UUID, note *uuid.UUID) error {
+	// Both callers check first, and it is repeated here rather than trusted:
+	// a divergence between this and ResolveDiscussion is exactly how the actor
+	// test went missing on one path once already.
+	if err := requireActor(by); err != nil {
+		return err
+	}
 	tag, err := tx.Exec(ctx, resolveStatement, discussionID, by, note)
 	if err != nil {
 		return discussionError(err)
