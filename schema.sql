@@ -90,19 +90,34 @@ CREATE FUNCTION tier2.discussion_participants_guard() RETURNS trigger
     AS $$
 DECLARE
     changed TEXT;
+    head    INTEGER;
 BEGIN
     IF TG_OP = 'UPDATE' THEN
         SELECT string_agg(n.key, ', ' ORDER BY n.key) INTO changed
           FROM jsonb_each(to_jsonb(NEW)) n
           JOIN jsonb_each(to_jsonb(OLD)) o ON o.key = n.key
          WHERE n.value IS DISTINCT FROM o.value
-           AND n.key <> ALL (ARRAY['removed_at', 'removed_by']);
+           AND n.key <> ALL (ARRAY['removed_at', 'removed_by',
+                                   'last_read_seq', 'last_read_at']);
         IF changed IS NOT NULL THEN
             RAISE EXCEPTION
-                'tier2.discussion_participants permits updating removed_at, removed_by only; added_at and added_by mean FIRST added; refused: %',
+                'tier2.discussion_participants permits updating removed_at, removed_by, last_read_seq, last_read_at only; added_at and added_by mean FIRST added; refused: %',
                 changed
                 USING ERRCODE = 'CH100',
                       CONSTRAINT = 'discussion_participants_update_allow_list';
+        END IF;
+
+        -- MONOTONIC (ruling 5). The store never sends a decrease — it wraps the
+        -- value in GREATEST — so this is unreachable through the package, the
+        -- same shape CH031 has on tier2.notes and stated for the same reason.
+        IF NEW.last_read_seq IS NOT NULL
+        AND OLD.last_read_seq IS NOT NULL
+        AND NEW.last_read_seq < OLD.last_read_seq THEN
+            RAISE EXCEPTION
+                'a read marker only moves forward: % is behind %',
+                NEW.last_read_seq, OLD.last_read_seq
+                USING ERRCODE = 'CH100',
+                      CONSTRAINT = 'discussion_participants_marker_forward';
         END IF;
     END IF;
 
@@ -112,7 +127,7 @@ BEGIN
     -- ends, because an INSERT-only test would leave the removal half reading
     -- as enforced while doing nothing — 0014:378-384's failure, named there.
     --
-    -- CONSTRAINT named for CH080's reason, one function up.
+    -- CONSTRAINT named for CH080's reason, in 0015.
     IF NOT EXISTS (SELECT 1 FROM tier2.users
                     WHERE id = NEW.added_by AND kind = 'person') THEN
         RAISE EXCEPTION 'a participant is added by a person, not by an agent'
@@ -125,6 +140,34 @@ BEGIN
         RAISE EXCEPTION 'a participant is removed by a person, not by an agent'
             USING ERRCODE = 'CH100',
                   CONSTRAINT = 'discussion_participants_actor_is_a_person';
+    END IF;
+
+    -- CH101 — AN AGENT HAS NO UNREAD (ruling 4). Unread answers "what should I
+    -- look at", and an agent is never asked that: CHRN-47 keeps its trigger
+    -- "explicit rather than ambient" precisely because "an agent that replies
+    -- to everything turns discussions into noise", and an agent that scanned
+    -- unread threads and replied to them is that failure wearing a hat.
+    IF NEW.last_read_seq IS NOT NULL
+    AND EXISTS (SELECT 1 FROM tier2.users
+                 WHERE id = NEW.user_id AND kind = 'agent') THEN
+        RAISE EXCEPTION 'an agent carries no read marker: unread is a person''s question'
+            USING ERRCODE = 'CH101',
+                  CONSTRAINT = 'discussion_participants_agent_has_no_marker';
+    END IF;
+
+    -- CH102 — A MARKER MAY NOT RUN PAST THE THREAD (ruling 5, the upper bound).
+    -- The store clamps with LEAST, so this too is unreachable through the
+    -- package and exists for the direct writer.
+    IF NEW.last_read_seq IS NOT NULL THEN
+        SELECT COALESCE(MAX(seq), 0) INTO head
+          FROM tier2.discussion_turns WHERE discussion_id = NEW.discussion_id;
+        IF NEW.last_read_seq > head THEN
+            RAISE EXCEPTION
+                'a read marker cannot run past the thread: % with % turns',
+                NEW.last_read_seq, head
+                USING ERRCODE = 'CH102',
+                      CONSTRAINT = 'discussion_participants_marker_bounded';
+        END IF;
     END IF;
 
     RETURN NEW;
@@ -900,6 +943,10 @@ CREATE TABLE tier2.discussion_participants (
     added_by uuid NOT NULL,
     removed_at timestamp with time zone,
     removed_by uuid,
+    last_read_seq integer,
+    last_read_at timestamp with time zone,
+    CONSTRAINT discussion_participants_last_read_seq_check CHECK (((last_read_seq IS NULL) OR (last_read_seq >= 0))),
+    CONSTRAINT discussion_participants_read_pair CHECK (((last_read_seq IS NULL) = (last_read_at IS NULL))),
     CONSTRAINT discussion_participants_removed_pair CHECK (((removed_at IS NULL) = (removed_by IS NULL)))
 );
 
@@ -908,7 +955,21 @@ CREATE TABLE tier2.discussion_participants (
 -- Name: TABLE discussion_participants; Type: COMMENT; Schema: tier2; Owner: -
 --
 
-COMMENT ON TABLE tier2.discussion_participants IS 'CHRN-43 / CHRN-44. Who is expected to READ a thread — CHRN-45''s question, not "who may write". Current state rather than a journal: a removed participant''s turns still render, so nothing is lost by not keeping the add/remove history. added_at and added_by are frozen and mean FIRST added.';
+COMMENT ON TABLE tier2.discussion_participants IS 'CHRN-43 / CHRN-44 / CHRN-45. Who is expected to READ a thread, and how far they have got. Current state rather than a journal: a removed participant''s turns still render, so nothing is lost by not keeping the add/remove history. added_at and added_by are frozen and mean FIRST added; last_read_seq is the read marker, monotonic and bounded by the thread.';
+
+
+--
+-- Name: COLUMN discussion_participants.last_read_seq; Type: COMMENT; Schema: tier2; Owner: -
+--
+
+COMMENT ON COLUMN tier2.discussion_participants.last_read_seq IS 'CHRN-45. How far this participant has read, as a tier2.discussion_turns.seq. NULL means never read, which is NOT the same as 0. Monotonic and bounded: it never decreases (CH100) and never exceeds the thread''s last turn (CH102). Always NULL for an agent (CH101).';
+
+
+--
+-- Name: COLUMN discussion_participants.last_read_at; Type: COMMENT; Schema: tier2; Owner: -
+--
+
+COMMENT ON COLUMN tier2.discussion_participants.last_read_at IS 'CHRN-45. When the marker last moved — the thread-list sort. Paired with last_read_seq by discussion_participants_read_pair.';
 
 
 --

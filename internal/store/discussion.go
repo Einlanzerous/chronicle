@@ -205,6 +205,12 @@ type DiscussionParticipant struct {
 
 	RemovedAt *time.Time
 	RemovedBy *uuid.UUID
+
+	// LastReadSeq is how far they have read (CHRN-45). Nil means never read,
+	// which is not the same as 0, and is always nil for an agent — CH101,
+	// ruling 4.
+	LastReadSeq *int
+	LastReadAt  *time.Time
 }
 
 // Active reports whether the participant is currently on the thread.
@@ -323,11 +329,12 @@ func scanTurn(row pgx.Row) (DiscussionTurn, error) {
 // participantColumns carries the join. u.kind and u.display_name are read live
 // — see DiscussionParticipant on why that is correct here and wrong on a turn.
 const participantColumns = `p.discussion_id, p.user_id, u.kind, u.display_name,
-	p.added_at, p.added_by, p.removed_at, p.removed_by`
+	p.added_at, p.added_by, p.removed_at, p.removed_by, p.last_read_seq, p.last_read_at`
 
 func participantDest(p *DiscussionParticipant) []any {
 	return []any{&p.DiscussionID, &p.UserID, &p.Kind, &p.DisplayName,
-		&p.AddedAt, &p.AddedBy, &p.RemovedAt, &p.RemovedBy}
+		&p.AddedAt, &p.AddedBy, &p.RemovedAt, &p.RemovedBy,
+		&p.LastReadSeq, &p.LastReadAt}
 }
 
 // OpenDiscussion writes a thread and its first turn in one transaction.
@@ -365,6 +372,11 @@ func (s *Store) OpenDiscussion(ctx context.Context, in NewDiscussion) (Discussio
 		RETURNING `+turnColumns,
 		d.ID, in.AuthorID, in.Body, in.ComposedAt, in.MemoID))
 	if err != nil {
+		return Discussion{}, DiscussionTurn{}, err
+	}
+
+	// Ruling 3 — posting is reading. The opener has read their own turn.
+	if err := advanceAuthorsMarker(ctx, tx, t); err != nil {
 		return Discussion{}, DiscussionTurn{}, err
 	}
 
@@ -431,6 +443,12 @@ func (s *Store) AppendTurn(ctx context.Context, in NewTurn) (DiscussionTurn, err
 		RETURNING `+turnColumns,
 		in.DiscussionID, in.AuthorID, in.Body, in.ComposedAt, in.MemoID))
 	if err != nil {
+		return DiscussionTurn{}, err
+	}
+
+	// Ruling 3 — posting is reading, in THIS transaction, so an append refused
+	// by CH091 or CH093 leaves the marker where it was.
+	if err := advanceAuthorsMarker(ctx, tx, t); err != nil {
 		return DiscussionTurn{}, err
 	}
 
@@ -680,7 +698,16 @@ func discussionError(err error) error {
 				return fmt.Errorf("%w: %v", ErrConfirmerRequired, err)
 			case conParticipantAllowList:
 				return fmt.Errorf("%w: %v", ErrParticipantColumnFrozen, err)
+			case conMarkerForward:
+				// Unreachable through this package — MarkRead wraps the value
+				// in GREATEST — so this names the rule for a direct writer,
+				// as CH031 does on tier2.notes.
+				return fmt.Errorf("store: a read marker only moves forward: %w", err)
 			}
+		case pgAgentHasNoMarker:
+			return fmt.Errorf("%w: %v", ErrAgentHasNoMarker, err)
+		case pgMarkerPastTheThread:
+			return fmt.Errorf("%w: %v", ErrMarkerPastTheThread, err)
 		case pgLockNotAvailable, pgDeadlockDetected:
 			// Both mean "somebody else is mid-flight on this row, give up and
 			// retry" — which is what a caller does with either. A deadlock

@@ -735,29 +735,27 @@ func TestRemovingAParticipantLeavesTheirTurnsAlone(t *testing.T) {
 
 	// They are still listed, carrying their removal — a reader rendering the
 	// thread needs them, because their turns are still in it.
-	ps, err := s.Participants(ctx, d.ID)
-	if err != nil {
-		t.Fatalf("Participants: %v", err)
+	//
+	// LOOKED UP BY ID RATHER THAN BY POSITION, and the owner is a participant
+	// too: CHRN-45's ruling 3 made posting join you to a thread, so the opener
+	// is on it as well. This test predates that and asserted a total of one.
+	ps := participantNamed(t, s, ctx, d.ID, guest)
+	if ps.Active() {
+		t.Fatalf("participant = %+v, want the guest, removed", ps)
 	}
-	if len(ps) != 1 || ps[0].UserID != guest || ps[0].Active() {
-		t.Fatalf("participants = %+v, want the guest, removed", ps)
-	}
-	firstAdd := ps[0].AddedAt
+	firstAdd := ps.AddedAt
 
 	// A RE-ADD CLEARS THE REMOVAL AND DOES NOT REATTRIBUTE THE FIRST ONE.
 	// added_at / added_by mean FIRST added, frozen by CH100.
 	if err := s.AddParticipant(ctx, d.ID, guest, owner); err != nil {
 		t.Fatalf("re-add: %v", err)
 	}
-	ps, err = s.Participants(ctx, d.ID)
-	if err != nil {
-		t.Fatalf("Participants: %v", err)
+	ps = participantNamed(t, s, ctx, d.ID, guest)
+	if !ps.Active() {
+		t.Fatalf("participant after a re-add = %+v, want active", ps)
 	}
-	if len(ps) != 1 || !ps[0].Active() {
-		t.Fatalf("participants after a re-add = %+v, want one active", ps)
-	}
-	if !ps[0].AddedAt.Equal(firstAdd) {
-		t.Errorf("added_at moved on a re-add: %s -> %s; it means FIRST added", firstAdd, ps[0].AddedAt)
+	if !ps.AddedAt.Equal(firstAdd) {
+		t.Errorf("added_at moved on a re-add: %s -> %s; it means FIRST added", firstAdd, ps.AddedAt)
 	}
 
 	// And the allow list refuses rewriting it directly.
@@ -770,6 +768,25 @@ func TestRemovingAParticipantLeavesTheirTurnsAlone(t *testing.T) {
 	if !errors.Is(discussionError(err), ErrParticipantColumnFrozen) {
 		t.Errorf("rewriting added_at did not map to ErrParticipantColumnFrozen: %v", discussionError(err))
 	}
+}
+
+// participantNamed returns one participant by user id. Since CHRN-45's ruling
+// 3, opening or posting in a thread joins the author to it, so a thread has
+// more participants than a test explicitly added and indexing by position is
+// not safe.
+func participantNamed(t *testing.T, s *Store, ctx context.Context, d, user uuid.UUID) DiscussionParticipant {
+	t.Helper()
+	ps, err := s.Participants(ctx, d)
+	if err != nil {
+		t.Fatalf("Participants: %v", err)
+	}
+	for _, p := range ps {
+		if p.UserID == user {
+			return p
+		}
+	}
+	t.Fatalf("%s is not a participant of %s (have %+v)", user, d, ps)
+	return DiscussionParticipant{}
 }
 
 // Criterion 18 — A PERSON RESOLVES, AND A PERSON ADDS AND REMOVES. The same
@@ -872,12 +889,15 @@ func TestParticipantOrderIsStableWithinATransaction(t *testing.T) {
 		t.Fatalf("commit: %v", err)
 	}
 
-	// They share added_at exactly, which is the precondition that makes the
-	// tie-break matter rather than a detail of this test.
+	// The six SHARE added_at exactly, which is the precondition that makes the
+	// tie-break matter rather than a detail of this test. Scoped to the six —
+	// the opener is a participant too since CHRN-45's ruling 3, added in its
+	// own transaction and therefore at its own now().
 	var distinct int
 	if err := s.pool.QueryRow(ctx,
-		`SELECT count(DISTINCT added_at) FROM tier2.discussion_participants WHERE discussion_id = $1`,
-		d.ID).Scan(&distinct); err != nil {
+		`SELECT count(DISTINCT added_at) FROM tier2.discussion_participants
+		  WHERE discussion_id = $1 AND user_id = ANY($2)`,
+		d.ID, added).Scan(&distinct); err != nil {
 		t.Fatalf("count distinct added_at: %v", err)
 	}
 	if distinct != 1 {
@@ -888,8 +908,9 @@ func TestParticipantOrderIsStableWithinATransaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Participants: %v", err)
 	}
-	if len(first) != len(added) {
-		t.Fatalf("%d participants, want %d", len(first), len(added))
+	// +1 for the opener, who joined by posting.
+	if len(first) != len(added)+1 {
+		t.Fatalf("%d participants, want %d", len(first), len(added)+1)
 	}
 	for i := 0; i < 5; i++ {
 		again, err := s.Participants(ctx, d.ID)
