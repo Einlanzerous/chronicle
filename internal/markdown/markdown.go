@@ -261,3 +261,49 @@ func References(src []byte) []Reference {
 	})
 	return out
 }
+
+// mentionPattern matches an @handle. Letters, digits, hyphen and underscore,
+// which is what an account name can hold; the leading @ is required.
+//
+// LOWERCASE-INSENSITIVE, unlike refPattern, and for the opposite reason. A
+// reference written `chr-311` in prose is usually not a reference, so
+// References is strict. A person typing `@Scribe` at the start of a sentence
+// plainly means the Scribe, and refusing to notice would make the trigger feel
+// broken rather than precise.
+var mentionPattern = regexp.MustCompile(`@([A-Za-z0-9_-]+)`)
+
+// Mentions returns every @handle in a document, lowercased, in the order they
+// appear and without duplicates.
+//
+// IT SKIPS CODE, which is the whole reason this lives here rather than being a
+// regex at the call site. CHRN-47 turns a mention into an agent reply, so a
+// person writing about the feature — "reply when somebody writes `@scribe`" —
+// would otherwise summon the thing they were describing. Code spans and code
+// blocks are where people put the example, and goldmark's AST is what already
+// knows the difference.
+func Mentions(src []byte) []string {
+	doc := md.Parser().Parse(text.NewReader(src))
+	seen := map[string]bool{}
+	var out []string
+	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
+		}
+		switch n.Kind() {
+		case ast.KindCodeSpan, ast.KindCodeBlock, ast.KindFencedCodeBlock:
+			// Their contents are not prose, so nothing inside is a mention.
+			return ast.WalkSkipChildren, nil
+		case ast.KindText:
+			t := n.(*ast.Text)
+			for _, m := range mentionPattern.FindAllSubmatch(t.Segment.Value(src), -1) {
+				h := strings.ToLower(string(m[1]))
+				if !seen[h] {
+					seen[h] = true
+					out = append(out, h)
+				}
+			}
+		}
+		return ast.WalkContinue, nil
+	})
+	return out
+}
