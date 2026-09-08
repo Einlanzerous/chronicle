@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.9.0](https://github.com/Einlanzerous/chronicle/compare/v1.8.0...v1.9.0) (2026-09-08)
+
+
+### Features
+
+* **discussions:** read markers per participant, and the counts derived from them (CHRN-45) ([#71](https://github.com/Einlanzerous/chronicle/issues/71)) ([dc71dfc](https://github.com/Einlanzerous/chronicle/commit/dc71dfc80cbca049372a3734903aa1fd504c3ba4))
+* **discussions:** resolve a thread into a note, linked both ways (CHRN-46) ([#70](https://github.com/Einlanzerous/chronicle/issues/70)) ([d17d1bf](https://github.com/Einlanzerous/chronicle/commit/d17d1bf371c07992ec16fb76770e1ad1d0ff7abb))
+* **discussions:** the agent reply path, on an explicit trigger (CHRN-47) ([#73](https://github.com/Einlanzerous/chronicle/issues/73)) ([1096377](https://github.com/Einlanzerous/chronicle/commit/1096377a31171225435895904f33a9cd6c3e6323))
+* **discussions:** the Scribe as an account, and an agent that joins a thread like anybody else (CHRN-44) ([#72](https://github.com/Einlanzerous/chronicle/issues/72)) ([d8368f0](https://github.com/Einlanzerous/chronicle/commit/d8368f0bb4ad4bf74906a91ecd4516d27710cce1))
+* **discussions:** threads, ordered turns, and an agent that cannot speak twice in a row (CHRN-43) ([#68](https://github.com/Einlanzerous/chronicle/issues/68)) ([815be3f](https://github.com/Einlanzerous/chronicle/commit/815be3f4b124939c77458bbcd527b4689f6bc21c))
+* **notes:** restore by appending, soft delete that is journaled, and the verb set (CHRN-39) ([#65](https://github.com/Einlanzerous/chronicle/issues/65)) ([7dbeb31](https://github.com/Einlanzerous/chronicle/commit/7dbeb31882b1aa7e6d1cf5572388458f9b62d8b4))
+* **scribe:** the CHRN-39 verb set and note target in the proposal contract (CHRN-94) ([#67](https://github.com/Einlanzerous/chronicle/issues/67)) ([2f76eea](https://github.com/Einlanzerous/chronicle/commit/2f76eea283c0513c530d33d66b2b11d6abc34bf9))
+
 ## [1.8.0](https://github.com/Einlanzerous/chronicle/compare/v1.7.0...v1.8.0) (2026-09-05)
 
 
