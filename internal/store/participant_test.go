@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"encoding/csv"
 	"strings"
 	"testing"
 )
@@ -230,13 +231,25 @@ func TestTheAuthorDistinctionSurvivesExport(t *testing.T) {
 		t.Fatalf("COPY TO: %v", err)
 	}
 
-	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if len(lines) != 3 {
-		t.Fatalf("exported %d rows, want 3: %q", len(lines), out.String())
+	// THE EXPORTED COLUMN IS COMPARED EXACTLY, not searched for in the line.
+	//
+	// A `strings.Contains(line, "agent")` here would be vacuous for the two rows
+	// that matter: row 2 exports as `2,agent,an agent said this` and row 3 as
+	// `3,person,and a person answered`, so both bodies contain the word being
+	// looked for and SWAPPING author_kind on both turns would leave the check
+	// green. Only row 1 would have constrained the column, and row 1 is the
+	// person case — the agent half, which is this ticket's whole point, would
+	// have asserted nothing.
+	rows, err := csv.NewReader(bytes.NewReader(out.Bytes())).ReadAll()
+	if err != nil {
+		t.Fatalf("parse the exported CSV: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("exported %d rows, want 3: %q", len(rows), out.String())
 	}
 	for i, want := range []string{KindPerson, KindAgent, KindPerson} {
-		if !strings.Contains(lines[i], want) {
-			t.Errorf("exported row %d = %q, want it to carry %q", i+1, lines[i], want)
+		if got := rows[i][1]; got != want {
+			t.Errorf("exported row %d author_kind = %q, want %q (row: %q)", i+1, got, want, rows[i])
 		}
 	}
 

@@ -252,10 +252,19 @@ const (
 // claim already belongs to a person. Refusing is the only safe answer: silently
 // flipping a person's kind would rewrite what their existing authorship means,
 // and taking the row over would hand an account to a process.
+//
+// WITH THIS ERROR, AND ONLY THIS ONE, EnsureAgent'S User IS MEANINGFUL: it is
+// the account holding the address, so a caller can say whose it is. Stated
+// because the Go convention is the opposite — a value returned beside an error
+// is not to be read — and without saying so, an observed behaviour is one test
+// away from becoming something else's dependency by accident.
 var ErrNotAnAgent = errors.New("store: that address already belongs to a person")
 
 // EnsureAgent returns the agent account at email, creating it if it is not
 // there. Idempotent, so boot may call it on every start.
+//
+// On ErrNotAnAgent it returns the account that holds the address — see that
+// error. On every other error the User is zero, as usual.
 //
 // IT IS NOT SCRIBE-SPECIFIC, and that is the ticket's point rather than
 // generality for its own sake: "an agent is a participant, not a special case
