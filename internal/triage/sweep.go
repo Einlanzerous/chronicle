@@ -179,11 +179,21 @@ func (s *Service) sweepOne(ctx context.Context, att store.LinkAttempt) (res stor
 				Swept:     true,
 			}, false, false
 		}
-		// NOTE and DISCUSSION are refused before T1 until CHRN-37 lands, so a
-		// row here cannot have come from this code. Refused rather than left
-		// pending forever, and the reason says what would have to ship.
+		// A PENDING NOTE OR DISCUSSION ROW CANNOT COME FROM THIS CODE ANY MORE.
+		//
+		// CHRN-95 ruling 3 puts the claim, the write and the confirm in one
+		// transaction, so a local landing either committed — in which case the
+		// row is confirmed and never reaches a sweep — or rolled back entirely,
+		// leaving no row at all. What can still arrive here is a row a BUILD
+		// BEFORE that one left behind, which is why the arm stays.
+		//
+		// Refused rather than left pending forever, and the reason is the
+		// truthful one: nothing was written anywhere, so there is nothing to
+		// reconcile and nothing lost by deciding again. Unlike a TICKET, no
+		// remote system might have acted on it.
 		return refuseSweep(link, nil, fmt.Sprintf(
-			"%s cannot land yet — it needs the page tree from CHRN-37", link.Destination)), false, false
+			"this %s landing did not finish and nothing was written; decide it again",
+			link.Destination)), false, false
 	}
 
 	found, err := s.tickets.TicketsByMemo(ctx, link.MemoID)

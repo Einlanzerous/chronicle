@@ -244,6 +244,28 @@ func (p Proposal) PreAcceptable(status Status, min float64) bool {
 	if p.Destination == DestDiscard {
 		return false
 	}
+
+	// THE THIRD GATE, AND IT IS ON THE VERB RATHER THAN THE DESTINATION.
+	// CHRN-95 ruling 1.
+	//
+	// append and supersede write into text somebody already wrote, which is the
+	// one store CLAUDE.md calls irreplaceable. The DISCARD argument above
+	// transfers exactly: one confidence floor cannot express "this is never in
+	// ACCEPT ALL", and a confident wrong one is precisely the case that clears
+	// any threshold.
+	//
+	// The counter-argument is real and was heard: CHRN-39 already made these
+	// RECOVERABLE — a supersede leaves the old body at seq n-1, and CH041 means
+	// no revision lands without a person named on it. But recorded is not
+	// considered. ACCEPT ALL is one tap over a screen of cards, and the
+	// confirmer it records is a person who agreed to a batch, not to this
+	// rewrite.
+	//
+	// create and relate are deliberately not here: both produce a NEW note and
+	// touch nothing that exists, which is the whole line this gate draws.
+	if p.Verb == VerbAppend || p.Verb == VerbSupersede {
+		return false
+	}
 	return p.Confidence >= min
 }
 
