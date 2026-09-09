@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.0](https://github.com/Einlanzerous/chronicle/compare/v1.9.0...v1.10.0) (2026-09-09)
+
+
+### Features
+
+* **triage:** NOTE and DISCUSSION land, with the verb, the target and the confirming actor (CHRN-95) ([#74](https://github.com/Einlanzerous/chronicle/issues/74)) ([bbaedf0](https://github.com/Einlanzerous/chronicle/commit/bbaedf01000d42f1ea71cbfa6583a870376946d8))
+
 ## [1.9.0](https://github.com/Einlanzerous/chronicle/compare/v1.8.0...v1.9.0) (2026-09-08)
 
 
