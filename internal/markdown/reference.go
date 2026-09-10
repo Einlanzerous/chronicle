@@ -2,7 +2,6 @@ package markdown
 
 import (
 	"strconv"
-	"strings"
 )
 
 // ============================================================================
@@ -91,11 +90,21 @@ const amberPrefix = "amber1."
 
 // ProjectKeys reports whether a key names a live Switchyard project.
 //
-// DECLARED HERE RATHER THAN IMPORTED, and that is forced rather than chosen:
-// internal/store imports this package (notelink.go) and internal/scribe/
-// catalogue imports internal/store, so importing the catalogue's Catalogue
-// would close a cycle. The reuse is structural — *catalogue.Snapshot already
-// satisfies this, because scribe.Catalogue spells HasProject the same way.
+// DECLARED HERE RATHER THAN IMPORTED, and the reason is INTERFACE WIDTH rather
+// than a cycle. scribe.Catalogue (internal/scribe/validate.go) spells
+// HasProject identically, and internal/scribe imports nothing of Chronicle's at
+// all, so taking it would compile — but it carries THREE methods: HasProject,
+// HasPage and HasNote. This package can answer one, and accepting the other two
+// would make every caller of NewRenderer implement methods it has no opinion
+// about.
+//
+// A cycle does exist one package further down, which is worth knowing before
+// anybody tries to unify the spelling: internal/store imports this package
+// (notelink.go) and internal/scribe/catalogue imports internal/store, so the
+// IMPLEMENTATION cannot be imported here even though the interface could.
+//
+// The reuse is therefore structural, which is what it should be:
+// *catalogue.Snapshot satisfies this as it stands, with no adapter.
 //
 // The consequence is worth keeping: internal/markdown stays a LEAF PACKAGE with
 // no internal imports and no logger, which is what lets the pure Render be
@@ -341,10 +350,4 @@ func isAmberByte(b byte) bool {
 // rule changes that half on purpose.
 func isRefWordByte(b byte) bool {
 	return isAlnum(b) || b == '-' || b == '_' || b == '/'
-}
-
-// FormatKeyRef is the spelling this package recognises, for a caller building a
-// token rather than reading one.
-func FormatKeyRef(key string, number int64) string {
-	return strings.ToUpper(key) + "-" + strconv.FormatInt(number, 10)
 }

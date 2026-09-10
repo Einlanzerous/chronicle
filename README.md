@@ -45,10 +45,18 @@ written into Chronicle's tables.
 
 ```
 ┌─────────────────────────────┐
-│ SY-412 · IN PROGRESS      ↗ │   coral = Switchyard
+│ SWY-389 · IN PROGRESS     ↗ │   coral = Switchyard
 │ LINKED · NOT COPIED         │   gold  = Amber
 └─────────────────────────────┘   (estate-wide, not a Chronicle choice)
 ```
+
+The tokens are the real ones, which is not a detail. CHRN-48 found the parser
+recognising `SY-412` and `AMB-2291` — an illustration read as an identifier —
+while every live estate key rendered as prose. There is no Switchyard project
+keyed `SY`, and Amber has no `AMB-####` id and nothing in it is ever `SEALED`:
+its addressable unit is a citation, `amber1.<session>.<record>[.<block>]`,
+resolvable at `GET /v1/cite/{ref}` and reporting `held` where the card above
+would say `IN PROGRESS`.
 
 Amber holds the durable archive as its source of truth; Switchyard owns the work
 ledger. Copy either one here and there is a third source of truth that goes

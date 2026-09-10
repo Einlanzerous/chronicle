@@ -512,3 +512,28 @@ func plainRender(t *testing.T, src string) string {
 func uuid2cite(session, record, block string) string {
 	return "amber1." + session + "." + record + "." + block
 }
+
+// A reference inside image alt text must survive into the alt attribute.
+//
+// It did not before CHRN-48: goldmark builds an alt by flattening the label to
+// plain text, and a childless inline node contributes nothing, so the token was
+// silently deleted from the alt while the rest of the sentence survived. Found
+// in review of PR #76 and pre-existing — CHR-0311 did it on main too — but this
+// change widens the grammar from three prefixes to fifteen project keys plus
+// DSC and amber1, so it multiplies the reach of a bug that eats authored text.
+func TestAReferenceSurvivesInImageAltText(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"![queue for SWY-389, by hand](x.png)", `alt="queue for SWY-389, by hand"`},
+		{"![see CHR-0311](x.png)", `alt="see CHR-0311"`},
+		{"![at amber1.a.b.0](x.png)", `alt="at amber1.a.b.0"`},
+	} {
+		if out := renderKeys(t, tc.in); !strings.Contains(out, tc.want) {
+			t.Errorf("Render(%q) lost the token from alt:\n got %s\nwant %s", tc.in, out, tc.want)
+		}
+	}
+	// And the marker itself is unchanged: the renderer still skips children.
+	out := renderKeys(t, "Touches SWY-389.")
+	if !strings.Contains(out, `data-ref="SWY-389">SWY-389</span>`) {
+		t.Errorf("the marker gained a duplicate token:\n%s", out)
+	}
+}

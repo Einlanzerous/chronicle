@@ -133,7 +133,20 @@ func (t *refTransformer) mark(txt *ast.Text, src []byte) {
 		if m.start > prev {
 			nodes = append(nodes, ast.NewTextSegment(text.NewSegment(prev, m.start)))
 		}
-		nodes = append(nodes, &refNode{ref: m.ref})
+		// THE TOKEN IS ALSO A TEXT CHILD, and it is not redundant. Anything that
+		// flattens a tree to plain text — goldmark's nodeToHTMLText, which builds
+		// an image's alt attribute — walks children and has nothing to read from
+		// a childless node, so a reference inside alt text was DELETED FROM IT:
+		//
+		//	![queue for SWY-389, by hand](x.png)
+		//	 → alt="queue for , drawn by hand"
+		//
+		// A package whose first invariant is that authored bytes survive must not
+		// eat one. The rendered marker is unaffected because render() returns
+		// WalkSkipChildren and writes the token itself.
+		rn := &refNode{ref: m.ref}
+		rn.AppendChild(rn, ast.NewTextSegment(text.NewSegment(m.start, m.end)))
+		nodes = append(nodes, rn)
 		prev = m.end
 	}
 	if len(nodes) == 0 {
