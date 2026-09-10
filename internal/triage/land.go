@@ -170,7 +170,8 @@ func (s *Service) landed(ctx context.Context, res Result, link store.MemoLink, e
 // footer: that mention would not have produced an edge either.
 func relateBody(title, body string, target int64) string {
 	for _, r := range markdown.References([]byte(title + "\n\n" + body)) {
-		if r.Kind == markdown.KindNote && r.Number == target {
+		if r.System == markdown.SystemChronicle && r.Target == markdown.TargetNote &&
+			r.Number == target {
 			return body
 		}
 	}

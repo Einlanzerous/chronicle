@@ -64,7 +64,7 @@ func reindexLinks(ctx context.Context, q querier, noteID, revisionID uuid.UUID, 
 	// so a note quoting CHR-0311 in backticks does not acquire an edge.
 	seen := map[int64]bool{}
 	for _, r := range markdown.References([]byte(title + "\n\n" + body)) {
-		// FILTERED HERE AND NOT BY THE CHECK CONSTRAINT. markdown's refPattern
+		// FILTERED HERE AND NOT BY THE CHECK CONSTRAINT. markdown's grammar
 		// matches any run of digits, so prose containing "CHR-0" yields
 		// Number 0 — and 0013's `CHECK (to_number > 0)` would then refuse the
 		// insert, fail reindexLinks, and roll back THE WHOLE NOTE. A sentence
@@ -75,8 +75,8 @@ func reindexLinks(ctx context.Context, q querier, noteID, revisionID uuid.UUID, 
 		// A note does not link to itself either. Self-references happen — a
 		// note quoting its own number while explaining what it is about — and
 		// an edge for one puts every such note in its own backlink list.
-		if r.Kind != markdown.KindNote || r.Number <= 0 ||
-			r.Number == selfNumber || seen[r.Number] {
+		if r.System != markdown.SystemChronicle || r.Target != markdown.TargetNote ||
+			r.Number <= 0 || r.Number == selfNumber || seen[r.Number] {
 			continue
 		}
 		seen[r.Number] = true
