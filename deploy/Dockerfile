@@ -24,7 +24,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
 
 # 2) Runtime: slim Alpine with ca-certificates and wget (busybox) for the
 #    compose healthcheck.
-FROM alpine:3.20 AS runtime
+FROM alpine:3.23 AS runtime
 RUN apk add --no-cache ca-certificates
 COPY --from=build /out/chronicle /usr/local/bin/chronicle
 ENV CHRONICLE_PORT=4009
