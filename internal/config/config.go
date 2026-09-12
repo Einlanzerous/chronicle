@@ -443,6 +443,19 @@ func Load() (Config, error) {
 		if err != nil || !u.IsAbs() || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 			return c, fmt.Errorf("config: CHRONICLE_AMBER_URL %q is not an absolute http(s) URL", c.AmberURL)
 		}
+		// A query or a fragment is refused for the reason
+		// invite.NormalizeBase refuses one: the client concatenates
+		// "/v1/cite/<ref>" onto this, so a base carrying either produces a URL
+		// that parses with an empty path and asks Amber about `/` forever —
+		// configured, reported as configured, and unusable. Checked in both
+		// places rather than once, because a config that boots and a client
+		// that refuses would be a service that starts and then cannot resolve.
+		if u.RawQuery != "" || u.ForceQuery {
+			return c, fmt.Errorf("config: CHRONICLE_AMBER_URL %q must not carry a query string", c.AmberURL)
+		}
+		if u.Fragment != "" {
+			return c, fmt.Errorf("config: CHRONICLE_AMBER_URL %q must not carry a fragment", c.AmberURL)
+		}
 	}
 	if (c.AmberURL == "") != (c.AmberToken == "") {
 		return c, fmt.Errorf("config: set both CHRONICLE_AMBER_URL and CHRONICLE_AMBER_TOKEN, or neither " +

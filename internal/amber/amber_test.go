@@ -293,6 +293,19 @@ func TestNewRefusesAHalfConfiguredClient(t *testing.T) {
 		{"no token", "http://amber:4008", "", "CHRONICLE_AMBER_TOKEN"},
 		{"not a url", "amber:4008", "a-token", "CHRONICLE_AMBER_URL"},
 		{"wrong scheme", "ftp://amber:4008", "a-token", "CHRONICLE_AMBER_URL"},
+
+		// A base carrying either of these parses, boots, reports itself
+		// configured — and then asks Amber about `/` for every citation,
+		// because concatenating a path onto it leaves the path EMPTY:
+		//
+		//	http://amber:4008#frag  +  /v1/cite/<ref>
+		//	  -> path="" fragment="frag/v1/cite/<ref>"
+		//
+		// Which is the configured-and-unusable shape the parse exists to
+		// prevent, reached through the one malformation it was not checking.
+		{"a query string", "http://amber:4008?x=1", "a-token", "query"},
+		{"a forced query", "http://amber:4008?", "a-token", "query"},
+		{"a fragment", "http://amber:4008#frag", "a-token", "fragment"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := New(tc.url, tc.token)
@@ -304,6 +317,20 @@ func TestNewRefusesAHalfConfiguredClient(t *testing.T) {
 			}
 		})
 	}
+
+	// A PATH IS NOT A MALFORMATION. Amber behind a reverse proxy under a prefix
+	// concatenates correctly, and refusing it would reject a real deployment.
+	t.Run("a path prefix is allowed and reaches the right endpoint", func(t *testing.T) {
+		c, rec := serve(t, http.StatusOK, heldBody())
+		prefixed, err := New(c.BaseURL()+"/archive", "a-token")
+		if err != nil {
+			t.Fatalf("New with a path prefix: %v", err)
+		}
+		fetch(t, prefixed, citation)
+		if want := "/archive/v1/cite/" + citation; rec.path != want {
+			t.Fatalf("path = %q, want %q", rec.path, want)
+		}
+	})
 
 	t.Run("a trailing slash is trimmed", func(t *testing.T) {
 		c, err := New("http://amber:4008/", "a-token")

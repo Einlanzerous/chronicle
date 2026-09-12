@@ -588,6 +588,29 @@ func runServe(args []string) error {
 			"visible_at", "GET /triage/batch")
 	}
 
+	// THE CAPTURE ARCHIVE (CHRN-50). Said out loud in both directions, because
+	// neither state is discoverable from anywhere else yet: no surface renders
+	// a note, so an operator has no page to look at and nothing else to read.
+	//
+	// INFO AND NOT WARN, in both branches, and that is the honest level. An
+	// unset Amber is not a broken deployment — citations render as unconfigured,
+	// which is a true thing to say — and a SET one is not yet a working feature
+	// either, which is what the second half of that line exists to admit.
+	// CHRN-97 owns whether references resolve server-side inside the note
+	// payload or client-side against an endpoint of their own, and that is what
+	// decides where the transport is registered; saying so here costs nothing
+	// and answers none of it.
+	if cfg.AmberConfigured() {
+		// The URL, never the token.
+		logger.Info("the capture archive is configured, and nothing resolves citations yet",
+			"amber", cfg.AmberURL,
+			"pending", "CHRN-97 decides where a reference resolver is built")
+	} else {
+		logger.Info("no capture archive: CHRONICLE_AMBER_URL and CHRONICLE_AMBER_TOKEN are unset, "+
+			"so an amber1 citation will render as unconfigured rather than as an outage",
+			"remedy", "set both to Amber's base URL and its shared API token")
+	}
+
 	if cfg.SSOEnabled() {
 		deps.CFAccess = api.NewCFAccessVerifier(cfg.CFAccessTeamDomain, cfg.CFAccessAUD...)
 	}

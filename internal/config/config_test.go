@@ -493,7 +493,14 @@ func TestAmberCredentialsAreBothOrNeither(t *testing.T) {
 	// A typo'd URL is refused at boot rather than at the first citation: the
 	// "configured and unusable" shape reads as somebody else's outage.
 	t.Run("a URL that is not absolute http(s) is refused at boot", func(t *testing.T) {
-		for _, bad := range []string{"amber:4008", "/v1", "ftp://amber:4008", "://amber"} {
+		// The last three parse and would boot: the client concatenates
+		// "/v1/cite/<ref>" onto the base, so a query or a fragment leaves the
+		// PATH EMPTY and every citation asks Amber about `/` — configured,
+		// reported as configured, and unusable.
+		for _, bad := range []string{
+			"amber:4008", "/v1", "ftp://amber:4008", "://amber",
+			"http://amber:4008?x=1", "http://amber:4008?", "http://amber:4008#frag",
+		} {
 			_, err := loadErr(t, merge(base, map[string]string{
 				"CHRONICLE_AMBER_URL":   bad,
 				"CHRONICLE_AMBER_TOKEN": "a-perfectly-good-token",

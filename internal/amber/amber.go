@@ -150,6 +150,23 @@ func New(baseURL, token string) (*Client, error) {
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return nil, fmt.Errorf("amber: CHRONICLE_AMBER_URL %q is not an absolute http(s) URL", baseURL)
 	}
+	// A QUERY OR A FRAGMENT ON THE BASE IS THE SAME FAILURE ONE STEP LATER, and
+	// internal/invite/url.go refuses it for the identical reason. Fetch
+	// concatenates "/v1/cite/<ref>" onto this, so `http://amber:4008#frag`
+	// becomes `http://amber:4008#frag/v1/cite/<ref>` — a URL that parses, with
+	// an EMPTY PATH, so every citation asks Amber about `/` and the whole thing
+	// boots cleanly and reports itself configured. That is the
+	// configured-and-unusable shape the boot-time parse exists to prevent,
+	// arriving through the one malformation the parse was not looking at.
+	//
+	// A path IS allowed: a reverse proxy serving Amber under a prefix
+	// concatenates correctly and is a real deployment.
+	if u.RawQuery != "" || u.ForceQuery {
+		return nil, fmt.Errorf("amber: CHRONICLE_AMBER_URL %q must not carry a query string", baseURL)
+	}
+	if u.Fragment != "" {
+		return nil, fmt.Errorf("amber: CHRONICLE_AMBER_URL %q must not carry a fragment", baseURL)
+	}
 	if strings.TrimSpace(token) == "" {
 		return nil, fmt.Errorf("amber: CHRONICLE_AMBER_TOKEN is not set — every /v1 route answers 401 without it")
 	}
