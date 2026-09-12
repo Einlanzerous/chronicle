@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.12.0](https://github.com/Einlanzerous/chronicle/compare/v1.11.0...v1.12.0) (2026-09-12)
+
+
+### Features
+
+* **amber:** resolve a citation against the archive that exists, not the one the ticket imagined (CHRN-50) ([#82](https://github.com/Einlanzerous/chronicle/issues/82)) ([e7a41c6](https://github.com/Einlanzerous/chronicle/commit/e7a41c637649b83c4e91b1f3174d73f7f8f6dbfc))
+* **resolve:** resolve a ticket reference against live Switchyard state (CHRN-49) ([#81](https://github.com/Einlanzerous/chronicle/issues/81)) ([21b3eae](https://github.com/Einlanzerous/chronicle/commit/21b3eae0da26cc0a4eec29283facd3197b7624a8))
+
 ## [1.11.0](https://github.com/Einlanzerous/chronicle/compare/v1.10.0...v1.11.0) (2026-09-12)
 
 
