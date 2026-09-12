@@ -205,10 +205,34 @@ For any new table, query, or handler, say which side it is on. Concretely:
   requirement above is unchanged** — knowing the true reason is what keeps it
   from being argued away by the next person who checks the old one.
 - **No tier-1 write path may reach a tier-2 table.** The enforcement is the
-  Postgres grant; the proof is `TestTier1RoleCannotReachCredentials` in
-  `internal/store/user_test.go`. That test **skips** without
-  `CHRONICLE_TEST_TIER1_DATABASE_URL`, which CI sets — if a PR touches the CI
-  env or the test's skip condition, check it still runs.
+  Postgres grant; the proof is two-layered since CHRN-52. The **audit**,
+  `store.AuditTier1Role` in `internal/store/tier1_audit.go`, walks the
+  catalogue at run time and holds the role to an allow-list — CONNECT on the
+  database, USAGE on `tier2`, table-level SELECT on `tier2.memos` and
+  `tier2.transcripts`, nothing else anywhere outside `tier1` — covering
+  tables that do not exist yet, column-level grants, sequences, default
+  privileges (to the role **or PUBLIC**), `SECURITY DEFINER` functions, role
+  attributes and membership, and CREATE on the database. `serve` runs it at
+  boot and **refuses to start** on a finding; `chronicle tier1-audit` runs it
+  on demand. Its test, `tier1_audit_test.go`, proves both directions: clean on
+  the real schema, and **exactly one finding per widening** applied in a
+  rolled-back transaction. Beside it, the older role-side tests —
+  `TestTier1RoleCannotReachCredentials` in `user_test.go` and its siblings —
+  stay as positive controls that the role can connect and read what it should.
+  Those **skip** without `CHRONICLE_TEST_TIER1_DATABASE_URL`, which CI sets —
+  if a PR touches the CI env or a skip condition, check they still run. The
+  audit needs only the main DSN and never skips when the database tests run.
+
+  **A legitimate widening edits two places on purpose**: the migration that
+  grants it and `tier1Readable` in `tier1_audit.go`. A PR that does the first
+  without the second fails the audit, correctly; one that does the second
+  without arguing for it is the 🔴 above in a different file.
+
+  **`CHRONICLE_TIER1_DATABASE_URL` has no fallback.** `serve` refuses when it
+  is unset, when it connects as any role but `chronicle_tier1`, and when it
+  is unreachable — the third must never become "use the main pool meanwhile",
+  which is the fallback under a better excuse. A diff that softens any of the
+  three branches in `openTier1Pool` is a 🔴.
 
 Note the two meanings of "disposable" and do not let a diff blur them. Tier 1 is
 disposable *because it is regenerable*. Audio is pruned *by policy despite not

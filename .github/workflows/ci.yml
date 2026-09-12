@@ -80,11 +80,29 @@ jobs:
             psql "postgres://postgres:${PGPW}@localhost:5432/postgres?sslmode=disable" \
             -v ON_ERROR_STOP=1 <<SQL
           CREATE ROLE chronicle LOGIN PASSWORD '${PGPW}';
-          CREATE ROLE chronicle_tier1 LOGIN PASSWORD '${PGPW}';
           CREATE ROLE asr LOGIN PASSWORD '${PGPW}';
           CREATE DATABASE chronicle_test OWNER chronicle;
           CREATE DATABASE asr_test OWNER asr;
           SQL
+
+      # chronicle_tier1 is NOT created above, on purpose. Its shape — a plain
+      # LOGIN role with CONNECT on the database and nothing else, PUBLIC revoked
+      # on the database and on schema public — is defined ONCE, in
+      # deploy/tier1-role.sql, and applied here exactly as deploy/provision-db.sh
+      # applies it to a real database. That is what makes the tier-1 audit
+      # (CHRN-52) pass in CI for the right reason: before this, CI's role kept
+      # PUBLIC's default TEMP+CONNECT on the database and USAGE on public, so an
+      # audit asserting "CONNECT and nothing else" could only have been green
+      # here by being wrong.
+      #
+      # Connected to chronicle_test, because the schema revoke is per database.
+      # The password and database name travel in the environment, read by the
+      # file's \getenv, so neither lands on a command line.
+      - name: Lock down chronicle_tier1 the way production does
+        run: |
+          docker run --rm --network host -i -e T1_PW="${PGPW}" -e DB=chronicle_test "$PG_IMAGE" \
+            psql "postgres://postgres:${PGPW}@localhost:5432/chronicle_test?sslmode=disable" \
+            -v ON_ERROR_STOP=1 < deploy/tier1-role.sql
 
       - name: Assemble the ASR test DSN
         run: |

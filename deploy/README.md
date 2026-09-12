@@ -24,18 +24,28 @@ Two documents making one claim, with the second going stale, is the CHRN-79 shap
 | file | what it is |
 |---|---|
 | `Dockerfile` | static Go binary on Alpine. `docker build -f deploy/Dockerfile -t chronicle:local .` |
-| `provision-db.sh` | database, roles and the tier lockdown. Run once, as superuser, under `signet exec` |
+| `provision-db.sh` | database, roles and the tier lockdown, for a Postgres that `construct-server` does not provision. Run as superuser, under `signet exec` |
+| `tier1-role.sql` | **the one definition** of `chronicle_tier1`'s shape and the database lockdown it relies on: LOGIN, CONNECT and nothing else, PUBLIC revoked on the database and on schema `public`. Sourced by `provision-db.sh`, applied by CI to `chronicle_test`, mirrored by `construct-server`'s `db/init-db.sh` |
 | `../asr/` | the shared estate ASR service — the pinned whisper.cpp image, the job contract, and `asrd`. Its own subtree, database, role and release; see `asr/README.md` |
 
 ## Order
 
-1. **Database** — `signet exec --secret construct-server/CHRONICLE_DB_PASSWORD --secret construct-server/CHRONICLE_TIER1_DB_PASSWORD -- deploy/provision-db.sh`
-2. **Secret on disk** — `construct-server`'s `docker-compose.yml` reads `${CHRONICLE_DB_PASSWORD}`, so Signet needs file targets:
+1. **Database** — on the estate, nothing to run: `construct-server`'s `db/init-db.sh` provisions the `chronicle` role, both databases **and `chronicle_tier1`** on every deploy (SERV-169, SERV-182). The tier-1 role gets a dedicated block there rather than the `ensure_db` helper, because that helper ends in an unconditional `GRANT ALL PRIVILEGES ON DATABASE` that would hand the role CREATE on the tier-2 database every deploy. The block mirrors `deploy/tier1-role.sql`; if the two ever disagree, `chronicle tier1-audit` against `chronicle_test` says so.
+
+   Anywhere else — a developer's own Postgres — `signet exec --secret construct-server/CHRONICLE_DB_PASSWORD --secret construct-server/CHRONICLE_TIER1_DB_PASSWORD -- deploy/provision-db.sh`.
+
+   **Two shapes to expect, neither a fault.** On a cold rebuild of the estate's data directory, Chronicle **crash-cycles once**: `deploy.yml` runs `init-db.sh` after `up -d`, so the first boot fails on `role "chronicle_tier1" does not exist`, the script creates it, and `restart: unless-stopped` brings the service up clean. And **`serve` refuses to start** without a working tier-1 DSN — see step 6 — so a compose block missing `CHRONICLE_TIER1_DATABASE_URL` is a crash loop with one clear line, not a service quietly deriving as the main role.
+
+   **After any provisioning change, and before promoting a release: `chronicle tier1-audit`.** It walks the catalogue and reports every privilege `chronicle_tier1` holds outside the allow-list — CONNECT on the database, USAGE on `tier2`, SELECT on `tier2.memos` and `tier2.transcripts`, nothing else outside `tier1` — one line per finding with the `REVOKE` that clears it, exit 1 on any. `serve` runs the same audit at boot and refuses to start on a finding (CHRN-52), and `construct-server`'s deploy runs it after the stack is healthy and fails the deploy on it. Read-only; against production:
    ```
-   signet target add-key --project construct-server --path /home/magos/construct-server/.env --name CHRONICLE_DB_PASSWORD
-   signet target add-key --project construct-server --path /opt/construct-server/.env      --name CHRONICLE_DB_PASSWORD
+   docker compose exec -T chronicle chronicle tier1-audit
+   ```
+2. **Secret** — `construct-server`'s `docker-compose.yml` reads `${CHRONICLE_DB_PASSWORD}` **and `${CHRONICLE_TIER1_DB_PASSWORD}`**, both rendered into the deploy's `.env` from the `PROD_ENV_FILE` environment secret that Signet owns. Each needs that render target:
+   ```
+   signet target add-key --project construct-server --gh-secret PROD_ENV_FILE --name CHRONICLE_DB_PASSWORD,CHRONICLE_TIER1_DB_PASSWORD
    signet sync
    ```
+   **Sync before the compose change deploys.** An unrendered `${CHRONICLE_TIER1_DB_PASSWORD}` substitutes as empty, the tier-1 pool cannot connect, and `serve` refuses — correctly, and loudly.
 3. **Image** — published to `ghcr.io/einlanzerous/chronicle` by
    `.github/workflows/publish.yml` (**CHRN-73**). Until that landed nothing in
    this repo had ever built an image, and this line claimed CHRN-17 published
@@ -130,12 +140,15 @@ Two documents making one claim, with the second going stale, is the CHRN-79 shap
    immediately `missing`.
 6. **Compose** — the `chronicle` service block lives in `construct-server`'s `docker-compose.yml`. Set `CHRONICLE_OWNER_EMAIL` in `.env`, then `docker compose up -d chronicle`. The service refuses to start without it: auth is unconditional (CHRN-71) and the owner is who the first invite belongs to.
 
-   Four decisions in that block are not derivable from reading it, so they are recorded here:
+   **It also refuses to start without `CHRONICLE_TIER1_DATABASE_URL`** — a DSN for the `chronicle_tier1` role on the same database — and there is no fallback (CHRN-52, ruling 1). Three refusals, each naming its remedy: unset (or equal to the main DSN); set but connecting as any other role, which the service asks the database rather than inferring from the variable; and set but unreachable after the connection budget, which stays a refusal rather than becoming "use the main pool meanwhile". Derived work — the Scribe, and the tier-1 reads CHRN-100 adds — runs on that pool, which migration 0007 lets read two tier-2 tables and write none; a service running that work as `chronicle` would have the tier boundary granted and nothing standing behind it, which is how production ran from E4 until SERV-182.
+
+   Five decisions in that block are not derivable from reading it, so they are recorded here:
 
    - **No `ports:`, deliberately.** Chronicle is reached through Traefik on the internal entrypoint, never from the host. Publishing a port would put an unauthenticated listener on the host and bypass the edge entirely.
    - **The Access team domain, AUD and mobile base URL are literals, not `.env` indirections.** They are identifiers and hostnames, not secrets — and `check-edge-auth.sh` reads the AUD *straight out of the compose file* to assert it agrees with the guard's `CF_ACCESS_AUD_MAP` entry for this host. Behind a `${...}` the check has nothing to read. Two copies of one identity is not ideal; they are cross-checked rather than trusted, which is what SERV-106 exists to do.
    - **The team domain and AUD move together.** `config.Load` errors when exactly one of the pair is set and `runServe` returns that error, so a literal AUD beside an empty `${...}` team domain crash-loops the container rather than serving unverified.
    - **`CHRONICLE_OWNER_EMAIL` unset is not a soft failure.** The owner keeps migration 0002's placeholder, which can never match a Cloudflare-verified email, so browser sign-in would look configured and silently never work.
+   - **The tier-1 DSN names the same database and a different role, and the `postgres:` service carries the role's password too.** The second is what lets `init-db.sh`, which runs inside that container, re-assert the role on every deploy; without it the script's empty-password guard skips the role loudly and the DSN above connects with an empty password, which `serve` refuses.
 7. **First sign-in** — the first boot logs a single-use invite at `warn`:
    `docker compose logs chronicle | grep first-boot`. It expires in seven days
    and is never shown again; `docker compose exec chronicle chronicle

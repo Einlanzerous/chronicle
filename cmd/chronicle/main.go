@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Einlanzerous/chronicle/internal/api"
 	"github.com/Einlanzerous/chronicle/internal/asrclient"
@@ -88,6 +89,8 @@ func run(args []string) error {
 		return runPrune(args[1:])
 	case "eval":
 		return runEval(args[1:])
+	case "tier1-audit":
+		return runTier1Audit(args[1:])
 	case "-h", "--help", "help":
 		usage()
 		return nil
@@ -107,6 +110,7 @@ usage:
   chronicle retranscribe [--memo ID]   release held memos back to the queue
   chronicle prune [--dry-run]          delete audio past its retention window
   chronicle eval [--dry-run]           score the router against the labelled set
+  chronicle tier1-audit                prove chronicle_tier1 holds only what the tier boundary allows
   chronicle version                    print the build version
 
 migrate defaults to "up". "down" without -n rolls everything back.
@@ -125,7 +129,118 @@ model, and is the half that needs no GPU. --stratum synthetic needs no database
 either — it routes against the committed fixture catalogue and reads only the
 CHRONICLE_SCRIBE_* variables. Scoring --stratum real waits on CHRN-31's live
 project list; when it lands, that stratum is HELD OUT, so log every run.
+
+tier1-audit walks the catalogue on CHRONICLE_DATABASE_URL and reports every
+privilege chronicle_tier1 holds outside the allow-list (CHRN-52), one per line
+with the REVOKE that clears it. Exit 1 on any. Read-only. serve runs the same
+audit at boot and refuses to start on a finding; run this after a provisioning
+change and before promoting, so the refusal is never the first anyone hears.
 `)
+}
+
+// openTier1Pool opens the pool derived writers run on and proves it is the
+// right role. Three refusals and no fallback (CHRN-52 ruling 1):
+//
+//   - unset: the variable is missing, or equals the main DSN.
+//   - unreachable: ConnectWithRetry's budget elapses. This STAYS an error
+//     rather than becoming "use the main pool while the tier-1 one is down",
+//     which is the tempting fix during exactly the outage it describes and
+//     would reintroduce the fallback under a better excuse.
+//   - wrong role: the DSN connects, but not as chronicle_tier1. Asked of the
+//     database (current_user) rather than inferred from the variable, so an
+//     operator who points the variable at the wrong DSN gets a refusal and
+//     not a configuration that changes nothing and looks like it worked.
+func openTier1Pool(ctx context.Context, cfg config.Config, logger *slog.Logger, maxWait time.Duration) (*pgxpool.Pool, *store.Tier1Store, error) {
+	if !cfg.Tier1IsSeparate() {
+		return nil, nil, fmt.Errorf("CHRONICLE_TIER1_DATABASE_URL is unset (or equals CHRONICLE_DATABASE_URL): " +
+			"derived writers would run as the main role, which can write tier 2, and the tier boundary " +
+			"would be granted with nothing standing behind it. Set it to a DSN for the chronicle_tier1 role; " +
+			"there is no fallback (CHRN-52)")
+	}
+	pool, err := store.ConnectWithRetry(ctx, cfg.Tier1DatabaseURL, maxWait)
+	if err != nil {
+		return nil, nil, fmt.Errorf("tier-1 pool (CHRONICLE_TIER1_DATABASE_URL): %w; "+
+			"not falling back to the main role — fix the DSN, the host, or the role's password", err)
+	}
+	tier1 := store.NewTier1(pool)
+	role, err := tier1.Role(ctx)
+	if err != nil {
+		pool.Close()
+		return nil, nil, fmt.Errorf("tier-1 pool: %w", err)
+	}
+	if role != store.Tier1RoleName {
+		pool.Close()
+		return nil, nil, fmt.Errorf("CHRONICLE_TIER1_DATABASE_URL connects as %q, want %q: the tier boundary "+
+			"would be granted and nothing would stand behind it. Point it at a DSN for the chronicle_tier1 role",
+			role, store.Tier1RoleName)
+	}
+	logger.Info("derived writers are isolated", "role", role,
+		"reads", "tier2.memos, tier2.transcripts", "writes", "tier1 only")
+	return pool, tier1, nil
+}
+
+// refuseIfTier1Widened runs the audit on the main pool and refuses on any
+// finding (CHRN-52 ruling 2).
+func refuseIfTier1Widened(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger) error {
+	audit, err := store.AuditTier1Role(ctx, pool)
+	if err != nil {
+		return fmt.Errorf("tier-1 audit: %w", err)
+	}
+	return refuseIfWidened(audit, logger)
+}
+
+// refuseIfWidened is the decision, separated from the query so it can be
+// tested against a report without a widened database: one error line per
+// finding, carrying the REVOKE, then a refusal that says how many there were.
+func refuseIfWidened(audit store.Tier1Audit, logger *slog.Logger) error {
+	for _, f := range audit.Findings {
+		logger.Error("chronicle_tier1 holds a privilege the tier boundary does not allow",
+			"object", f.Object, "privilege", f.Privilege, "rule", f.Rule, "remedy", f.Remedy)
+	}
+	if n := len(audit.Findings); n > 0 {
+		return fmt.Errorf("tier-1 audit: chronicle_tier1 holds %d privilege(s) outside the allow-list on %s; "+
+			"refusing to serve until they are revoked (each is logged above with its remedy)", n, audit.Database)
+	}
+	logger.Info("tier-1 role audited", "database", audit.Database,
+		"schemas", audit.Schemas, "relations", audit.Relations, "functions", audit.Functions, "findings", 0)
+	return nil
+}
+
+// runTier1Audit is `chronicle tier1-audit`: the boot audit, on demand, for an
+// operator and for construct-server's deploy gate. Read-only; exits 1 on any
+// finding so a deploy step can gate on it.
+func runTier1Audit(args []string) error {
+	fs := flag.NewFlagSet("tier1-audit", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	pool, err := store.ConnectWithRetry(ctx, cfg.DatabaseURL, 30*time.Second)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	audit, err := store.AuditTier1Role(ctx, pool)
+	if err != nil {
+		return fmt.Errorf("tier-1 audit: %w", err)
+	}
+	fmt.Printf("tier-1 audit: database %s — %d schemas, %d relations, %d functions examined\n",
+		audit.Database, audit.Schemas, audit.Relations, audit.Functions)
+	for _, f := range audit.Findings {
+		fmt.Println(f)
+	}
+	if n := len(audit.Findings); n > 0 {
+		return fmt.Errorf("tier-1 audit: %d finding(s); chronicle_tier1 holds more than the tier boundary allows", n)
+	}
+	fmt.Println("tier-1 audit: clean")
+	return nil
 }
 
 func runServe(args []string) error {
@@ -163,51 +278,34 @@ func runServe(args []string) error {
 
 	st := store.New(pool)
 
-	// THE TIER-1 POOL (CHRN-32 §1.1, ruling R4). Derived work — Scribe now,
-	// CHRN-41's index later — reaches the database through this and not through
-	// `pool`, because migration 0007 grants chronicle_tier1 SELECT on
-	// tier2.memos and tier2.transcripts and no write anywhere in tier 2.
+	// THE TIER-1 POOL (CHRN-32 §1.1, ruling R4; CHRN-52 rulings 1 and 2).
+	// Derived work — Scribe now, CHRN-100's reads later — reaches the database
+	// through this and not through `pool`, because migration 0007 grants
+	// chronicle_tier1 SELECT on tier2.memos and tier2.transcripts and no write
+	// anywhere in tier 2.
 	//
-	// Opened HERE rather than by the first ticket that calls Scribe, so that a
-	// wrong DSN is a boot-time complaint instead of a runtime one, and so the
-	// warning below can report what actually happened rather than what was
-	// configured.
-	tier1Pool := pool
-	if cfg.Tier1IsSeparate() {
-		tier1Pool, err = store.ConnectWithRetry(ctx, cfg.Tier1DatabaseURL, 30*time.Second)
-		if err != nil {
-			return fmt.Errorf("tier-1 pool: %w", err)
-		}
-		defer tier1Pool.Close()
-	}
-	// CHRN-30 hands this to the Scribe runner. It is built here so the DSN is
-	// validated at boot rather than at first use.
-	tier1 := store.NewTier1(tier1Pool)
-
-	// ASK THE DATABASE WHICH ROLE IT IS, rather than inferring it from whether a
-	// variable was set. The first version of this warning reported only that
-	// CHRONICLE_TIER1_DATABASE_URL had a value, so an operator who followed its
-	// own remedy and pointed it at the wrong DSN would silence the warning
-	// without moving the boundary — a config that changes nothing and looks
-	// like it worked. current_user cannot drift from the truth.
-	role, err := tier1.Role(ctx)
+	// IT NO LONGER FALLS BACK. Until CHRN-52 an unset CHRONICLE_TIER1_DATABASE_URL
+	// meant "run derived writers as chronicle and warn", and production ran
+	// that way from E4 until its deployment caught up — the boundary was
+	// granted and nothing stood behind it. Ruling 1: serve refuses instead, in
+	// all three ways the pool can be wrong, before the listener opens and
+	// before any background loop starts. A crash loop with one clear line
+	// beats a service that quietly derives as the role that can write tier 2.
+	tier1Pool, tier1, err := openTier1Pool(ctx, cfg, logger, 30*time.Second)
 	if err != nil {
-		return fmt.Errorf("tier-1 pool: %w", err)
+		return err
 	}
-	switch {
-	case role == "chronicle_tier1":
-		logger.Info("derived writers are isolated", "role", role,
-			"reads", "tier2.memos, tier2.transcripts", "writes", "tier1 only")
-	case cfg.Tier1IsSeparate():
-		logger.Warn("CHRONICLE_TIER1_DATABASE_URL is set but connects as the wrong role, so the "+
-			"tier boundary is granted and nothing stands behind it",
-			"role", role, "want", "chronicle_tier1",
-			"remedy", "point CHRONICLE_TIER1_DATABASE_URL at a DSN for the chronicle_tier1 role")
-	default:
-		logger.Warn("CHRONICLE_TIER1_DATABASE_URL is unset: derived writers run as the main role, "+
-			"which can write tier 2. The tier boundary is granted and nothing stands behind it",
-			"role", role,
-			"remedy", "set CHRONICLE_TIER1_DATABASE_URL to a DSN for the chronicle_tier1 role")
+	defer tier1Pool.Close()
+
+	// AND THE ROLE IS AUDITED before anything is served (ruling 2), on the
+	// main pool, which can see the catalogue whatever the tier-1 pool can do.
+	// The grant is the enforcement mechanism; this checks that the grant still
+	// says what was decided, at the one cadence Chronicle itself controls: its
+	// own boot. The other cadence — the deploy that runs another repository's
+	// provisioning script — is construct-server's deploy gate, which runs
+	// `chronicle tier1-audit` after the stack is healthy.
+	if err := refuseIfTier1Widened(ctx, pool, logger); err != nil {
+		return err
 	}
 
 	// The owner row is seeded by migration 0002 with a placeholder identity;
