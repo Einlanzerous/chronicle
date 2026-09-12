@@ -437,3 +437,73 @@ func merge(a, b map[string]string) map[string]string {
 	}
 	return out
 }
+
+// CHRN-50. The pair rule is the same shape as ASR's and Switchyard's, and it is
+// tested for a reason specific to Amber: a URL with no token does not fail
+// quietly there. Amber answers 401, the resolver reads a refused credential as
+// a claim about the SERVICE and trips its breaker, and every citation on every
+// page then renders "the capture archive refused Chronicle's credential" — an
+// outage report about a service that is perfectly healthy. Unconfigured is a
+// state Chronicle can say honestly; half-configured is a lie it cannot detect.
+func TestAmberCredentialsAreBothOrNeither(t *testing.T) {
+	base := map[string]string{"CHRONICLE_DATABASE_URL": "postgres://x/y"}
+	clear := map[string]string{"CHRONICLE_AMBER_URL": "", "CHRONICLE_AMBER_TOKEN": ""}
+
+	t.Run("neither is fine, and citations are then unconfigured rather than broken", func(t *testing.T) {
+		c := loadWith(t, merge(base, clear))
+		if c.AmberConfigured() {
+			t.Fatal("AmberConfigured with nothing set")
+		}
+	})
+
+	t.Run("both is fine", func(t *testing.T) {
+		c := loadWith(t, merge(base, map[string]string{
+			"CHRONICLE_AMBER_URL":   "http://amber:4008/",
+			"CHRONICLE_AMBER_TOKEN": "a-perfectly-good-token",
+		}))
+		if !c.AmberConfigured() {
+			t.Fatal("AmberConfigured is false with both set")
+		}
+		// Trimmed, because the client appends /v1/cite/<ref> and a doubled
+		// slash is a 404 nobody reads as a configuration typo.
+		if c.AmberURL != "http://amber:4008" {
+			t.Fatalf("AmberURL = %q, want the trailing slash trimmed", c.AmberURL)
+		}
+	})
+
+	// Each half is given a value the OTHER checks would accept, so that a
+	// passing subtest cannot be the URL-shape guard firing instead of this one.
+	valid := map[string]string{
+		"CHRONICLE_AMBER_URL":   "http://amber:4008",
+		"CHRONICLE_AMBER_TOKEN": "a-perfectly-good-token",
+	}
+	for only, value := range valid {
+		t.Run("only "+only+" is an error", func(t *testing.T) {
+			_, err := loadErr(t, merge(base, merge(clear, map[string]string{only: value})))
+			if err == nil {
+				t.Fatalf("setting only %s was accepted", only)
+			}
+			if !strings.Contains(err.Error(), "CHRONICLE_AMBER_URL") ||
+				!strings.Contains(err.Error(), "CHRONICLE_AMBER_TOKEN") {
+				t.Fatalf("error = %v; the both-or-neither guard should name both variables", err)
+			}
+		})
+	}
+
+	// A typo'd URL is refused at boot rather than at the first citation: the
+	// "configured and unusable" shape reads as somebody else's outage.
+	t.Run("a URL that is not absolute http(s) is refused at boot", func(t *testing.T) {
+		for _, bad := range []string{"amber:4008", "/v1", "ftp://amber:4008", "://amber"} {
+			_, err := loadErr(t, merge(base, map[string]string{
+				"CHRONICLE_AMBER_URL":   bad,
+				"CHRONICLE_AMBER_TOKEN": "a-perfectly-good-token",
+			}))
+			if err == nil {
+				t.Fatalf("CHRONICLE_AMBER_URL=%q booted", bad)
+			}
+			if !strings.Contains(err.Error(), "CHRONICLE_AMBER_URL") {
+				t.Fatalf("the error does not name the variable: %v", err)
+			}
+		}
+	})
+}
