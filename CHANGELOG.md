@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.11.0](https://github.com/Einlanzerous/chronicle/compare/v1.10.0...v1.11.0) (2026-09-12)
+
+
+### Features
+
+* **markdown:** point the reference grammar at the namespaces that exist (CHRN-48) ([#76](https://github.com/Einlanzerous/chronicle/issues/76)) ([deda144](https://github.com/Einlanzerous/chronicle/commit/deda1441a4aa2251117411e6532f17694c0319e0))
+* **resolve:** the resolved-reference contract, its cache, and the states that keep it honest (CHRN-51) ([#80](https://github.com/Einlanzerous/chronicle/issues/80)) ([af8ae9c](https://github.com/Einlanzerous/chronicle/commit/af8ae9cb4329f2cf9fcf274b2e8d591f38351f6f))
+* **store:** audit chronicle_tier1 against an allow-list, and refuse to serve without it (CHRN-52) ([#79](https://github.com/Einlanzerous/chronicle/issues/79)) ([c0297d2](https://github.com/Einlanzerous/chronicle/commit/c0297d297fabefa33d160631147ad5f1a4fe6453))
+
+
+### Bug Fixes
+
+* **deploy:** build the runtime on alpine 3.23, not the EOL 3.20 (SERV-170) ([#78](https://github.com/Einlanzerous/chronicle/issues/78)) ([c73eff9](https://github.com/Einlanzerous/chronicle/commit/c73eff9037250114d5a7de8a8c7799701e40e40c))
+
 ## [1.10.0](https://github.com/Einlanzerous/chronicle/compare/v1.9.0...v1.10.0) (2026-09-09)
 
 
