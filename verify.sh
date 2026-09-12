@@ -9,8 +9,12 @@
 #               --secret construct-server/CHRONICLE_TIER1_DB_PASSWORD -- ./verify.sh
 #
 # and both test DSNs are assembled below, or export them yourself. The tier-1
-# DSN is what the isolation test (CHRN-71's sixth Done-when, CHRN-52's subject)
-# connects as; without it that test skips rather than passing vacuously.
+# DSN is what the role-side isolation tests (CHRN-71's sixth Done-when, and the
+# positive controls CHRN-52 kept) connect as; without it those skip rather than
+# passing vacuously. CHRN-52's audit itself — internal/store/tier1_audit_test.go,
+# the test that fails if chronicle_tier1 is granted anything the tier boundary
+# forbids — needs only the MAIN DSN: every probe names the role explicitly, so
+# it runs whenever the database tests run at all.
 #
 # The ASR service (CHRN-25) has its OWN database and its own role, so it has its
 # own test DSN — ASR_TEST_DATABASE_URL, assembled from ASR_DB_PASSWORD the same
