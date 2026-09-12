@@ -219,10 +219,49 @@ type Config struct {
 	// catalogue.
 	SwitchyardURL   string
 	SwitchyardToken string
+
+	// AmberURL and AmberToken reach the estate's capture archive, and have one
+	// consumer: internal/amber, the transport that turns an `amber1.…` citation
+	// in a note into live upstream state (CHRN-50). Nothing else in Chronicle
+	// calls Amber, and nothing ever writes what it answers to a table.
+	//
+	// THE PAIR IS READ AND VALIDATED AT BOOT AND NOTHING DIALS YET, which is
+	// stated here rather than discovered: no surface renders a note today, and
+	// CHRN-97 — a decision ticket — owns whether references resolve server-side
+	// inside the note payload or client-side against an endpoint of their own.
+	// That is what decides where the transport is registered, so registering it
+	// here first would be answering CHRN-97's question by accident. A malformed
+	// URL still refuses to boot now rather than at the first citation.
+	//
+	// BOTH OR NEITHER. Amber fails closed — every /v1 route answers 401 without
+	// a bearer token and 503 when Amber itself has none — so a URL with no
+	// token would make every citation on every page read "the capture archive
+	// refused Chronicle's credential", which is an outage report about a
+	// healthy service. Unset, both of them, the resolver has no transport for
+	// Amber and says so in its own state: not checked, nothing configured here.
+	//
+	// THE TOKEN IS AMBER'S OWN. Amber gates all of /v1 behind one shared
+	// AMBER_API_TOKEN rather than minting one per consumer; Switchyard already
+	// presents it (SWY-209 / AMBR-9) and construct-server's compose comment
+	// records the cost — the same credential reads GET /v1/prompts. Chronicle
+	// is the third consumer of it. Inherited by reference; see internal/amber.
+	AmberURL   string
+	AmberToken string
 }
 
 // ScribeEnabled reports whether Chronicle will produce routing proposals.
 func (c Config) ScribeEnabled() bool { return c.ScribeOllamaURL != "" }
+
+// AmberConfigured reports whether citations can be resolved at all.
+//
+// False is a PERMANENT state rather than an outage, which is the distinction
+// resolve.StateUnconfigured exists for: a Chronicle that was never given an
+// Amber cannot be made to reach one by waiting, and a card reading "the capture
+// archive could not be reached" would send somebody to check a service that is
+// fine.
+func (c Config) AmberConfigured() bool {
+	return c.AmberURL != "" && c.AmberToken != ""
+}
 
 // SwitchyardConfigured reports whether Chronicle can reach the ticket tracker
 // at all — for the project list, for creating a ticket, and for the deep link
@@ -387,6 +426,41 @@ func Load() (Config, error) {
 	c.ScribeOllamaURL, c.ScribeModel = sc.OllamaURL, sc.Model
 	c.ScribePreacceptMin, c.ScribeMaxAttempts = sc.PreacceptMin, sc.MaxAttempts
 	c.SwitchyardURL, c.SwitchyardToken = sc.SwitchyardURL, sc.SwitchyardToken
+
+	// CHRN-50 — the capture archive. Loaded HERE and not in LoadScribe: the
+	// routing half is deliberately loadable with no database and no estate at
+	// all, and `chronicle eval` has no citations to resolve.
+	//
+	// The URL is parsed at boot rather than at first use, for the reason the
+	// ASR pair states: unparsed, a typo boots cleanly, reports itself
+	// configured, and then fails every citation with a message about the
+	// archive — the "configured and unusable" shape that reads as somebody
+	// else's outage.
+	c.AmberURL = strings.TrimRight(strings.TrimSpace(os.Getenv("CHRONICLE_AMBER_URL")), "/")
+	c.AmberToken = strings.TrimSpace(os.Getenv("CHRONICLE_AMBER_TOKEN"))
+	if c.AmberURL != "" {
+		u, err := url.Parse(c.AmberURL)
+		if err != nil || !u.IsAbs() || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			return c, fmt.Errorf("config: CHRONICLE_AMBER_URL %q is not an absolute http(s) URL", c.AmberURL)
+		}
+		// A query or a fragment is refused for the reason
+		// invite.NormalizeBase refuses one: the client concatenates
+		// "/v1/cite/<ref>" onto this, so a base carrying either produces a URL
+		// that parses with an empty path and asks Amber about `/` forever —
+		// configured, reported as configured, and unusable. Checked in both
+		// places rather than once, because a config that boots and a client
+		// that refuses would be a service that starts and then cannot resolve.
+		if u.RawQuery != "" || u.ForceQuery {
+			return c, fmt.Errorf("config: CHRONICLE_AMBER_URL %q must not carry a query string", c.AmberURL)
+		}
+		if u.Fragment != "" {
+			return c, fmt.Errorf("config: CHRONICLE_AMBER_URL %q must not carry a fragment", c.AmberURL)
+		}
+	}
+	if (c.AmberURL == "") != (c.AmberToken == "") {
+		return c, fmt.Errorf("config: set both CHRONICLE_AMBER_URL and CHRONICLE_AMBER_TOKEN, or neither " +
+			"(Amber answers 401 to a request carrying no token, which renders as an outage rather than as unconfigured)")
+	}
 
 	c.OwnerEmail = strings.ToLower(strings.TrimSpace(os.Getenv("CHRONICLE_OWNER_EMAIL")))
 	c.OwnerName = strings.TrimSpace(os.Getenv("CHRONICLE_OWNER_NAME"))
