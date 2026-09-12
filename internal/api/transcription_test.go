@@ -10,6 +10,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Einlanzerous/chronicle/internal/api/apitest"
+	"github.com/Einlanzerous/chronicle/internal/api/wire"
 	"github.com/Einlanzerous/chronicle/internal/store"
 )
 
@@ -83,7 +85,9 @@ func TestTranscriptionReportShowsHeldMemosAndHowToRetry(t *testing.T) {
 		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
 	}
 
-	var got transcriptionReport
+	apitest.Conform(t, "getTranscriptionReport", rec)
+
+	var got wire.TranscriptionReport
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
@@ -113,8 +117,10 @@ func TestTranscriptionReportSaysWhenTranscriptionIsOff(t *testing.T) {
 		states: map[string]int64{store.StateCaptured: 812},
 	}, false)
 
-	var got transcriptionReport
 	rec := getTranscription(t, h, "chr_owner")
+	apitest.Conform(t, "getTranscriptionReport", rec)
+
+	var got wire.TranscriptionReport
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
@@ -147,8 +153,10 @@ func TestTranscriptionReportSurfacesPartialTranscripts(t *testing.T) {
 		partial: []store.PartialMemo{{MemoID: id, Model: "small.en", TranscribedAt: time.Now()}},
 	}, true)
 
-	var got transcriptionReport
 	rec := getTranscription(t, h, "chr_owner")
+	apitest.Conform(t, "getTranscriptionReport", rec)
+
+	var got wire.TranscriptionReport
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
@@ -156,8 +164,8 @@ func TestTranscriptionReportSurfacesPartialTranscripts(t *testing.T) {
 		t.Fatalf("partial = %d sample = %d; a memo with only a partial transcript has to be "+
 			"findable, or CHRN-28 has nothing to act on", got.Partial, len(got.PartialSample))
 	}
-	if got.PartialSample[0].MemoID != id {
-		t.Fatalf("memo id = %s, want %s", got.PartialSample[0].MemoID, id)
+	if got.PartialSample[0].MemoId != id {
+		t.Fatalf("memo id = %s, want %s", got.PartialSample[0].MemoId, id)
 	}
 	// And it is NOT counted as pending: it is not waiting on anything.
 	if got.Pending != 0 {

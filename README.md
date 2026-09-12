@@ -101,6 +101,8 @@ or the app    small.en       DISCUSSION                     discussion
 | `asr/` | the estate ASR service: the whisper.cpp image, the job contract, and `asrd` over it — its own database, its own role, its own release (`asr-v*`), and a sealed subtree that imports nothing outside itself |
 | `internal/` | config, model, store, api, the transcription pump |
 | `internal/asrclient/` | generated from `asr/openapi.yaml`; do not hand-edit |
+| `openapi.yaml` | Chronicle's own HTTP contract. The source three clients generate from — a route that is not here does not exist |
+| `internal/api/wire/` | generated from `openapi.yaml` by `scripts/gen-api.sh`; do not hand-edit |
 | `migrations/` | embedded SQL, applied on boot |
 | `deploy/` | `Dockerfile`, database provisioning, and the deploy decisions. Not the configuration — `construct-server` holds the service block and the routers (CHRN-89) |
 | `docs/decisions/` | written decisions for the tickets that get one before code |

@@ -13,6 +13,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Einlanzerous/chronicle/internal/api/apitest"
+	"github.com/Einlanzerous/chronicle/internal/api/wire"
 	"github.com/Einlanzerous/chronicle/internal/audio"
 	"github.com/Einlanzerous/chronicle/internal/store"
 )
@@ -79,6 +81,7 @@ func TestStorageReportSaysWhenItIsNotConfigured(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", rec.Code)
 	}
+	apitest.Conform(t, "getStorageReport", rec)
 	if body := rec.Body.String(); !strings.Contains(body, "CHRONICLE_AUDIO_DIR") {
 		t.Errorf("body = %q, want it to name the variable to set", body)
 	}
@@ -141,7 +144,9 @@ func TestStorageReportReconcilesDiskAgainstTheDatabase(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
 	}
-	var got storageReport
+	apitest.Conform(t, "getStorageReport", rec)
+
+	var got wire.StorageReport
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -156,7 +161,7 @@ func TestStorageReportReconcilesDiskAgainstTheDatabase(t *testing.T) {
 			got.Reconciliation.Mismatched, got.Reconciliation.MismatchedSample)
 	}
 	m := got.Reconciliation.MismatchedSample[0]
-	if m.OnDisk != 5 || m.Recorded != 4096 || m.Ref != author.String()+"/"+truncHash {
+	if m.OnDiskBytes != 5 || m.RecordedBytes != 4096 || m.Ref != author.String()+"/"+truncHash {
 		t.Errorf("mismatch sample = %+v, want 5 on disk against 4096 recorded", m)
 	}
 	if got.Disk.Strays != 1 || got.Disk.StrayBytes != 9 {
@@ -228,7 +233,9 @@ func TestStorageReportOnAnEmptyCorpus(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
 	}
-	var got storageReport
+	apitest.Conform(t, "getStorageReport", rec)
+
+	var got wire.StorageReport
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}

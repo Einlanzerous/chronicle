@@ -148,6 +148,26 @@ jobs:
           fi
           echo "internal/asrclient and asr/internal/wire match the contract."
 
+      # internal/api/wire is generated from openapi.yaml -- Chronicle's own HTTP
+      # contract (CHRN-97) -- by the generator pinned through go.mod's `tool`
+      # directive. Regenerated to a temp file and byte-compared, so the check
+      # never rewrites what it is checking.
+      #
+      # This document has three other clients in three other languages (E8, E9,
+      # E10). A server drifted from it is three clients generated against a lie,
+      # and nothing inside those repos can see it -- which is what makes this
+      # guard load-bearing rather than tidy. Mirrors verify.sh's step.
+      - name: API contract staleness guard
+        run: |
+          tmp="$(mktemp -t apiwire.XXXXXX.go)"
+          GEN_API_OUT="$tmp" scripts/gen-api.sh
+          if ! diff -u internal/api/wire/wire.gen.go "$tmp"; then
+            echo "::error file=internal/api/wire/wire.gen.go::the generated types do not match openapi.yaml."
+            echo "Run scripts/gen-api.sh and commit the result."
+            exit 1
+          fi
+          echo "internal/api/wire matches the contract."
+
       # asr/ is a subtree with a sealed boundary (CHRN-82 section 2): nothing
       # under it imports anything else in this module, and nothing outside it
       # imports it except through asr/asrtest. asr/Dockerfile enforces the
