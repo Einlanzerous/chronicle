@@ -7,10 +7,40 @@
 // with three ideas about what a 401 means.
 //
 // NOTHING FROM SWITCHYARD IS STORED. Invariant 2: a ticket resolves at render
-// time and is never written into Chronicle's tables. This package returns a key
-// and a URL — the handles a reference is resolved FROM — and deliberately does
-// not return, or offer any way to fetch, a title or a status. There is no
-// method here whose result could be cached into a column and go stale.
+// time and is never written into Chronicle's tables.
+//
+// ============================================================================
+// THAT GUARANTEE CHANGED SHAPE IN CHRN-49, AND THE WEAKER FORM IS SAID OUT LOUD
+// RATHER THAN ARRIVED AT BY DELETING A SENTENCE.
+// ============================================================================
+//
+// Until E7 this comment read: "This package returns a key and a URL […] and
+// deliberately does not return, or offer any way to fetch, a title or a status.
+// There is no method here whose result could be cached into a column and go
+// stale." The invariant was held by ABSENCE — there was nothing here to copy.
+//
+// Resolution is the whole point of E7, so FetchTicket now fetches exactly the
+// answer that carries a title and a status. The guarantee is therefore no
+// longer "no such method exists" but "the method exists and nothing stores its
+// result", which is weaker and rests on different machinery. Four things hold
+// it up, and every one of them is a mechanism rather than a manner:
+//
+//  1. FETCHTICKET RETURNS RAW BYTES, NEVER A DECODED TICKET. Ticket is still a
+//     key and a URL, so no struct in this package has a field an upstream title
+//     or status could be assigned FROM. The only decode of those bytes is
+//     internal/resolve's classifySwitchyard.
+//  2. WHAT IT DECODES INTO HAS NO STORE PATH. resolve.Upstream is built per
+//     render and read by one renderer; no function in internal/store takes one,
+//     and no table has a column shaped like one.
+//  3. THE CACHE IS A MAP THAT DIES WITH THE PROCESS. internal/resolve argues it
+//     at length: a cache in a table is a durable artefact with a schema, and the
+//     distance from there to a join is one convenience.
+//  4. CI FAILS WHEN THE SCHEMA AND THE MIGRATIONS DISAGREE, so the column this
+//     paragraph is about cannot be added quietly later.
+//
+// The other two calls keep the old property as a matter of course, and they are
+// the ones whose results DO land in a column: CreateTicket and TicketsByMemo
+// return a key and a URL, which is all CHRN-33's link row has anywhere to put.
 package switchyard
 
 import (

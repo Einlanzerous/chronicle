@@ -55,6 +55,12 @@ type NewTicket struct {
 // A key and a URL, and deliberately nothing else. Returning the title or the
 // status would put a copy of upstream state one assignment away from a column,
 // and invariant 2's whole argument is that the copy goes stale silently.
+//
+// THIS IS NOW LOAD-BEARING RATHER THAN TIDY. CHRN-49 added FetchTicket, which
+// can see a title and a status — and returns bytes precisely so that this
+// struct stays the only shape this package hands a caller. Adding a Title or a
+// Status field here is what the package comment's first mechanism exists to
+// stop, and it is the change that would make the rest of that argument false.
 type Ticket struct {
 	Key string `json:"key"`
 	ID  string `json:"id"`

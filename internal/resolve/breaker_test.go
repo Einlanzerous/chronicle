@@ -97,7 +97,7 @@ func TestTheFailureStampStopsThePerRenderProbe(t *testing.T) {
 	srv, calls := hijackServer(t)
 	clock := newClock()
 	r := newResolver(t, clock, Options{
-		Transports: map[string]Transport{markdown.SystemSwitchyard: httpTransport{base: srv.URL, c: srv.Client()}},
+		Transports: map[string]Transport{markdown.SystemSwitchyard: overHTTP(t, srv)},
 	})
 	refs := manyRefs(30)
 
