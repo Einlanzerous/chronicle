@@ -1,0 +1,41 @@
+# oapi-codegen configuration for Chronicle's own HTTP surface. Run through
+# scripts/gen-api.sh, never by hand — the flags are the artefact.
+#
+# MODELS AND SERVER, which is CHRN-97 ruling 1. The generator emits a
+# ServerInterface with one method per operation and the route registration for
+# them, onto a BaseRouter this package supplies. That is what makes two facts
+# structural rather than reviewed: an operation with no handler is a compile
+# error, and a route the document does not describe cannot be registered,
+# because nobody writes the registration.
+#
+# `std-http-server` and not chi/echo/gin: the generated form is
+# `m.HandleFunc(http.MethodGet+" "+"/notes/{ref}", …)`, which is exactly the Go
+# 1.22 ServeMux pattern this repo already hand-writes. The house style is not
+# adapted to the generator; the generator already emits the house style.
+#
+# NOT `strict-server`, deliberately (ruling 1 option 3, declined). It would make
+# an undeclared status code unrepresentable, at the cost of handlers losing
+# *http.Request — and upload.go's chunked-body refusal reads r.ContentLength,
+# and the sign-in routes set a cookie. The response half is covered instead by
+# internal/api/apitest.Conform, on every test in this epic.
+#
+# The ASR contract is a SEPARATE document for a separate service: asr/ is a
+# sealed subtree that imports nothing outside itself, and one document over both
+# would be that import in spirit. See asr/openapi.yaml.
+package: wire
+generate:
+  models: true
+  std-http-server: true
+
+output-options:
+  # A generated file that gofmt would rewrite fails the gofmt step rather than
+  # the staleness guard, which is a confusing way to learn the same thing.
+  # gen-api.sh runs gofmt over the output for the same reason.
+  skip-prune: false
+
+# No `output:` here on purpose. The destination is passed with -o by
+# scripts/gen-api.sh, because the staleness check in verify.sh regenerates to a
+# TEMPORARY FILE and compares -- a check that rewrites the file it is checking
+# cannot tell you what was committed. An `output:` in this file silently wins
+# over -o, which is how internal/asrclient's check came to pass against an empty
+# temp file the first time it was written.

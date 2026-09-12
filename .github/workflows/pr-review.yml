@@ -120,6 +120,29 @@ jobs:
       #                         failing. Lyceum's `api.go` argument, and
       #                         stronger here because the wrappers are applied
       #                         at the call site rather than in the handler.
+      #   internal/api/policy   WHERE THAT FACT NOW LIVES (CHRN-97). The
+      #                         wrappers are no longer typed at the call site:
+      #                         route registration is generated, and
+      #                         `routePolicy` is what decides which credential
+      #                         each generated route gets. Flipping one entry
+      #                         from `policyOwner` to `policyMember` is a
+      #                         privilege widening in a two-word diff, and
+      #                         `TestPolicyTableMatchesTheDocument` cannot
+      #                         catch it -- it asserts the map and the document
+      #                         AGREE, not what they say, so a widening applied
+      #                         to both stays green.
+      #   internal/api/contract The test that holds that line: the written-out
+      #                         anonymous/member/owner matrix over every route.
+      #                         Derived from nothing on purpose, so weakening it
+      #                         is an edit rather than a consequence -- and an
+      #                         edit nobody reads is how the matrix stops
+      #                         covering the route somebody just widened.
+      #   openapi.yaml          The contract, and the other half of the same
+      #                         decision: `x-chronicle-policy` per operation is
+      #                         what the map is checked against, and three
+      #                         clients in three languages generate from this
+      #                         file. Root only -- `asr/openapi.yaml` is already
+      #                         covered by `asr/`.
       #   internal/invite/      Builds the sign-in URL that CARRIES A LIVE
       #                         TOKEN. `NormalizeBase` rejects query and
       #                         fragment precisely so a credential cannot be
@@ -238,7 +261,7 @@ jobs:
       # The PR that created the package reached internal/store/ and migrations/
       # and so was reviewed at the expensive tier anyway; a follow-up touching
       # only this package would not have been, which is the gap.
-      sensitive_paths: '^(internal/store/|internal/scribe/|internal/triage/|asr/|internal/transcribe/|internal/api/(session|cfaccess|ratelimit|router|storage|upload|transcription)|internal/(invite|config|audio|watch|upload|retention)/|cmd/chronicle/|migrations/|deploy/|scripts/|verify\.sh|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore)'
+      sensitive_paths: '^(internal/store/|internal/scribe/|internal/triage/|asr/|internal/transcribe/|internal/api/(session|cfaccess|ratelimit|router|policy|contract|storage|upload|transcription)|internal/(invite|config|audio|watch|upload|retention)/|cmd/chronicle/|migrations/|deploy/|scripts/|verify\.sh|openapi\.yaml|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore)'
 
       # No `docs_skip_extra`: this repo commits no knowledge-graph cache, and
       # the one generated artifact it does carry is excluded outright in

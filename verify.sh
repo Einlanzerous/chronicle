@@ -89,6 +89,33 @@ asrclient_check() {
   return "$rc"
 }
 
+# internal/api/wire is GENERATED from openapi.yaml, Chronicle's own HTTP
+# contract (CHRN-97). Same guard as the ASR client above and schema.sql below,
+# for the same sentence: a generated artefact with no guard is a generated
+# artefact somebody hand-edits.
+#
+# It matters more here than it looks, because this document has THREE other
+# clients in three other languages -- E8's web client, E9's Android capture,
+# E10's MCP. A server that has drifted from the document is three clients
+# generated against a lie, and the drift is invisible from inside this repo.
+#
+# Regenerated to a TEMPORARY FILE and byte-compared, so a check never rewrites
+# the thing it is checking.
+apiwire_check() {
+  local tmp rc=0
+  tmp="$(mktemp -t apiwire.XXXXXX.go)"
+  # shellcheck disable=SC2064
+  trap "rm -f '$tmp'" RETURN
+  GEN_API_OUT="$tmp" scripts/gen-api.sh >/dev/null || return 1
+  if ! diff -q "$tmp" internal/api/wire/wire.gen.go >/dev/null; then
+    echo "internal/api/wire/wire.gen.go does not match openapi.yaml."
+    diff -u internal/api/wire/wire.gen.go "$tmp" | head -40
+    echo "Run scripts/gen-api.sh and commit the result."
+    rc=1
+  fi
+  return "$rc"
+}
+
 # asr/ is a SUBTREE with a sealed boundary (docs/decisions/chrn-82-asr-subtree-
 # and-publish.md, section 2): nothing under it imports anything else in this
 # module, so that `git filter-repo --subdirectory-filter asr` yields a
@@ -119,6 +146,7 @@ step "gofmt"        gofmt_check
 step "go vet"       go vet ./...
 step "build"        go build ./...
 step "asr client"   asrclient_check
+step "api types"    apiwire_check
 step "asr boundary" asr_boundary_check
 # -p 1: ONE TEST BINARY AT A TIME.
 #

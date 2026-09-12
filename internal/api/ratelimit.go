@@ -115,7 +115,8 @@ func (l *ipRateLimiter) evict(now time.Time) {
 func (a *api) limitSignIn(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !a.signInLimiter.allow(a.clientIP(r)) {
-			http.Error(w, "too many attempts, slow down", http.StatusTooManyRequests)
+			writeError(w, http.StatusTooManyRequests, codeRateLimited,
+				"too many attempts, slow down")
 			return
 		}
 		next(w, r)

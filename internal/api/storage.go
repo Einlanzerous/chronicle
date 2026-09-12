@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Einlanzerous/chronicle/internal/api/wire"
 	"github.com/Einlanzerous/chronicle/internal/audio"
 	"github.com/Einlanzerous/chronicle/internal/store"
 )
@@ -26,77 +27,7 @@ type Corpus interface {
 // readable answer rather than a megabyte of JSON.
 const listSample = 20
 
-type storageReport struct {
-	Root           string       `json:"root"`
-	Disk           diskReport   `json:"disk"`
-	Corpus         corpusReport `json:"corpus"`
-	Window         windowReport `json:"window"`
-	Reconciliation reconReport  `json:"reconciliation"`
-}
-
-type diskReport struct {
-	Files      int   `json:"files"`
-	Bytes      int64 `json:"bytes"`
-	Strays     int   `json:"strays"`
-	StrayBytes int64 `json:"stray_bytes"`
-	// StraySample names files under the root that this layout did not write.
-	// They are never counted as corpus and never offered to the pruner.
-	StraySample []string `json:"stray_sample,omitempty"`
-
-	// Staging is uploads in flight (CHRN-20) — files this service wrote and
-	// understands, which are not recordings yet and may never become any.
-	// Reported apart from both corpus and strays: counted as corpus it would
-	// inflate what the memos cost, and counted as strays every phone mid-upload
-	// would read as a file nobody can name.
-	Staging      int   `json:"staging"`
-	StagingBytes int64 `json:"staging_bytes"`
-
-	// No omitempty on the two figures: a full volume has FreeBytes == 0, and
-	// omitempty would delete the field at exactly the moment it matters most,
-	// leaving "volume_known": true beside no measurement. VolumeKnown is what
-	// separates "not measured" from "measured as zero" — let it do that job.
-	VolumeKnown bool  `json:"volume_known"`
-	VolumeTotal int64 `json:"volume_total_bytes"`
-	VolumeFree  int64 `json:"volume_free_bytes"`
-}
-
-type corpusReport struct {
-	Memos         int64      `json:"memos"`
-	AudioPresent  int64      `json:"audio_present"`
-	AudioPruned   int64      `json:"audio_pruned"`
-	RecordedBytes int64      `json:"recorded_bytes"`
-	EverBytes     int64      `json:"ever_bytes"`
-	OldestCapture *time.Time `json:"oldest_capture"`
-	NewestCapture *time.Time `json:"newest_capture"`
-}
-
-type windowReport struct {
-	Days           int     `json:"days"`
-	Memos          int64   `json:"memos"`
-	Bytes          int64   `json:"bytes"`
-	ProjectedBytes int64   `json:"projected_bytes"`
-	PctOfProjected float64 `json:"pct_of_projected"`
-}
-
-type reconReport struct {
-	Orphans      int      `json:"orphans"`
-	OrphanBytes  int64    `json:"orphan_bytes"`
-	OrphanSample []string `json:"orphan_sample,omitempty"`
-
-	// Missing is the direction that matters: a memo says its audio is present
-	// and the file is not there.
-	Missing       int      `json:"missing"`
-	MissingBytes  int64    `json:"missing_bytes"`
-	MissingSample []string `json:"missing_sample,omitempty"`
-
-	Mismatched int `json:"mismatched"`
-	// The sample carries both sizes. Without them a 5-against-4096 truncation
-	// and a 4097-against-4096 rounding read identically, and those are not the
-	// same finding.
-	MismatchedSample []mismatchJSON `json:"mismatched_sample,omitempty"`
-}
-
-// handleAdminStorage answers "what does the corpus cost, and does the disk
+// GetStorageReport answers "what does the corpus cost, and does the disk
 // agree with the database" — CHRN-23's "a number the service reports rather
 // than one someone runs du for".
 //
@@ -104,9 +35,15 @@ type reconReport struct {
 // keeps /admin off the WAN entrypoint entirely. It is a read: it deletes
 // nothing, and it never hands the pruner a list. Orphans are reported so a
 // human can decide, which is a different thing from a job acting on them.
-func (a *api) handleAdminStorage(w http.ResponseWriter, r *http.Request) {
+//
+// The payload types are GENERATED from openapi.yaml into internal/api/wire.
+// They used to live here, as storageReport and its four children; a
+// hand-written response struct beside a document describing the same response
+// is exactly the drift CHRN-97's guard exists to make impossible.
+func (a *api) GetStorageReport(w http.ResponseWriter, r *http.Request) {
 	if a.audio == nil || a.corpus == nil {
-		http.Error(w, "storage accounting is not configured: set CHRONICLE_AUDIO_DIR", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, codeAudioUnconfigured,
+			"storage accounting is not configured: set CHRONICLE_AUDIO_DIR")
 		return
 	}
 
@@ -137,21 +74,21 @@ func (a *api) handleAdminStorage(w http.ResponseWriter, r *http.Request) {
 	rec := audio.Reconcile(onDisk, want)
 	vol := a.audio.Volume()
 
-	rep := storageReport{
+	rep := wire.StorageReport{
 		Root: a.audio.Root(),
-		Disk: diskReport{
-			Files:        len(onDisk.Files),
-			Bytes:        onDisk.Bytes,
-			Strays:       len(onDisk.Strays),
-			StrayBytes:   onDisk.StrayBytes,
-			StraySample:  firstN(onDisk.Strays, listSample),
-			Staging:      onDisk.Staging,
-			StagingBytes: onDisk.StagingBytes,
-			VolumeKnown:  vol.Known,
-			VolumeTotal:  vol.TotalBytes,
-			VolumeFree:   vol.FreeBytes,
+		Disk: wire.DiskReport{
+			Files:            len(onDisk.Files),
+			Bytes:            onDisk.Bytes,
+			Strays:           len(onDisk.Strays),
+			StrayBytes:       onDisk.StrayBytes,
+			StraySample:      firstN(onDisk.Strays, listSample),
+			Staging:          onDisk.Staging,
+			StagingBytes:     onDisk.StagingBytes,
+			VolumeKnown:      vol.Known,
+			VolumeTotalBytes: vol.TotalBytes,
+			VolumeFreeBytes:  vol.FreeBytes,
 		},
-		Corpus: corpusReport{
+		Corpus: wire.CorpusReport{
 			Memos:         stats.Memos,
 			AudioPresent:  stats.AudioPresent,
 			AudioPruned:   stats.AudioPruned,
@@ -160,14 +97,14 @@ func (a *api) handleAdminStorage(w http.ResponseWriter, r *http.Request) {
 			OldestCapture: stats.OldestCapture,
 			NewestCapture: stats.NewestCapture,
 		},
-		Window: windowReport{
+		Window: wire.WindowReport{
 			Days:           int(audio.ProjectionWindow / (24 * time.Hour)),
 			Memos:          stats.WindowMemos,
 			Bytes:          stats.WindowBytes,
 			ProjectedBytes: audio.ProjectedWindowBytes,
 			PctOfProjected: pctOf(stats.WindowBytes, audio.ProjectedWindowBytes),
 		},
-		Reconciliation: reconReport{
+		Reconciliation: wire.ReconciliationReport{
 			Orphans:          len(rec.Orphans),
 			OrphanBytes:      rec.OrphanBytes,
 			OrphanSample:     firstN(refStrings(rec.Orphans), listSample),
@@ -175,7 +112,7 @@ func (a *api) handleAdminStorage(w http.ResponseWriter, r *http.Request) {
 			MissingBytes:     rec.MissingBytes,
 			MissingSample:    firstN(refStrings(rec.Missing), listSample),
 			Mismatched:       len(rec.Mismatched),
-			MismatchedSample: firstNMismatch(mismatchJSONs(rec.Mismatched), listSample),
+			MismatchedSample: firstNMismatch(mismatches(rec.Mismatched), listSample),
 		},
 	}
 
@@ -212,26 +149,20 @@ func refStrings(refs []audio.Ref) []string {
 	return out
 }
 
-// mismatchJSON is a mismatch with the numbers that make it one.
-type mismatchJSON struct {
-	Ref      string `json:"ref"`
-	OnDisk   int64  `json:"on_disk_bytes"`
-	Recorded int64  `json:"recorded_bytes"`
-}
-
-func mismatchJSONs(ms []audio.Mismatch) []mismatchJSON {
-	out := make([]mismatchJSON, 0, len(ms))
+// mismatches renders a mismatch with the numbers that make it one.
+func mismatches(ms []audio.Mismatch) []wire.Mismatch {
+	out := make([]wire.Mismatch, 0, len(ms))
 	for _, m := range ms {
-		out = append(out, mismatchJSON{
-			Ref:      m.Ref.AuthorID.String() + "/" + m.Ref.ContentHash,
-			OnDisk:   m.OnDisk,
-			Recorded: m.Recorded,
+		out = append(out, wire.Mismatch{
+			Ref:           m.Ref.AuthorID.String() + "/" + m.Ref.ContentHash,
+			OnDiskBytes:   m.OnDisk,
+			RecordedBytes: m.Recorded,
 		})
 	}
 	return out
 }
 
-func firstNMismatch(s []mismatchJSON, n int) []mismatchJSON {
+func firstNMismatch(s []wire.Mismatch, n int) []wire.Mismatch {
 	if len(s) <= n {
 		return s
 	}

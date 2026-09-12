@@ -5,8 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/google/uuid"
-
+	"github.com/Einlanzerous/chronicle/internal/api/wire"
 	"github.com/Einlanzerous/chronicle/internal/store"
 )
 
@@ -17,7 +16,7 @@ type Transcription interface {
 	PartialTranscripts(ctx context.Context, limit int) (int64, []store.PartialMemo, error)
 }
 
-// GET /admin/transcription answers the half of CHRN-27's Done-when that a test
+// GetTranscriptionReport answers the half of CHRN-27's Done-when that a test
 // cannot: *"a transcription failure leaves the memo in a state a human can see
 // and retry."*
 //
@@ -30,64 +29,18 @@ type Transcription interface {
 // on the host rather than behind this endpoint: re-running transcription costs
 // GPU time on a device three services share, and that is not a thing to expose
 // as an unmetered HTTP verb before CHRN-26 has put a lease on it.
-type transcriptionReport struct {
-	// States counts every memo by state, not only the interesting ones. A
-	// report that named only `held` could not distinguish "nothing is wrong"
-	// from "nothing is happening", and a pump that has silently stopped looks
-	// exactly like a corpus with no failures.
-	States map[string]int64 `json:"states"`
-
-	// Pending is what is waiting on transcription right now: captured, queued
-	// and transcribing together. One number, because "how far behind is it"
-	// is the question being asked.
-	Pending int64 `json:"pending"`
-
-	// Held is the count, HeldSample the readable part of it.
-	Held       int64        `json:"held"`
-	HeldSample []heldReport `json:"held_sample,omitempty"`
-
-	// Partial counts memos whose only transcript is incomplete.
-	//
-	// They are reported because they are otherwise INVISIBLE: a partial memo
-	// is `transcribed`, so nothing sweeps it; it is not `held`, so
-	// `chronicle retranscribe` will not release it; and its audio correctly
-	// does not prune. Every one of those is right, and together they make a
-	// partial memo read as a healthy one, and this is what lets anyone find
-	// them. CHRN-28 settled the policy and it is the one already in force:
-	// partials are KEPT, marked partial, and never satisfy the durable gate —
-	// so a partial neither prunes its audio nor blocks a better attempt.
-	Partial       int64           `json:"partial"`
-	PartialSample []partialReport `json:"partial_sample,omitempty"`
-
-	// Enabled reports whether a pump is configured at all. Without it, an
-	// operator reading `pending: 812` has no way to tell a backlog from a
-	// service that was never pointed at an ASR endpoint.
-	Enabled bool `json:"enabled"`
-}
-
-type partialReport struct {
-	MemoID        uuid.UUID `json:"memo_id"`
-	Model         string    `json:"model"`
-	TranscribedAt time.Time `json:"transcribed_at"`
-}
-
-type heldReport struct {
-	ID         uuid.UUID `json:"id"`
-	AuthorID   uuid.UUID `json:"author_id"`
-	CapturedAt time.Time `json:"captured_at"`
-	Reason     string    `json:"reason"`
-	Retry      string    `json:"retry"`
-}
-
-func (a *api) handleAdminTranscription(w http.ResponseWriter, r *http.Request) {
+//
+// The payload types are GENERATED from openapi.yaml into internal/api/wire --
+// the report, its held sample and its partial sample. What each field is FOR is
+// documented there, beside the shape three clients generate against, rather
+// than here where only Go could read it.
+func (a *api) GetTranscriptionReport(w http.ResponseWriter, r *http.Request) {
 	if a.transcription == nil {
 		// Same shape the storage report uses for an unconfigured audio store:
 		// "not configured here" and "wrong URL" are different facts and a
 		// client should be able to tell them apart.
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error":  "no store",
-			"detail": "transcription reporting needs a database",
-		})
+		writeError(w, http.StatusServiceUnavailable, codeTranscriptionUnconfigured,
+			"transcription reporting needs a database")
 		return
 	}
 
@@ -110,7 +63,7 @@ func (a *api) handleAdminTranscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	report := transcriptionReport{
+	report := wire.TranscriptionReport{
 		States:  states,
 		Enabled: a.transcribing,
 		Pending: states[store.StateCaptured] + states[store.StateQueued] + states[store.StateTranscribing],
@@ -118,13 +71,13 @@ func (a *api) handleAdminTranscription(w http.ResponseWriter, r *http.Request) {
 		Partial: partialCount,
 	}
 	for _, p := range partial {
-		report.PartialSample = append(report.PartialSample, partialReport{
-			MemoID: p.MemoID, Model: p.Model, TranscribedAt: p.TranscribedAt,
+		report.PartialSample = append(report.PartialSample, wire.PartialTranscript{
+			MemoId: p.MemoID, Model: p.Model, TranscribedAt: p.TranscribedAt,
 		})
 	}
 	for _, h := range held {
-		report.HeldSample = append(report.HeldSample, heldReport{
-			ID: h.ID, AuthorID: h.AuthorID, CapturedAt: h.CapturedAt, Reason: h.Reason,
+		report.HeldSample = append(report.HeldSample, wire.HeldMemo{
+			Id: h.ID, AuthorId: h.AuthorID, CapturedAt: h.CapturedAt, Reason: h.Reason,
 			Retry: "chronicle retranscribe --memo " + h.ID.String(),
 		})
 	}
