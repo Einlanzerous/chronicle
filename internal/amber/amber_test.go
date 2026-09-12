@@ -180,8 +180,12 @@ func TestAnOversizeAnswerIsDroppedRatherThanTruncated(t *testing.T) {
 	if res.State != resolve.StateUnreachable {
 		t.Errorf("state = %q, want unreachable", res.State)
 	}
-	if res.Explain == "" {
-		t.Error("no sentence: an unresolved card must say something rather than nothing")
+	// Pinned rather than merely non-empty, because this is the sentence the
+	// cap actually produces and it is the one documented on MaxBody. If a
+	// classifier change ever gives the drop its own words, this is where that
+	// shows up rather than in somebody's surprise.
+	if want := "the capture archive returned a non-JSON response"; res.Explain != want {
+		t.Errorf("explain = %q, want %q", res.Explain, want)
 	}
 }
 

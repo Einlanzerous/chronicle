@@ -98,12 +98,21 @@ const citePath = "/v1/cite/"
 //
 // FOUR MEBIBYTES IS A CEILING, NOT A BUDGET: a JSON object around one block
 // does not approach it, and anything that does is pathological rather than
-// large. An answer over the cap is dropped rather than truncated into the
-// classifier, which reads it as an answer Chronicle could not understand:
-// unreachable for THAT REFERENCE, not a claim about the service, retried on the
-// next render. That is the right shape — one enormous block says nothing about
-// the next citation — and it is why the overflow is not reported as a transport
-// failure, which would trip the breaker and silence the rest of the page.
+// large. An answer over the cap is dropped rather than truncated, which reaches
+// the classifier as a body that will not decode — unreachable for THAT
+// REFERENCE, not a claim about the service, retried on the next render. That is
+// the right shape: one enormous block says nothing about the next citation, and
+// reporting it as a transport failure would trip the breaker and silence the
+// rest of the page.
+//
+// THE COST OF THAT CHOICE, STATED: the card then reads "the capture archive
+// returned a non-JSON response", which credits Amber for a limit that is
+// Chronicle's. A truer sentence would mean a new case in CHRN-51's classifier —
+// the file that exists so the two transport tickets could not each invent their
+// own mapping — for a path a real archive answer does not reach. The state is
+// right, which is what a reader acts on; the attribution is off by one hop, and
+// the operator's detail is a size, which is the one thing a status line here
+// could never carry anyway.
 const MaxBody = 4 << 20
 
 // Client is Chronicle's read-only reach into the capture archive.
