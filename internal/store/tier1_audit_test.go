@@ -90,6 +90,16 @@ func TestTier1AuditDetectsEachWidening(t *testing.T) {
 		{"a SECURITY DEFINER function",
 			`CREATE FUNCTION tier2.probe() RETURNS int LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'`,
 			"function tier2.probe()", "SECURITY DEFINER"},
+		// PR #79 review: a view in tier1 over tier 2 runs as its owner and is
+		// auto-granted DML by 0001's default privileges — `UPDATE tier1.corpus
+		// SET text = …` as chronicle_tier1 rewrote tier2.transcripts on a
+		// throwaway server. No GRANT anywhere for a reviewer to see.
+		{"a tier1 view over tier 2 that runs as its owner",
+			`CREATE VIEW tier1.probe_corpus AS SELECT id, text FROM tier2.transcripts`,
+			"view tier1.probe_corpus", "RUNS AS OWNER over tier2.transcripts"},
+		{"a rule on a tier1 table that writes tier 2",
+			`CREATE RULE probe_rule AS ON INSERT TO tier1.watch_seen DO ALSO DELETE FROM tier2.memo_arrivals`,
+			"table tier1.watch_seen", "RULE reaching tier2.memo_arrivals"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -187,10 +197,28 @@ func TestTier1AuditCoversWhatDoesNotExistYet(t *testing.T) {
 	})
 }
 
+// And the two tier1 shapes that are NOT findings, so the rule above is the
+// rule and not a ban on views: a security_invoker view over tier 2 runs as the
+// caller, and a view over tier1's own tables reaches nothing outside.
+func TestTier1AuditAllowsViewsThatCannotReachTierTwo(t *testing.T) {
+	s, ctx := newTestStore(t)
+	tx := begin(t, ctx, s)
+	mustExec(t, ctx, tx, `CREATE VIEW tier1.probe_invoker WITH (security_invoker = true) AS SELECT id, text FROM tier2.transcripts`)
+	mustExec(t, ctx, tx, `CREATE VIEW tier1.probe_local AS SELECT memo_id FROM tier1.memo_jobs`)
+	a, err := auditTier1(ctx, tx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.Clean() {
+		t.Fatalf("views that cannot write tier 2 were flagged: %v", a.Findings)
+	}
+}
+
 // An audit that examined nothing is not a clean audit.
 func TestTier1AuditRefusesToPassOnNothing(t *testing.T) {
 	s, ctx := newTestStore(t)
 	tx := begin(t, ctx, s)
+	mustExec(t, ctx, tx, `DROP SCHEMA tier1 CASCADE`)
 	mustExec(t, ctx, tx, `DROP SCHEMA tier2 CASCADE`)
 	mustExec(t, ctx, tx, `DROP SCHEMA public CASCADE`)
 	a, err := auditTier1(ctx, tx)
@@ -198,7 +226,7 @@ func TestTier1AuditRefusesToPassOnNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	if a.Relations != 0 {
-		t.Fatalf("relations examined = %d after dropping both schemas", a.Relations)
+		t.Fatalf("relations examined = %d after dropping every schema", a.Relations)
 	}
 	if len(a.Findings) != 1 || a.Findings[0].Privilege != "NOTHING EXAMINED" {
 		t.Fatalf("got %v, want the single coverage finding", a.Findings)

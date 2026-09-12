@@ -44,6 +44,7 @@ const (
 	ruleDefaults = "no default privilege outside tier1 names the role or PUBLIC"
 	ruleFuncs    = "no function in any schema is SECURITY DEFINER"
 	ruleOwner    = "the role owns nothing outside tier1"
+	ruleRewrite  = "no view or rule in tier1 reaches a relation outside tier1 with its owner's privileges; a tier1 view over tier 2 must be security_invoker"
 	ruleCoverage = "the audit examined at least one relation; an audit of nothing proves nothing"
 )
 
@@ -75,7 +76,7 @@ func (f Finding) String() string {
 type Tier1Audit struct {
 	Database  string
 	Schemas   int // schemas walked, tier1 excluded
-	Relations int // tables, views, foreign tables and sequences examined
+	Relations int // tables, views, foreign tables and sequences examined, tier1's own included
 	Functions int
 	Findings  []Finding
 }
@@ -309,6 +310,69 @@ func auditTier1(ctx context.Context, q querier) (Tier1Audit, error) {
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return a, fmt.Errorf("store: audit sequences: %w", err)
+	}
+
+	// 5b. tier1's OWN relations, for the one way they can be a tier-2 write
+	// path. The relation scans above skip tier1 on purpose — it is the role's
+	// territory, and 0001's ALTER DEFAULT PRIVILEGES grants it SELECT, INSERT,
+	// UPDATE and DELETE on every table created there. But that object class
+	// covers views too, and a view runs with its OWNER's privileges unless it
+	// is security_invoker. So `CREATE VIEW tier1.corpus AS SELECT … FROM
+	// tier2.transcripts`, owned by chronicle, is auto-granted to the role with
+	// no GRANT in any migration, and `UPDATE tier1.corpus SET text = …` as
+	// chronicle_tier1 rewrites tier2.transcripts. Measured, not reasoned (PR
+	// #79 review). A rewrite RULE on a tier1 table that writes tier 2 is the
+	// same mechanism without the view, and a foreign table is a write path
+	// through a user mapping this audit cannot see. pg_rewrite + pg_depend is
+	// where all three show up; a foreign key is pg_constraint and does not.
+	rows, err = q.Query(ctx, `
+		SELECT c.relname, c.relkind::text,
+		       EXISTS (SELECT 1 FROM pg_options_to_table(c.reloptions) o
+		               WHERE o.option_name = 'security_invoker'
+		                 AND lower(o.option_value) IN ('true', 'on', '1', 'yes')) AS invoker,
+		       coalesce((SELECT string_agg(DISTINCT dn.nspname || '.' || dc.relname, ', ')
+		                 FROM pg_rewrite rw
+		                 JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = rw.oid
+		                                 AND d.refclassid = 'pg_class'::regclass
+		                 JOIN pg_class dc ON dc.oid = d.refobjid
+		                 JOIN pg_namespace dn ON dn.oid = dc.relnamespace
+		                 WHERE rw.ev_class = c.oid AND dc.oid <> c.oid AND dn.nspname <> 'tier1'), '') AS outside
+		FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'tier1' AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+		ORDER BY 1`)
+	if err != nil {
+		return a, fmt.Errorf("store: audit tier1 rewrite rules: %w", err)
+	}
+	for rows.Next() {
+		var name, kind, outside string
+		var invoker bool
+		if err := rows.Scan(&name, &kind, &invoker, &outside); err != nil {
+			rows.Close()
+			return a, fmt.Errorf("store: audit tier1 rewrite rules: %w", err)
+		}
+		a.Relations++
+		object := relkindLabel(kind) + " tier1." + name
+		switch {
+		case kind == "f":
+			add(object, "FOREIGN TABLE", ruleRewrite,
+				fmt.Sprintf("DROP FOREIGN TABLE %s, or move it out of tier1; its writes go through a user mapping", qualifiedIdent("tier1", name)))
+		case outside == "":
+			// Depends on nothing outside tier1: nothing to reach.
+		case kind == "m":
+			// A materialized view is a snapshot read; REFRESH is owner-only.
+		case kind == "v" && invoker:
+			// Runs as the caller, so it can do nothing the caller cannot.
+		case kind == "v":
+			add(object, "RUNS AS OWNER over "+outside, ruleRewrite,
+				fmt.Sprintf("ALTER VIEW %s SET (security_invoker = true)", qualifiedIdent("tier1", name)))
+		default:
+			add(object, "RULE reaching "+outside, ruleRewrite,
+				fmt.Sprintf("DROP RULE … ON %s; a tier1 table's rules run as its owner", qualifiedIdent("tier1", name)))
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return a, fmt.Errorf("store: audit tier1 rewrite rules: %w", err)
 	}
 
 	// 6. Default privileges: the forward-looking half. The probes above honour

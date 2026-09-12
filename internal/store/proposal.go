@@ -35,9 +35,12 @@ type Tier1Store struct {
 	pool *pgxpool.Pool
 }
 
-// NewTier1 wraps a pool opened as the tier-1 role. It does not verify the role;
-// Role reports it, and cmd/chronicle logs what it finds, because an operator
-// who points this at the wrong DSN should be told rather than reassured.
+// NewTier1 wraps a pool opened as the tier-1 role. It does not verify the
+// role; Role reports it, and cmd/chronicle REFUSES TO SERVE unless it is
+// chronicle_tier1 (CHRN-52 ruling 1) — the stronger form of the reasoning this
+// used to state, which was that an operator pointing this at the wrong DSN
+// should be told rather than reassured. Told is not enough when what they are
+// told about is the tier boundary; the service stops.
 func NewTier1(pool *pgxpool.Pool) *Tier1Store { return &Tier1Store{pool: pool} }
 
 // Role reports the database role this pool actually connects as.

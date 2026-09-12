@@ -174,12 +174,15 @@ type Config struct {
 	// if something actually connects on it — which is why this exists in E4
 	// rather than waiting for CHRN-52.
 	//
-	// FALLS BACK to DatabaseURL when unset, so a single-DSN deployment keeps
-	// working and the tier-1 pool is an addition rather than a prerequisite.
-	// Tier1IsSeparate reports whether the fallback was taken; boot warns when
-	// it was, because a tier-1 pool silently running as `chronicle` is
-	// enforcement that enforces nothing. CHRN-52 decides whether the fallback
-	// may survive in production at all.
+	// Load still assigns DatabaseURL here when the variable is unset, so
+	// Tier1IsSeparate can report that — but NOTHING THAT SERVES TAKES THE
+	// FALLBACK ANY MORE. CHRN-52 (ruling 1, 2026-09-12) decided it may not
+	// survive in production: `serve` refuses to start when this is unset or
+	// equal to the main DSN, when it connects as any role but chronicle_tier1,
+	// and when it is unreachable, because a tier-1 pool quietly running as
+	// `chronicle` is enforcement that enforces nothing — which is how
+	// production ran from E4 until SERV-182. Only `eval` still reads the
+	// corpus on the main role when this is unset, and says so on stderr.
 	Tier1DatabaseURL string
 
 	// CHRN-32 — Scribe. Empty ScribeOllamaURL disables routing entirely.
@@ -231,9 +234,11 @@ func (c Config) SwitchyardConfigured() bool {
 // Tier1IsSeparate reports whether the tier-1 pool has a DSN of its own rather
 // than falling back to the main one.
 //
-// False means derived writers are connecting as `chronicle`, which can read
-// and write tier 2 — so the role grant is in place and nothing is standing
-// behind it. Serving warns; CHRN-52 decides whether it should refuse.
+// False means derived writers would connect as `chronicle`, which can read
+// and write tier 2 — the role grant in place and nothing standing behind it.
+// `serve` REFUSES in that case (CHRN-52 ruling 1); this is the first of its
+// three refusals. `eval` reports it and carries on, because a score does not
+// exercise the boundary.
 func (c Config) Tier1IsSeparate() bool {
 	return c.Tier1DatabaseURL != "" && c.Tier1DatabaseURL != c.DatabaseURL
 }
