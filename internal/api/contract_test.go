@@ -11,6 +11,7 @@ import (
 
 	"github.com/Einlanzerous/chronicle/internal/api/apitest"
 	"github.com/Einlanzerous/chronicle/internal/api/wire"
+	"github.com/Einlanzerous/chronicle/internal/store"
 )
 
 // CHRN-97's guards, tested where they can actually fail.
@@ -367,3 +368,133 @@ func TestDocumentedOperations(t *testing.T) {
 }
 
 const someUUID = "6f1b2c3d-4e5f-4a7b-8c9d-0e1f2a3b4c5d"
+
+// The other two directions of criterion 6's matrix.
+//
+// The anonymous row is the one above, written out status by status. These two
+// cannot be: a credentialed caller's status depends on the handler and on what
+// the deployment has configured -- 200, 400, 415, 503 are all correct answers
+// here -- so the claim is narrower and is the one that matters for a
+// credential migration: THE WRAPPER LET IT THROUGH. A 401 or a 403 from the
+// shared wrappers is identifiable by its code, so the assertion is precise
+// rather than a status range.
+//
+// It is what PR 2 leans on. Moving 22 routes onto the generated registration
+// must not change who gets past the wrapper, and "anonymous still gets 401" is
+// only half of that.
+func TestACredentialedCallerIsNotRefusedByTheWrappers(t *testing.T) {
+	f := newFakeAccounts()
+	member := f.signIn(person("member@example.com", false), "member-token")
+	owner := f.signIn(person("owner@example.com", true), "owner-token")
+	h := testRouter(f)
+
+	// Every route, with the credential that should reach its handler. The
+	// owner-only seven are checked with the owner; the rest with a plain
+	// member, since a member reaching them is the wider claim.
+	routes := []struct {
+		method, path string
+		as           store.User
+		token        string
+	}{
+		{http.MethodDelete, "/auth/session", member, "member-token"},
+		{http.MethodGet, "/auth/me", member, "member-token"},
+		{http.MethodPatch, "/auth/me", member, "member-token"},
+		{http.MethodPost, "/auth/invite", member, "member-token"},
+		{http.MethodGet, "/auth/sessions", member, "member-token"},
+		{http.MethodDelete, "/auth/sessions/" + someUUID, member, "member-token"},
+
+		{http.MethodPost, "/admin/users", owner, "owner-token"},
+		{http.MethodGet, "/admin/users", owner, "owner-token"},
+		{http.MethodPost, "/admin/users/" + someUUID + "/invite", owner, "owner-token"},
+		{http.MethodDelete, "/admin/users/" + someUUID, owner, "owner-token"},
+		{http.MethodGet, "/admin/storage", owner, "owner-token"},
+		{http.MethodGet, "/admin/triage", owner, "owner-token"},
+		{http.MethodGet, "/admin/transcription", owner, "owner-token"},
+
+		{http.MethodPost, "/memos/uploads", member, "member-token"},
+		{http.MethodGet, "/memos/uploads/" + someUUID, member, "member-token"},
+		{http.MethodPatch, "/memos/uploads/" + someUUID, member, "member-token"},
+		{http.MethodDelete, "/memos/uploads/" + someUUID, member, "member-token"},
+
+		{http.MethodGet, "/triage/batch", member, "member-token"},
+		{http.MethodPost, "/triage/accept", member, "member-token"},
+		{http.MethodPost, "/triage/hold", member, "member-token"},
+		{http.MethodPost, "/triage/release", member, "member-token"},
+		{http.MethodGet, "/triage/deferred", member, "member-token"},
+	}
+
+	for _, route := range routes {
+		// RE-ESTABLISHED EACH TIME, because one of these routes revokes the
+		// credential it was called with: DELETE /auth/session is a sign-out,
+		// and it deletes the token from the fake exactly as it deletes the
+		// session from the store. Without this the first row would
+		// unauthenticate every row after it and the test would read as
+		// fourteen broken wrappers -- which is what it did.
+		f.sessions[route.token] = route.as
+
+		rec := httptest.NewRecorder()
+		r := jsonReq(route.method, route.path, `{}`)
+		r.Header.Set("Authorization", "Bearer "+route.token)
+		h.ServeHTTP(rec, r)
+
+		if rec.Code != http.StatusUnauthorized && rec.Code != http.StatusForbidden {
+			continue
+		}
+		// A 401/403 here is only a failure if the WRAPPER produced it. A
+		// handler may legitimately refuse -- removing the owner account is
+		// 403 by design -- so the code is what separates the two.
+		var body wire.Error
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		if body.Code == codeUnauthorized || body.Code == codeOwnerOnly {
+			t.Errorf("%s %s as %s = %d %s: the credential wrapper refused a caller that should reach the handler",
+				route.method, route.path, route.as.Email, rec.Code, body.Code)
+		}
+	}
+
+	// And the owner reaches the member routes too -- the owner is an account,
+	// not a separate kind of caller.
+	f.sessions["owner-token"] = owner
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/auth/me", nil)
+	r.Header.Set("Authorization", "Bearer owner-token")
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Errorf("GET /auth/me as the owner = %d, want 200", rec.Code)
+	}
+}
+
+// Every generated route went through the policy path, and with which wrap.
+//
+// This is what policyRouter.seen is FOR, and the assertion the map alone cannot
+// make: routePolicy containing an entry says nothing about whether the
+// registration consulted it. Run the generated registration against a shim of
+// this test's own and read back what it recorded.
+func TestEveryGeneratedRouteIsRegisteredThroughThePolicyPath(t *testing.T) {
+	routed := newPolicyRouter(http.NewServeMux(), &api{accounts: newFakeAccounts()})
+	wire.HandlerWithOptions(&api{}, wire.StdHTTPServerOptions{
+		BaseRouter:       routed,
+		ErrorHandlerFunc: bindError(discardLogger()),
+	})
+
+	want := map[string]policy{
+		"GET /healthz":             policyPublic,
+		"GET /readyz":              policyPublic,
+		"GET /admin/storage":       policyOwner,
+		"GET /admin/transcription": policyOwner,
+	}
+
+	if len(routed.seen) != len(want) {
+		t.Fatalf("registered %d routes through the policy path, want %d: %v",
+			len(routed.seen), len(want), routed.seen)
+	}
+	for pattern, pol := range want {
+		got, ok := routed.seen[pattern]
+		if !ok {
+			t.Errorf("%s was not registered through the policy path", pattern)
+			continue
+		}
+		if got != pol {
+			t.Errorf("%s registered as %q, want %q", pattern, got, pol)
+		}
+	}
+}

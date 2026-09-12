@@ -39,6 +39,27 @@ const (
 	codeAccountsUnconfigured      = "accounts_unconfigured"
 )
 
+// ============================================================================
+// WHAT STILL ANSWERS text/plain, AND WHOSE IT IS.
+// ============================================================================
+//
+// Plan criterion 8 -- "no response from any route, generated or hand-written,
+// carries a text/plain body" -- is met for the four operations this half of
+// CHRN-97 migrated, and DEFERRED for the other 22. The shared wrappers above
+// are converted, so every 401/403/429 they produce is the envelope; 44
+// handler-level `http.Error` calls are not, and two of them are on the surface
+// a client meets first:
+//
+//	session.go   POST /auth/session   401 "invalid or already-used invite"
+//	session.go   DELETE /admin/users/{id}   403 "the owner account cannot be removed"
+//
+// They are left alone deliberately rather than overlooked. Converting them
+// means declaring each status on each operation in openapi.yaml, which is the
+// second half's work by ruling 2 -- and a handler answering the envelope on a
+// route the document does not yet describe would be a shape nothing validates.
+// The remaining counts, so a later reader can tell progress from drift:
+// session.go 15, triage.go 9, upload.go 20.
+
 // writeError answers with the documented envelope.
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, wire.Error{Code: code, Message: message})

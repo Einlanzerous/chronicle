@@ -26,6 +26,7 @@ type fakeAccounts struct {
 	sessions       map[string]store.User // plaintext -> account
 	invites        map[string]store.User // plaintext -> account, single use
 	byEmail        map[string]store.User
+	byID           map[uuid.UUID]store.User
 	createErr      error
 	minted         string
 	mintedSessions []string
@@ -37,6 +38,7 @@ func newFakeAccounts() *fakeAccounts {
 		sessions: map[string]store.User{},
 		invites:  map[string]store.User{},
 		byEmail:  map[string]store.User{},
+		byID:     map[uuid.UUID]store.User{},
 	}
 }
 
@@ -100,6 +102,53 @@ func (f *fakeAccounts) CreateUser(_ context.Context, email, name, kind string) (
 
 func (f *fakeAccounts) ListSessions(context.Context, uuid.UUID, string) ([]store.Session, error) {
 	return nil, nil
+}
+
+// The four methods below were unimplemented, so the embedded nil Accounts
+// panicked on any route reaching them -- which is why CHRN-97's credential
+// matrix could only be written for anonymous callers. A fake that panics on
+// four routes cannot answer "did the wrapper let this through", so it is
+// completed here rather than worked around in the test.
+func (f *fakeAccounts) GetUser(_ context.Context, id uuid.UUID) (store.User, error) {
+	if u, ok := f.byID[id]; ok {
+		return u, nil
+	}
+	return store.User{}, store.ErrNotFound
+}
+
+func (f *fakeAccounts) UpdateDisplayName(_ context.Context, id uuid.UUID, name string) (store.User, error) {
+	u, ok := f.byID[id]
+	if !ok {
+		return store.User{}, store.ErrNotFound
+	}
+	u.DisplayName = name
+	f.byID[id] = u
+	return u, nil
+}
+
+func (f *fakeAccounts) DeleteUser(_ context.Context, id uuid.UUID) error {
+	u, ok := f.byID[id]
+	if !ok {
+		return store.ErrNotFound
+	}
+	if u.IsOwner {
+		return store.ErrOwnerImmutable
+	}
+	delete(f.byID, id)
+	return nil
+}
+
+func (f *fakeAccounts) RevokeSession(context.Context, uuid.UUID, uuid.UUID, string) (bool, error) {
+	return false, nil
+}
+
+// signIn registers an account and hands back the session token for it, so a
+// test can ask what a credentialed caller gets.
+func (f *fakeAccounts) signIn(u store.User, token string) store.User {
+	f.sessions[token] = u
+	f.byID[u.ID] = u
+	f.byEmail[u.Email] = u
+	return u
 }
 
 // jsonReq builds a request the API will accept. Every JSON endpoint now
