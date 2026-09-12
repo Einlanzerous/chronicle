@@ -499,8 +499,8 @@ func TestEveryGeneratedRouteIsRegisteredThroughThePolicyPath(t *testing.T) {
 	}
 }
 
-// Every operation declares the responses its WRAPPERS can produce, not only
-// the ones its handler writes on purpose.
+// Every operation declares the responses its SHARED CODE can produce, not only
+// the ones its own handler writes on purpose.
 //
 // ============================================================================
 // THIS IS THE PART OF strict-server THAT HAD TO BE REPLACED BY HAND.
@@ -519,13 +519,83 @@ func TestEveryGeneratedRouteIsRegisteredThroughThePolicyPath(t *testing.T) {
 // carry to every operation the epic adds rather than only the ones somebody
 // remembered to test.
 //
-// Each rule names the SHARED code that produces the status, because that is
-// why the obligation is the document's and not the handler author's.
-func TestEveryOperationDeclaresWhatItsWrappersCanAnswer(t *testing.T) {
+// ============================================================================
+// THE RULES FOLLOW REACHABILITY OF THE SHARED CODE, NOT THE POLICY NAME.
+// ============================================================================
+//
+// The first version of this test gated the 500 on `member || owner`, and a
+// review found the hole before PR 2 could fall into it: both sign-in handlers
+// call `serverError` DIRECTLY -- session.go:273 on a failed invite redemption,
+// and :335/:364/:374 in the Cloudflare Access path -- so `signin` can answer
+// 500 without ever reaching `requireUser`. A rule keyed on the policy name
+// would have passed the first sign-in operation with no 500 declared, on the
+// route apierr.go itself calls "the surface a client meets first".
+//
+// Keyed on reachability instead, the same table also covers what the shared
+// JSON decoder answers on any body-taking route -- which is what stops PR 2
+// rediscovering this 22 operations at a time.
+func TestEveryOperationDeclaresWhatItsSharedCodeCanAnswer(t *testing.T) {
+	// Each rule names the shared function that produces the status, because
+	// that is why the obligation belongs to the document rather than to
+	// whoever writes the next handler.
+	type rule struct {
+		code    int
+		applies func(pol string, params int, hasBody bool) bool
+		why     string
+	}
+	credentialed := func(pol string) bool {
+		return pol == string(policyMember) || pol == string(policyOwner)
+	}
+	rules := []rule{
+		{
+			code:    http.StatusInternalServerError,
+			applies: func(pol string, _ int, _ bool) bool { return pol != string(policyPublic) },
+			why: "serverError is reachable on every route but the two probes: requireUser answers " +
+				"it when the session lookup fails, and the sign-in handlers call it directly",
+		},
+		{
+			code:    http.StatusUnauthorized,
+			applies: func(pol string, _ int, _ bool) bool { return credentialed(pol) },
+			why:     "requireUser answers it",
+		},
+		{
+			code:    http.StatusForbidden,
+			applies: func(pol string, _ int, _ bool) bool { return pol == string(policyOwner) },
+			why:     "requireOwner answers it",
+		},
+		{
+			code:    http.StatusTooManyRequests,
+			applies: func(pol string, _ int, _ bool) bool { return pol == string(policySignIn) },
+			why:     "limitSignIn answers it",
+		},
+		{
+			code: http.StatusBadRequest,
+			applies: func(_ string, params int, hasBody bool) bool {
+				return params > 0 || hasBody
+			},
+			why: "the generated wrapper answers it through bindError when a parameter does not " +
+				"bind, pathUUID when a {id} is not a UUID, and decodeJSONLimit on a body that " +
+				"is not JSON or a field that is too long",
+		},
+		{
+			code:    http.StatusUnsupportedMediaType,
+			applies: func(_ string, _ int, hasBody bool) bool { return hasBody },
+			why: "decodeJSONLimit refuses a body that is not application/json -- which is what " +
+				"closes login CSRF, so no body-taking route is exempt",
+		},
+		{
+			code:    http.StatusRequestEntityTooLarge,
+			applies: func(_ string, _ int, hasBody bool) bool { return hasBody },
+			why:     "decodeJSONLimit caps every body, and MaxBytesReader answers it",
+		},
+	}
+
 	for path, item := range apitest.Doc(t).Paths.Map() {
 		for method, op := range item.Operations() {
 			pattern := method + " " + path
 			pol, _ := op.Extensions["x-chronicle-policy"].(string)
+			params := len(op.Parameters) + len(item.Parameters)
+			hasBody := op.RequestBody != nil
 
 			declares := func(code int) bool {
 				if op.Responses == nil {
@@ -535,37 +605,10 @@ func TestEveryOperationDeclaresWhatItsWrappersCanAnswer(t *testing.T) {
 				return ref != nil && ref.Value != nil
 			}
 
-			// requireUser and requireOwner refuse with these, and requireUser
-			// resolves the session against the DATABASE -- so a credentialed
-			// operation inherits a 500 it never writes itself (session.go's
-			// serverError on a failed lookup), plus whatever its own handler
-			// can fail at.
-			if pol == string(policyMember) || pol == string(policyOwner) {
-				if !declares(http.StatusUnauthorized) {
-					t.Errorf("%s is behind a credential and declares no 401 — requireUser answers one", pattern)
+			for _, r := range rules {
+				if r.applies(pol, params, hasBody) && !declares(r.code) {
+					t.Errorf("%s declares no %d: %s", pattern, r.code, r.why)
 				}
-				if !declares(http.StatusInternalServerError) {
-					t.Errorf("%s is behind a credential and declares no 500 — requireUser answers one "+
-						"when the session lookup fails, on every route, whatever the handler does", pattern)
-				}
-			}
-			if pol == string(policyOwner) && !declares(http.StatusForbidden) {
-				t.Errorf("%s is owner-only and declares no 403 — requireOwner answers one", pattern)
-			}
-
-			// limitSignIn's bucket. No signin operation is in the document yet;
-			// the rule is here so the first one cannot arrive without it.
-			if pol == string(policySignIn) && !declares(http.StatusTooManyRequests) {
-				t.Errorf("%s is a sign-in route and declares no 429 — limitSignIn answers one", pattern)
-			}
-
-			// bindError's 400, which is the generated wrapper's and not the
-			// handler's. Latent today because no migrated operation binds a
-			// parameter; live the moment PR 2 lands PATCH /memos/uploads/{id}.
-			params := len(op.Parameters) + len(item.Parameters)
-			if params > 0 && !declares(http.StatusBadRequest) {
-				t.Errorf("%s binds %d parameter(s) and declares no 400 — the generated "+
-					"wrapper answers one through bindError when a parameter does not bind", pattern, params)
 			}
 
 			// A `default` response would satisfy every rule above while

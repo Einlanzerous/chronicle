@@ -59,6 +59,15 @@ const (
 // route the document does not yet describe would be a shape nothing validates.
 // The remaining counts, so a later reader can tell progress from drift:
 // session.go 15, triage.go 9, upload.go 20.
+//
+// THE DEFERRAL IS ENFORCED RATHER THAN PROMISED, which is the part a comment
+// alone could not do. Three of those calls are in SHARED code --
+// decodeJSONLimit's 415, 413 and 400 -- and
+// TestEveryOperationDeclaresWhatItsSharedCodeCanAnswer requires any operation
+// with a request body to DECLARE all three. apitest.Conform then requires the
+// body to match what was declared. So the half that declares those 22
+// operations cannot declare them without converting these calls, and cannot
+// convert them without declaring: neither half of the pair can ship alone.
 
 // writeError answers with the documented envelope.
 func writeError(w http.ResponseWriter, status int, code, message string) {
