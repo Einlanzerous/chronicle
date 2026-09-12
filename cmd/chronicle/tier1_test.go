@@ -26,10 +26,12 @@ func quietLogger() (*slog.Logger, *bytes.Buffer) {
 func TestOpenTier1PoolRefusesTheFallback(t *testing.T) {
 	logger, _ := quietLogger()
 	// What config.Load produces when CHRONICLE_TIER1_DATABASE_URL is unset:
-	// the tier-1 DSN equals the main one.
+	// the tier-1 DSN equals the main one. Keyword form with no password —
+	// nothing here connects, and a URI with a placeholder password reads as a
+	// credential to a secret scanner.
 	cfg := config.Config{
-		DatabaseURL:      "postgres://chronicle:x@127.0.0.1:1/chronicle",
-		Tier1DatabaseURL: "postgres://chronicle:x@127.0.0.1:1/chronicle",
+		DatabaseURL:      "host=127.0.0.1 port=1 user=chronicle dbname=chronicle",
+		Tier1DatabaseURL: "host=127.0.0.1 port=1 user=chronicle dbname=chronicle",
 	}
 	pool, tier1, err := openTier1Pool(context.Background(), cfg, logger, time.Second)
 	if err == nil {
@@ -48,9 +50,11 @@ func TestOpenTier1PoolRefusesTheFallback(t *testing.T) {
 // not quietly open the main pool instead.
 func TestOpenTier1PoolRefusesAnUnreachableDSN(t *testing.T) {
 	logger, _ := quietLogger()
+	// Port 1 answers nothing; connect_timeout keeps each attempt short so the
+	// budget, not the TCP stack, decides when the refusal comes.
 	cfg := config.Config{
-		DatabaseURL:      "postgres://chronicle:x@127.0.0.1:1/chronicle",
-		Tier1DatabaseURL: "postgres://chronicle_tier1:x@127.0.0.1:1/chronicle?connect_timeout=1",
+		DatabaseURL:      "host=127.0.0.1 port=1 user=chronicle dbname=chronicle",
+		Tier1DatabaseURL: "host=127.0.0.1 port=1 user=chronicle_tier1 dbname=chronicle connect_timeout=1",
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
