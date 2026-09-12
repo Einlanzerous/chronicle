@@ -151,6 +151,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
         "503":
           description: |
             no audio store is configured. Distinct from an empty report on
@@ -186,6 +188,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
         "503":
           description: no database is configured, so there is no corpus to report on.
           content:
@@ -220,6 +224,21 @@ components:
             $ref: "#/components/schemas/Error"
     Forbidden:
       description: a valid session, on an account that may not do this
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InternalError:
+      description: |
+        something failed that the caller cannot act on. The detail is in the
+        log and deliberately not in this body, which may cross the WAN.
+
+        **Every credentialed operation declares this, and the reason is not
+        that every handler has a bug.** `requireUser` resolves the session
+        against the database, so a dropped connection answers here on ANY route
+        behind a credential — the shared wrapper's 500, not the handler's. A
+        document that omitted it would leave three generated clients with no
+        branch for the answer they get when Postgres blinks.
       content:
         application/json:
           schema:

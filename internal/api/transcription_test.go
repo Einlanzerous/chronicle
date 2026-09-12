@@ -21,9 +21,17 @@ type fakeTranscription struct {
 	states  map[string]int64
 	held    []store.HeldMemo
 	partial []store.PartialMemo
+
+	// statesErr makes the store fail the way a dropped pooled connection does,
+	// so the 500 every credentialed route can answer is DRIVEN rather than only
+	// declared. Conform can judge a response a test produced and no other.
+	statesErr error
 }
 
 func (f *fakeTranscription) TranscriptionStates(context.Context) (map[string]int64, error) {
+	if f.statesErr != nil {
+		return nil, f.statesErr
+	}
 	return f.states, nil
 }
 

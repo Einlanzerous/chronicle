@@ -233,6 +233,9 @@ type WindowReport struct {
 // Forbidden defines model for Forbidden.
 type Forbidden = Error
 
+// InternalError defines model for InternalError.
+type InternalError = Error
+
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = Error
 

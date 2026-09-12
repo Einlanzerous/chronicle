@@ -498,3 +498,110 @@ func TestEveryGeneratedRouteIsRegisteredThroughThePolicyPath(t *testing.T) {
 		}
 	}
 }
+
+// Every operation declares the responses its WRAPPERS can produce, not only
+// the ones its handler writes on purpose.
+//
+// ============================================================================
+// THIS IS THE PART OF strict-server THAT HAD TO BE REPLACED BY HAND.
+// ============================================================================
+//
+// Ruling 1 declined `strict-server`, whose stated cost was that "every status
+// any handler can answer must be enumerated per operation before the code
+// compiles". The plan traded that for `apitest.Conform` at test time -- and
+// Conform can only judge a response some test actually drove. Nothing in this
+// package drove a 500, so both migrated operations shipped able to answer one
+// and declaring none, which is a client generated against a document with no
+// branch for the answer it gets when Postgres blinks.
+//
+// So the enumeration is a rule over the document instead of a property of the
+// Go types. It is checkable without running a handler, which is what makes it
+// carry to every operation the epic adds rather than only the ones somebody
+// remembered to test.
+//
+// Each rule names the SHARED code that produces the status, because that is
+// why the obligation is the document's and not the handler author's.
+func TestEveryOperationDeclaresWhatItsWrappersCanAnswer(t *testing.T) {
+	for path, item := range apitest.Doc(t).Paths.Map() {
+		for method, op := range item.Operations() {
+			pattern := method + " " + path
+			pol, _ := op.Extensions["x-chronicle-policy"].(string)
+
+			declares := func(code int) bool {
+				if op.Responses == nil {
+					return false
+				}
+				ref := op.Responses.Status(code)
+				return ref != nil && ref.Value != nil
+			}
+
+			// requireUser and requireOwner refuse with these, and requireUser
+			// resolves the session against the DATABASE -- so a credentialed
+			// operation inherits a 500 it never writes itself (session.go's
+			// serverError on a failed lookup), plus whatever its own handler
+			// can fail at.
+			if pol == string(policyMember) || pol == string(policyOwner) {
+				if !declares(http.StatusUnauthorized) {
+					t.Errorf("%s is behind a credential and declares no 401 — requireUser answers one", pattern)
+				}
+				if !declares(http.StatusInternalServerError) {
+					t.Errorf("%s is behind a credential and declares no 500 — requireUser answers one "+
+						"when the session lookup fails, on every route, whatever the handler does", pattern)
+				}
+			}
+			if pol == string(policyOwner) && !declares(http.StatusForbidden) {
+				t.Errorf("%s is owner-only and declares no 403 — requireOwner answers one", pattern)
+			}
+
+			// limitSignIn's bucket. No signin operation is in the document yet;
+			// the rule is here so the first one cannot arrive without it.
+			if pol == string(policySignIn) && !declares(http.StatusTooManyRequests) {
+				t.Errorf("%s is a sign-in route and declares no 429 — limitSignIn answers one", pattern)
+			}
+
+			// bindError's 400, which is the generated wrapper's and not the
+			// handler's. Latent today because no migrated operation binds a
+			// parameter; live the moment PR 2 lands PATCH /memos/uploads/{id}.
+			params := len(op.Parameters) + len(item.Parameters)
+			if params > 0 && !declares(http.StatusBadRequest) {
+				t.Errorf("%s binds %d parameter(s) and declares no 400 — the generated "+
+					"wrapper answers one through bindError when a parameter does not bind", pattern, params)
+			}
+
+			// A `default` response would satisfy every rule above while
+			// telling a client nothing, and it would turn Conform into a
+			// catch-all that accepts any status this API ever answers. If one
+			// is ever wanted it should be argued, not arrived at.
+			if op.Responses != nil {
+				if d := op.Responses.Default(); d != nil && d.Value != nil {
+					t.Errorf("%s declares a `default` response: it satisfies every rule here "+
+						"while describing nothing, and it makes apitest.Conform accept any status", pattern)
+				}
+			}
+		}
+	}
+}
+
+// And the 500 is not only declared, it is driven -- so Conform judges the real
+// response rather than a schema nobody has produced.
+func TestAFailingStoreAnswersTheDocumented500(t *testing.T) {
+	h := transcriptionRouter(t, &fakeTranscription{statesErr: errors.New("connection reset by peer")}, true)
+
+	rec := getTranscription(t, h, "chr_owner")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500: %s", rec.Code, rec.Body.String())
+	}
+	apitest.Conform(t, "getTranscriptionReport", rec)
+
+	var body wire.Error
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body is not the documented envelope: %v", err)
+	}
+	if body.Code != codeInternal {
+		t.Errorf("code = %q, want %q", body.Code, codeInternal)
+	}
+	// The cause belongs in the log, not in a body that may cross the WAN.
+	if strings.Contains(body.Message, "connection reset") {
+		t.Errorf("message %q relays the underlying error", body.Message)
+	}
+}
