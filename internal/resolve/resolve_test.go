@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Einlanzerous/chronicle/internal/markdown"
+	"github.com/Einlanzerous/chronicle/internal/switchyard"
 )
 
 // ---------------------------------------------------------------------------
@@ -278,30 +279,22 @@ func TestUnconfiguredIsDistinctFromUnreachableAndNeverDials(t *testing.T) {
 // The cache, counted by a real test server rather than asserted by timing.
 // ---------------------------------------------------------------------------
 
-// httpTransport is a minimal transport over a test server. It exists so the
-// call-counting claims are made against something that actually serves HTTP,
-// rather than against a double that could be counting itself.
-type httpTransport struct {
-	base string
-	c    *http.Client
-}
-
-func (t httpTransport) Fetch(ctx context.Context, ref markdown.Reference) Answer {
-	req, err := http.NewRequestWithContext(ctx, "GET", t.base+"/v1/tickets/"+ref.Token, nil)
+// overHTTP is the SHIPPED Switchyard transport pointed at a test server, so the
+// call-counting claims below are made against something that actually serves
+// HTTP -- and against the code that will make the calls in production, rather
+// than a double that could be counting itself.
+//
+// CHRN-51 carried a hand-rolled stand-in here because no transport existed yet;
+// CHRN-49 shipped one, and a second spelling of the same request is a second
+// place for the cache's premise to stop being true.
+func overHTTP(t *testing.T, srv *httptest.Server) Transport {
+	t.Helper()
+	c, err := switchyard.New(srv.URL, "tok")
 	if err != nil {
-		return Answer{Err: err}
+		t.Fatal(err)
 	}
-	resp, err := t.c.Do(req)
-	if err != nil {
-		return Answer{Err: err}
-	}
-	defer func() { _ = resp.Body.Close() }()
-	buf := make([]byte, 4096)
-	n, _ := resp.Body.Read(buf)
-	return Answer{Status: resp.StatusCode, Body: buf[:n]}
+	return NewSwitchyard(c)
 }
-
-func (t httpTransport) URLFor(key string) string { return t.base + "/tickets/" + key }
 
 func newTicketServer(t *testing.T) (*httptest.Server, *atomic.Int64) {
 	t.Helper()
@@ -326,7 +319,7 @@ func TestThirtyReferencesDoNotMakeThirtyCalls(t *testing.T) {
 	srv, calls := newTicketServer(t)
 	clock := newClock()
 	r := newResolver(t, clock, Options{
-		Transports: map[string]Transport{markdown.SystemSwitchyard: httpTransport{base: srv.URL, c: srv.Client()}},
+		Transports: map[string]Transport{markdown.SystemSwitchyard: overHTTP(t, srv)},
 	})
 
 	// Thirty references to ten distinct tickets.
@@ -355,7 +348,7 @@ func TestTheCacheWindowsAreTheRulingsNumbers(t *testing.T) {
 	srv, calls := newTicketServer(t)
 	clock := newClock()
 	r := newResolver(t, clock, Options{
-		Transports: map[string]Transport{markdown.SystemSwitchyard: httpTransport{base: srv.URL, c: srv.Client()}},
+		Transports: map[string]Transport{markdown.SystemSwitchyard: overHTTP(t, srv)},
 	})
 	refs := []markdown.Reference{swRef("SWY-1")}
 
@@ -433,7 +426,7 @@ func TestTheCacheIsSafeUnderConcurrentRenders(t *testing.T) {
 	srv, _ := newTicketServer(t)
 	r := newResolver(t, nil, Options{
 		Now:        time.Now,
-		Transports: map[string]Transport{markdown.SystemSwitchyard: httpTransport{base: srv.URL, c: srv.Client()}},
+		Transports: map[string]Transport{markdown.SystemSwitchyard: overHTTP(t, srv)},
 	})
 	var refs []markdown.Reference
 	for i := 0; i < 12; i++ {
