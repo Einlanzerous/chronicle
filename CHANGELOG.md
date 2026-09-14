@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.13.0](https://github.com/Einlanzerous/chronicle/compare/v1.12.0...v1.13.0) (2026-09-14)
+
+
+### Features
+
+* **api:** auth, accounts and uploads join the document (CHRN-97) ([#85](https://github.com/Einlanzerous/chronicle/issues/85)) ([2f9be8c](https://github.com/Einlanzerous/chronicle/commit/2f9be8c3f93fb29149dceaa5533e596f47887142))
+* **api:** triage joins the document, and nothing is hand-registered any more (CHRN-97) ([#87](https://github.com/Einlanzerous/chronicle/issues/87)) ([2400439](https://github.com/Einlanzerous/chronicle/commit/2400439a5bc0cf58054984125d5086b2cc7e57ef))
+
 ## [1.12.0](https://github.com/Einlanzerous/chronicle/compare/v1.11.0...v1.12.0) (2026-09-14)
 
 
