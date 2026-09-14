@@ -123,9 +123,9 @@ var routePolicy = map[string]policy{
 // policyRouter is the ServeMux the generated registration writes into.
 //
 // It satisfies wire.ServeMux (HandleFunc + ServeHTTP) and delegates to a real
-// *http.ServeMux, which is also where the routes this epic has not migrated yet
-// are registered directly. One mux, two ways in, and only one of them can
-// forget a credential.
+// *http.ServeMux. Since CHRN-97's third PR there is no second way in: every
+// route this service serves is registered through here, so there is no longer a
+// path by which one can be added without a credential.
 type policyRouter struct {
 	mux *http.ServeMux
 	api *api

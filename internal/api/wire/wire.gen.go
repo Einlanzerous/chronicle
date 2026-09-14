@@ -204,10 +204,7 @@ type BatchItem struct {
 	// ticket filed against nothing, and the person confirming is the only
 	// one who can tell whether the clearing was right.
 	ClearedFields []ClearedField `json:"cleared_fields,omitempty"`
-
-	// Destination Where the proposal says this memo should go.
-	Destination *string `json:"destination,omitempty"`
-	DurationMs  *int32  `json:"duration_ms,omitempty"`
+	DurationMs    *int32         `json:"duration_ms,omitempty"`
 
 	// Error Why this memo has no usable proposal, when it has none.
 	Error *string `json:"error,omitempty"`
@@ -547,6 +544,11 @@ type PartialTranscript struct {
 // state** — it becomes tier 2 only when a person confirms it, which is the
 // whole of CHRN-32's contract.
 type Proposal struct {
+	// Body The drafted note text, for a `NOTE` proposal. What acceptance writes
+	// as the first revision — so a person confirming without seeing it
+	// would be confirming text they have not read, which is the one thing
+	// the confirmation exists to prevent.
+	Body        *string             `json:"body,omitempty"`
 	Confidence  float64             `json:"confidence"`
 	Description *string             `json:"description,omitempty"`
 	Destination ProposalDestination `json:"destination"`
@@ -554,12 +556,22 @@ type Proposal struct {
 	// NearestPage The closest existing page, when the proposal is a note. Always
 	// present as a field so "no nearby page" is `null` rather than absent,
 	// which a client would otherwise read as "not computed".
-	NearestPage *string `json:"nearest_page,omitempty"`
+	NearestPage *string `json:"nearest_page"`
+
+	// OpeningPost The drafted first turn, for a `DISCUSSION` proposal. Same reasoning as `body`.
+	OpeningPost *string `json:"opening_post,omitempty"`
 	PagePath    *string `json:"page_path,omitempty"`
 	ProjectKey  *string `json:"project_key,omitempty"`
 
 	// Reason The model's own sentence, for a person deciding whether to agree.
-	Reason     string  `json:"reason"`
+	Reason string `json:"reason"`
+
+	// TargetNote The note the verb acts on — `CHR-0311`. **Required unless the verb
+	// is `create`**, and the reason it is on the card rather than only in
+	// the accept call: a person confirming an `append` is agreeing to
+	// change a specific piece of authored text, and cannot agree to that
+	// without being told which.
+	TargetNote *string `json:"target_note,omitempty"`
 	TicketType *string `json:"ticket_type,omitempty"`
 	Title      *string `json:"title,omitempty"`
 

@@ -1713,9 +1713,6 @@ components:
             never a licence to skip the confirmation.
         link:
           $ref: "#/components/schemas/LinkState"
-        destination:
-          type: string
-          description: Where the proposal says this memo should go.
 
     Proposal:
       type: object
@@ -1723,7 +1720,7 @@ components:
         What the Scribe proposed. **Derived, disposable, and never authored
         state** — it becomes tier 2 only when a person confirms it, which is the
         whole of CHRN-32's contract.
-      required: [destination, confidence, reason]
+      required: [destination, confidence, reason, nearest_page]
       properties:
         destination:
           type: string
@@ -1754,6 +1751,24 @@ components:
             note; the other three touch one that exists, which is why
             `note_revisions_guard` requires a confirming person who is never an
             agent.
+        target_note:
+          type: string
+          description: |
+            The note the verb acts on — `CHR-0311`. **Required unless the verb
+            is `create`**, and the reason it is on the card rather than only in
+            the accept call: a person confirming an `append` is agreeing to
+            change a specific piece of authored text, and cannot agree to that
+            without being told which.
+        body:
+          type: string
+          description: |
+            The drafted note text, for a `NOTE` proposal. What acceptance writes
+            as the first revision — so a person confirming without seeing it
+            would be confirming text they have not read, which is the one thing
+            the confirmation exists to prevent.
+        opening_post:
+          type: string
+          description: The drafted first turn, for a `DISCUSSION` proposal. Same reasoning as `body`.
 
     ClearedField:
       type: object

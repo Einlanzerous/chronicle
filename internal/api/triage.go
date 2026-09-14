@@ -50,17 +50,13 @@ type Triage interface {
 	Deferred(ctx context.Context, actor store.User, limit int) ([]triage.DeferredItem, error)
 }
 
-// batchResponse is what the screen renders from.
-// acceptRequest is a set of decisions.
-//
-// ONE FIELD, AND NO VERB. An item accepts the proposal as shown or carries an
-// override; append-versus-supersede is CHRN-39's question and CHRN-32's
-// contract cannot express it, so there is nothing here to carry it and nothing
-// to default wrongly. Unknown fields are REJECTED rather than ignored, so a
-// client that invents one is told.
-// triageUnavailable answers the "not configured here" case, on the shape the
-// storage and transcription reports already use: a client can tell it from a
-// wrong URL, and an operator is told which variables turn it on.
+// An accept item carries ONE FIELD AND NO VERB. It accepts the proposal as
+// shown or carries an override; append-versus-supersede is CHRN-39's question
+// and CHRN-32's contract cannot express it, so there is nothing here to carry
+// it and nothing to default wrongly. Unknown fields are REJECTED rather than
+// ignored, so a client that invents one is told. The shape is
+// wire.AcceptRequest, described in openapi.yaml.
+
 // limitOr applies the default and the clamp to a bound `limit` parameter.
 //
 // The DECLARED `minimum: 1` is not enforced by the generated binder —
@@ -80,6 +76,9 @@ func limitOr(w http.ResponseWriter, v *wire.Limit) (int, bool) {
 	return min(int(*v), triage.MaxLimit), true
 }
 
+// triageUnavailable answers the "not configured here" case, on the shape the
+// storage and transcription reports already use: a client can tell it from a
+// wrong URL, and an operator is told which variables turn it on.
 func (a *api) triageUnavailable(w http.ResponseWriter) bool {
 	if a.triage != nil {
 		return false
@@ -101,6 +100,13 @@ func (a *api) GetTriageBatch(w http.ResponseWriter, r *http.Request, params wire
 	// Unparseable is the generator's 400 through bindError now, and `minimum: 1`
 	// is declared — but std-http-server binds types rather than constraints, so
 	// the non-positive case is still checked here (see limitOr).
+	//
+	// ONE BEHAVIOUR CHANGE, and it is deliberate rather than incidental:
+	// `?limit=` with an empty value used to take the default, because
+	// Query().Get returned "" and the handler treated that as absent. The
+	// generated binder sees the key PRESENT with an empty value and refuses it
+	// as unparseable, so it is now a 400. That is the better answer — a client
+	// sending `limit=` meant something by it — and 400 is declared.
 	limit, ok := limitOr(w, params.Limit)
 	if !ok {
 		return
@@ -180,16 +186,17 @@ func (a *api) GetTriageReport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toTriageReport(rep))
 }
 
-// holdRequest defers one memo. ONE MEMO AND NOT A SET, which is the difference
-// between this and /triage/accept and is not an oversight.
-//
-// A batch exists because accepting twelve memos is twelve outward calls that
-// have to survive item seven failing. Holding is a local write with no partial
-// outcome to report, so a batch would buy nothing and would cost the thing that
-// makes this endpoint safe: a body a person can read before sending it.
 // maxHoldBody bounds the request. A memo id and a sentence.
 const maxHoldBody = 8 << 10
 
+// HoldMemo defers ONE MEMO AND NOT A SET, which is the difference between this
+// and /triage/accept and is not an oversight.
+//
+// A batch exists there because accepting twelve memos is twelve outward calls
+// that have to survive item seven failing. Holding is a local write with no
+// partial outcome to report, so a batch would buy nothing and would cost the
+// thing that makes this endpoint safe: a body a person can read before sending
+// it.
 func (a *api) HoldMemo(w http.ResponseWriter, r *http.Request) {
 	if a.triageUnavailable(w) {
 		return
@@ -270,8 +277,8 @@ func (a *api) ReleaseMemo(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// deferredResponse mirrors batchResponse, echoed limit included, because the
-// two listings are read by the same screen and an asymmetry between them is a
+// ListDeferred mirrors the batch, echoed limit included, because the two
+// listings are read by the same screen and an asymmetry between them is a
 // client-side special case for no reason.
 func (a *api) ListDeferred(w http.ResponseWriter, r *http.Request, params wire.ListDeferredParams) {
 	if a.triageUnavailable(w) {

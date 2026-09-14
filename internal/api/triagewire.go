@@ -86,6 +86,16 @@ func toProposal(p *scribe.Proposal) *wire.Proposal {
 		Title:       optional(p.Title),
 		TicketType:  optional(p.TicketType),
 		Description: optional(p.Description),
+
+		// The three a first pass dropped, and the reason they matter more than
+		// their size: TargetNote is what an `append` acts on and is required
+		// unless the verb is `create`; Body and OpeningPost are the drafted
+		// text acceptance writes. A person confirming without them is
+		// confirming a change to authored text they cannot see, which is the
+		// one thing the confirmation exists to prevent.
+		TargetNote:  p.TargetNote,
+		Body:        optional(p.Body),
+		OpeningPost: optional(p.OpeningPost),
 	}
 	return &out
 }

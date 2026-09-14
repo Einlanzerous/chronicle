@@ -398,6 +398,7 @@ func TestHoldAndReleaseAnswerRetriesAsSuccess(t *testing.T) {
 			t.Fatalf("status = %d, want 200 — holding is idempotent, so there is no "+
 				"created-versus-existing distinction to carry", w.Code)
 		}
+		apitest.Conform(t, "holdMemo", w)
 		if tr.gotMemoID != memo || tr.gotReason != "not now" {
 			t.Errorf("service got (%s, %q), want (%s, %q)", tr.gotMemoID, tr.gotReason, memo, "not now")
 		}
@@ -415,6 +416,9 @@ func TestHoldAndReleaseAnswerRetriesAsSuccess(t *testing.T) {
 		if w.Code != http.StatusNoContent {
 			t.Fatalf("status = %d, want 204", w.Code)
 		}
+		// A 204 declares no content, so Conform also asserts the body is empty
+		// — which is the half a status check alone would miss.
+		apitest.Conform(t, "releaseMemo", w)
 	})
 }
 
@@ -499,6 +503,7 @@ func TestTheDeferredListingClampsItsLimitLikeTheBatch(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
+	apitest.Conform(t, "listDeferred", w)
 	if tr.gotLimit != triage.MaxLimit {
 		t.Errorf("limit = %d, want it clamped to %d", tr.gotLimit, triage.MaxLimit)
 	}
