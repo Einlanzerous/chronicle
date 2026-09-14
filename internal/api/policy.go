@@ -102,8 +102,22 @@ var routePolicy = map[string]policy{
 	"PATCH /memos/uploads/{id}":  policyMember,
 	"DELETE /memos/uploads/{id}": policyMember,
 
+	// TRIAGE (CHRN-33) — the one place derived state becomes authored state.
+	//
+	// requireUser and not requireOwner: every account triages its own memos.
+	// The author scoping is applied inside the service, PER ITEM on the POST as
+	// well as on the GET, because a list that merely hides a memo is not access
+	// control — a client naming an id directly never went through the list.
+	"GET /triage/batch":    policyMember,
+	"POST /triage/accept":  policyMember,
+	"POST /triage/hold":    policyMember,
+	"POST /triage/release": policyMember,
+	"GET /triage/deferred": policyMember,
+
 	"GET /admin/storage":       policyOwner,
 	"GET /admin/transcription": policyOwner,
+	// Spans every author's corpus, so owner rather than member.
+	"GET /admin/triage": policyOwner,
 }
 
 // policyRouter is the ServeMux the generated registration writes into.

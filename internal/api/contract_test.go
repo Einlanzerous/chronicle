@@ -362,14 +362,15 @@ func TestDocumentedOperations(t *testing.T) {
 	sort.Strings(got)
 
 	want := []string{
-		"abandonUpload", "appendChunk", "createSelfInvite", "createSession",
-		"createSessionFromAccess", "createUser", "createUserInvite", "deleteSession",
-		"deleteUser", "getHealthz", "getMe", "getReadyz", "getStorageReport",
-		"getTranscriptionReport", "getUpload", "listSessions", "listUsers",
-		"openUpload", "revokeSession", "updateMe",
+		"abandonUpload", "acceptTriage", "appendChunk", "createSelfInvite",
+		"createSession", "createSessionFromAccess", "createUser", "createUserInvite",
+		"deleteSession", "deleteUser", "getHealthz", "getMe", "getReadyz",
+		"getStorageReport", "getTranscriptionReport", "getTriageBatch",
+		"getTriageReport", "getUpload", "holdMemo", "listDeferred", "listSessions",
+		"listUsers", "openUpload", "releaseMemo", "revokeSession", "updateMe",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Errorf("operations = %v, want %v.\nIf this is the second half of CHRN-97 landing routes, update the list.", got, want)
+		t.Errorf("operations = %v, want %v.\nAll 26 routes are in the document now; a change here is a change to the surface.", got, want)
 	}
 }
 

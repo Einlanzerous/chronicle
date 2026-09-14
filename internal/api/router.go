@@ -142,13 +142,11 @@ type api struct {
 
 // NewRouter builds the HTTP handler.
 //
-// Routes arrive two ways while CHRN-97 is in flight: the ones openapi.yaml
-// describes are registered BY THE GENERATOR onto a policyRouter, and the rest
-// are hand-registered on the same mux below, exactly as they were. Twenty of
-// the twenty-six are now generated; the six that remain are the triage group,
-// and they move with their payloads. A route that is in the document is never
-// also in the second list, because the mux would refuse the duplicate pattern
-// at boot.
+// EVERY route is registered by the generator from openapi.yaml, onto a
+// policyRouter that wraps each one with the credential policy.go declares for
+// it. Nobody writes a registration here, which is what makes the route set
+// unable to drift from the document; a route the document grows without a
+// declared credential panics at construction rather than starting.
 //
 // The two probes answer different questions and must not be collapsed:
 //
@@ -212,33 +210,14 @@ func NewRouter(d Deps) http.Handler {
 		return requestLogger(d.Logger, mux)
 	}
 
-	// TRIAGE (CHRN-33) — the primary surface, and the one place derived state
-	// becomes authored state.
+	// NOTHING IS HAND-REGISTERED ANY MORE. Every route this service serves is
+	// in openapi.yaml, was registered above by the generator, and carries the
+	// credential policy.go declares for it — which is what CHRN-97 set out to
+	// make true and what the four guards keep true.
 	//
-	// The last routes still registered by hand. Everything above them is in
-	// openapi.yaml and was registered by the generator; these five and
-	// GET /admin/triage move with their payloads, which are a domain model
-	// rather than a report -- triage.BatchItem carries scribe.Proposal, and
-	// transcribing CHRN-32's proposal contract into the document is its own
-	// diff rather than a tail on this one.
-	//
-	// requireUser and not requireOwner: every account triages its own memos.
-	// The author scoping is applied inside the service, PER ITEM on the POST as
-	// well as on the GET, because a list that merely hides a memo is not access
-	// control — a client naming an id directly never went through the list.
-	mux.HandleFunc("GET /triage/batch", a.requireUser(a.handleTriageBatch))
-	mux.HandleFunc("POST /triage/accept", a.requireUser(a.handleTriageAccept))
-
-	// CHRN-34's two escapes. requireUser on the same grounds as the two above,
-	// and scoped inside the service per memo: deferring somebody else's memo
-	// answers exactly as deferring one that does not exist.
-	mux.HandleFunc("POST /triage/hold", a.requireUser(a.handleTriageHold))
-	mux.HandleFunc("POST /triage/release", a.requireUser(a.handleTriageRelease))
-	mux.HandleFunc("GET /triage/deferred", a.requireUser(a.handleTriageDeferred))
-
-	// What triage left behind: the backlog by age, and the decisions that did
-	// not finish landing. Owner only, because it spans every author's corpus.
-	mux.HandleFunc("GET /admin/triage", a.requireOwner(a.handleAdminTriage))
+	// The mux is still built here rather than by wire.Handler so that
+	// requestLogger wraps it, and so that a route added to the document
+	// without a policy panics at construction rather than starting.
 
 	return requestLogger(d.Logger, mux)
 }

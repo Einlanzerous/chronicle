@@ -668,6 +668,190 @@ paths:
         "500": { $ref: "#/components/responses/InternalError" }
         "503": { $ref: "#/components/responses/UploadsUnconfigured" }
 
+  # ── TRIAGE ──────────────────────────────────────────────────────────────────
+  # CHRN-33's surface, and THE ONE PLACE DERIVED STATE BECOMES AUTHORED STATE.
+  # The Scribe proposes; a person confirms; the confirmation is what writes tier
+  # 2. Every payload below is shaped by that: a proposal is always accompanied
+  # by what it was derived from, a decision always names the generation it was
+  # made against, and a result never reports a batch-wide status.
+  #
+  # requireUser and not requireOwner on the five: every account triages its own
+  # memos, and the author scoping is applied inside the service PER ITEM on the
+  # POST as well as on the GET — a list that merely hides a memo is not access
+  # control, because a client naming an id directly never went through the list.
+
+  /triage/batch:
+    get:
+      tags: [triage]
+      summary: The next memos awaiting a decision, with their proposals.
+      description: |
+        Batch-first because the real pattern is an evening pass over a day's
+        memos, not a notification per capture.
+      operationId: getTriageBatch
+      x-chronicle-policy: member
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: the batch, and the cap it was clamped to
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TriageBatch"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/TriageUnconfigured" }
+
+  /triage/accept:
+    post:
+      tags: [triage]
+      summary: Confirm a batch of decisions.
+      description: |
+        **This is the write.** Each item carries the `generation` it was decided
+        against, so a proposal that has been regenerated since the client read
+        it is refused rather than confirmed against text nobody saw.
+
+        There is no batch-wide status and there must not be: the interesting
+        case is item 7 of 12 failing, and a single status could not say which
+        one to re-show.
+      operationId: acceptTriage
+      x-chronicle-policy: member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AcceptRequest"
+      responses:
+        "200":
+          description: one result per item, IN REQUEST ORDER
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TriageResults"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/TriageUnconfigured" }
+
+  /triage/hold:
+    post:
+      tags: [triage]
+      summary: Defer a memo — "not now".
+      description: |
+        CHRN-34's escape. Most deferrals are "not now"; the ones that are not
+        are the ones still legible in three weeks, which is why `reason` exists
+        and is optional.
+
+        Holding somebody else's memo answers exactly as holding one that does
+        not exist.
+      operationId: holdMemo
+      x-chronicle-policy: member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HoldRequest"
+      responses:
+        "200":
+          description: the deferred item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeferredItem"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            this memo is not in a state that can be deferred — it has already
+            been decided, or is already held.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/TriageUnconfigured" }
+
+  /triage/release:
+    post:
+      tags: [triage]
+      summary: Bring a deferred memo back into the batch.
+      operationId: releaseMemo
+      x-chronicle-policy: member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReleaseRequest"
+      responses:
+        "204": { description: released }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/TriageUnconfigured" }
+
+  /triage/deferred:
+    get:
+      tags: [triage]
+      summary: What this account has deferred, oldest first.
+      description: |
+        Carries `age_seconds` rather than only `held_at`, because the question
+        being asked is "how long has this been waiting" and a client computing
+        it from two clocks would get a different answer from the server's.
+      operationId: listDeferred
+      x-chronicle-policy: member
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: the deferred memos
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeferredList"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/TriageUnconfigured" }
+
+  /admin/triage:
+    get:
+      tags: [triage]
+      summary: What triage left behind — the backlog by age, and the decisions that did not finish landing.
+      description: |
+        Owner only, because it spans every author's corpus.
+
+        The four link states are the point. A decision writes tier 2 and then
+        reaches Switchyard, and every gap between those two is a state a person
+        has to be able to see: `in_flight` is still going, `unresolved` never
+        arrived, `ambiguous` found more than one candidate, and `refused` was
+        answered no. None of them is a fault the service can fix on its own,
+        which is why they are reported rather than retried silently.
+      operationId: getTriageReport
+      x-chronicle-policy: owner
+      responses:
+        "200":
+          description: the report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TriageReport"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/TriageUnconfigured" }
+
 components:
   securitySchemes:
     # ONE credential, two ways of presenting it. `sessionToken` reads the
@@ -687,6 +871,17 @@ components:
         the web client uses; an XSS cannot read it.
 
   parameters:
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: |
+        How many to return. CLAMPED SERVER-SIDE, and the response echoes what it
+        was clamped to — a client composing a batch needs the cap without a
+        second document to consult.
+      schema:
+        type: integer
+        minimum: 1
     SessionId:
       name: id
       in: path
@@ -823,6 +1018,16 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/UploadState"
+    TriageUnconfigured:
+      description: |
+        routing is not configured on this deployment. 503 and not 404, on the
+        rule this API states in four places — and the message names the
+        variables that turn it on, because an operator reading "not found" has
+        nowhere to go.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
     UploadsUnconfigured:
       description: |
         this deployment has no audio store, so there is nowhere to put a memo.
@@ -1431,3 +1636,341 @@ components:
           nullable: true
         original_filename:
           type: string
+
+    # ── TRIAGE ──────────────────────────────────────────────────────────────
+    # These are CHRN-32's and CHRN-33's contracts transcribed, not redesigned.
+    # A field that looks redundant here usually is not: the pair of "what the
+    # Scribe proposed" and "what it was derived from" is what lets a person
+    # confirm a decision rather than rubber-stamp one.
+
+    TriageBatch:
+      type: object
+      required: [items, limit]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/BatchItem"
+        limit:
+          type: integer
+          description: |
+            The cap this batch was clamped to, echoed because THE POST IS CAPPED
+            AT IT and the number asked for may not be the one granted.
+
+    BatchItem:
+      type: object
+      description: One memo awaiting a decision, with everything needed to make it.
+      required: [memo_id, captured_at, excerpt, proposer, generation, status, pre_acceptable]
+      properties:
+        memo_id: { type: string, format: uuid }
+        captured_at: { type: string, format: date-time }
+        duration_ms:
+          type: integer
+          format: int32
+        excerpt:
+          type: string
+          description: |
+            The transcript, bounded. **The evidence for the proposal**, and the
+            reason this is not a notification with a verb on it: a person
+            confirming a routing decision is confirming it against what was
+            said, not against a label.
+        proposer:
+          type: string
+          description: Which model proposed, runner-qualified.
+        generation:
+          type: integer
+          nullable: true
+          description: |
+            Which generation of the proposal this is. A decision carries it back
+            so that a proposal regenerated since the client read it is REFUSED
+            rather than confirmed against text nobody saw. Null when there is no
+            proposal to be a generation of.
+        status:
+          type: string
+          description: |
+            Where this memo is in routing — `proposed`, `needs_input`,
+            `pre_acceptable`, and the error states. Not the memo's own state.
+        proposal:
+          $ref: "#/components/schemas/Proposal"
+        cleared_fields:
+          type: array
+          description: |
+            Fields the Scribe proposed and the validator REMOVED, each with why.
+            Reported rather than dropped: a silently-cleared `project_key` is a
+            ticket filed against nothing, and the person confirming is the only
+            one who can tell whether the clearing was right.
+          items:
+            $ref: "#/components/schemas/ClearedField"
+          x-go-type-skip-optional-pointer: true
+        error:
+          type: string
+          description: Why this memo has no usable proposal, when it has none.
+        pre_acceptable:
+          type: boolean
+          description: |
+            Whether this proposal clears CHRN-36's confidence threshold — the
+            one a run of the eval set chose. It is a hint for the UI's default,
+            never a licence to skip the confirmation.
+        link:
+          $ref: "#/components/schemas/LinkState"
+        destination:
+          type: string
+          description: Where the proposal says this memo should go.
+
+    Proposal:
+      type: object
+      description: |
+        What the Scribe proposed. **Derived, disposable, and never authored
+        state** — it becomes tier 2 only when a person confirms it, which is the
+        whole of CHRN-32's contract.
+      required: [destination, confidence, reason]
+      properties:
+        destination:
+          type: string
+          enum: [NOTE, TICKET, DISCUSSION, DISCARD]
+        confidence:
+          type: number
+          format: double
+        reason:
+          type: string
+          description: The model's own sentence, for a person deciding whether to agree.
+        title: { type: string }
+        nearest_page:
+          type: string
+          nullable: true
+          description: |
+            The closest existing page, when the proposal is a note. Always
+            present as a field so "no nearby page" is `null` rather than absent,
+            which a client would otherwise read as "not computed".
+        project_key: { type: string }
+        ticket_type: { type: string }
+        description: { type: string }
+        page_path: { type: string }
+        verb:
+          type: string
+          enum: [create, append, supersede, relate]
+          description: |
+            What confirming does to existing authored text. `create` makes a new
+            note; the other three touch one that exists, which is why
+            `note_revisions_guard` requires a confirming person who is never an
+            agent.
+
+    ClearedField:
+      type: object
+      required: [field, value, reason]
+      properties:
+        field: { type: string }
+        value:
+          type: string
+          description: What was proposed, kept so a person can see what was removed.
+        reason: { type: string }
+
+    LinkState:
+      type: object
+      description: |
+        How a decision's journey to Switchyard ended, or has not. Tier 2 is
+        written first and the ticket is created after, so every gap between
+        those two is a state somebody has to be able to see.
+      required: [destination, state, decided_at]
+      properties:
+        destination: { type: string }
+        state:
+          type: string
+          description: "`in_flight`, `linked`, `unresolved`, `ambiguous` or `refused`."
+        decided_at: { type: string, format: date-time }
+        ticket_key: { type: string }
+        ticket_url: { type: string }
+        note_ref: { type: string }
+        discussion_ref: { type: string }
+        candidate_keys:
+          type: array
+          description: |
+            What an `ambiguous` sweep found. More than one ticket carries this
+            memo's id, and the service will not pick — choosing for a person
+            here is how the wrong ticket gets linked silently.
+          items: { type: string }
+          x-go-type-skip-optional-pointer: true
+        swept_at: { type: string, format: date-time }
+        refused_status:
+          type: integer
+          description: |
+            The status Switchyard answered. Kept because it CACHES 4xx: an
+            identical resend gets the same refusal, so the remedy is a new
+            idempotency key rather than a retry.
+        refused_reason: { type: string }
+        refused_at: { type: string, format: date-time }
+
+    AcceptRequest:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/TriageDecision"
+
+    TriageDecision:
+      type: object
+      description: One person's decision about one memo.
+      required: [memo_id]
+      properties:
+        memo_id: { type: string, format: uuid }
+        proposer: { type: string }
+        generation:
+          type: integer
+          nullable: true
+          description: |
+            The generation this decision was made against. Sent back so the
+            server can refuse a decision made against a proposal that has since
+            been regenerated.
+        override:
+          $ref: "#/components/schemas/Override"
+        confirm_edit:
+          type: boolean
+          description: |
+            Whether the person edited the proposal before confirming. Recorded
+            because "agreed" and "agreed after rewriting it" are different facts
+            about the model, and CHRN-36's eval reads them apart.
+
+            A changed destination or title is an `override`, not a field here:
+            the decision says which proposal it is about, and the override says
+            what the person altered about it.
+
+    Override:
+      type: object
+      description: |
+        What the person changed. Every field is optional and an empty one means
+        "leave the proposal's value alone" — which is why this is a separate
+        object rather than a partial Proposal: a zero value here is a
+        non-instruction, not a blanking.
+      properties:
+        destination: { type: string }
+        title: { type: string }
+        project_key: { type: string }
+        ticket_type: { type: string }
+        description: { type: string }
+        verb:
+          type: string
+          enum: [create, append, supersede, relate]
+        target_note: { type: string }
+        page_path: { type: string }
+        body: { type: string }
+        opening_post: { type: string }
+
+    TriageResults:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          description: |
+            One per item, IN REQUEST ORDER. There is no batch-wide status and
+            there must not be: the interesting case is item 7 of 12 failing, and
+            a single status could not say which one to re-show.
+          items:
+            $ref: "#/components/schemas/TriageResult"
+
+    TriageResult:
+      type: object
+      required: [memo_id, status]
+      properties:
+        memo_id: { type: string, format: uuid }
+        status:
+          type: string
+          description: What happened to this one — landed, refused, stale, and so on.
+        destination: { type: string }
+        ticket_key: { type: string }
+        ticket_url: { type: string }
+        note_ref:
+          type: string
+          description: "`CHR-0311`, when this decision produced a note."
+        discussion_ref:
+          type: string
+          description: "`DSC-0007`, when it produced a discussion."
+        generation: { type: integer, nullable: true }
+        cleared:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClearedField"
+          x-go-type-skip-optional-pointer: true
+        reason: { type: string }
+
+    HoldRequest:
+      type: object
+      required: [memo_id]
+      properties:
+        memo_id: { type: string, format: uuid }
+        reason:
+          type: string
+          description: |
+            Optional. Most deferrals are "not now"; the ones that are not are
+            the ones still legible in three weeks.
+
+    ReleaseRequest:
+      type: object
+      required: [memo_id]
+      properties:
+        memo_id: { type: string, format: uuid }
+
+    DeferredList:
+      type: object
+      required: [items, limit]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/DeferredItem"
+        limit: { type: integer }
+
+    DeferredItem:
+      type: object
+      required: [memo_id, captured_at, held_by, held_at, age_seconds]
+      properties:
+        memo_id: { type: string, format: uuid }
+        captured_at: { type: string, format: date-time }
+        duration_ms: { type: integer, format: int32 }
+        excerpt: { type: string }
+        reason: { type: string }
+        held_by: { type: string, format: uuid }
+        held_at: { type: string, format: date-time }
+        age_seconds:
+          type: integer
+          format: int64
+          description: |
+            Computed SERVER-SIDE. The question is "how long has this been
+            waiting", and a client computing it from two clocks would get a
+            different answer from the one the backlog report gives.
+
+    TriageReport:
+      type: object
+      required: [backlog, deferred, in_flight, unresolved, ambiguous, refused]
+      properties:
+        backlog:
+          $ref: "#/components/schemas/BacklogReport"
+        deferred: { type: integer }
+        in_flight:
+          type: array
+          items: { $ref: "#/components/schemas/LinkState" }
+        unresolved:
+          type: array
+          description: The decision wrote tier 2 and the ticket never arrived.
+          items: { $ref: "#/components/schemas/LinkState" }
+        ambiguous:
+          type: array
+          description: More than one ticket claims this memo, and nothing will guess.
+          items: { $ref: "#/components/schemas/LinkState" }
+        refused:
+          type: array
+          description: Switchyard said no, and caches that answer.
+          items: { $ref: "#/components/schemas/LinkState" }
+
+    BacklogReport:
+      type: object
+      required: [total, today, this_week, older]
+      properties:
+        total: { type: integer }
+        today: { type: integer }
+        this_week: { type: integer }
+        older: { type: integer }
+        oldest_captured_at: { type: string, format: date-time }

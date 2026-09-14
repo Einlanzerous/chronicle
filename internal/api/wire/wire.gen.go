@@ -7,6 +7,7 @@ package wire
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -72,6 +73,78 @@ func (e OpenUploadRequestRetention) Valid() bool {
 	}
 }
 
+// Defines values for OverrideVerb.
+const (
+	OverrideVerbAppend    OverrideVerb = "append"
+	OverrideVerbCreate    OverrideVerb = "create"
+	OverrideVerbRelate    OverrideVerb = "relate"
+	OverrideVerbSupersede OverrideVerb = "supersede"
+)
+
+// Valid indicates whether the value is a known member of the OverrideVerb enum.
+func (e OverrideVerb) Valid() bool {
+	switch e {
+	case OverrideVerbAppend:
+		return true
+	case OverrideVerbCreate:
+		return true
+	case OverrideVerbRelate:
+		return true
+	case OverrideVerbSupersede:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ProposalDestination.
+const (
+	DISCARD    ProposalDestination = "DISCARD"
+	DISCUSSION ProposalDestination = "DISCUSSION"
+	NOTE       ProposalDestination = "NOTE"
+	TICKET     ProposalDestination = "TICKET"
+)
+
+// Valid indicates whether the value is a known member of the ProposalDestination enum.
+func (e ProposalDestination) Valid() bool {
+	switch e {
+	case DISCARD:
+		return true
+	case DISCUSSION:
+		return true
+	case NOTE:
+		return true
+	case TICKET:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ProposalVerb.
+const (
+	ProposalVerbAppend    ProposalVerb = "append"
+	ProposalVerbCreate    ProposalVerb = "create"
+	ProposalVerbRelate    ProposalVerb = "relate"
+	ProposalVerbSupersede ProposalVerb = "supersede"
+)
+
+// Valid indicates whether the value is a known member of the ProposalVerb enum.
+func (e ProposalVerb) Valid() bool {
+	switch e {
+	case ProposalVerbAppend:
+		return true
+	case ProposalVerbCreate:
+		return true
+	case ProposalVerbRelate:
+		return true
+	case ProposalVerbSupersede:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ReadinessStatus.
 const (
 	Ready   ReadinessStatus = "ready"
@@ -108,6 +181,82 @@ func (e UploadStateStatus) Valid() bool {
 	}
 }
 
+// AcceptRequest defines model for AcceptRequest.
+type AcceptRequest struct {
+	Items []TriageDecision `json:"items"`
+}
+
+// BacklogReport defines model for BacklogReport.
+type BacklogReport struct {
+	Older            int        `json:"older"`
+	OldestCapturedAt *time.Time `json:"oldest_captured_at,omitempty"`
+	ThisWeek         int        `json:"this_week"`
+	Today            int        `json:"today"`
+	Total            int        `json:"total"`
+}
+
+// BatchItem One memo awaiting a decision, with everything needed to make it.
+type BatchItem struct {
+	CapturedAt time.Time `json:"captured_at"`
+
+	// ClearedFields Fields the Scribe proposed and the validator REMOVED, each with why.
+	// Reported rather than dropped: a silently-cleared `project_key` is a
+	// ticket filed against nothing, and the person confirming is the only
+	// one who can tell whether the clearing was right.
+	ClearedFields []ClearedField `json:"cleared_fields,omitempty"`
+
+	// Destination Where the proposal says this memo should go.
+	Destination *string `json:"destination,omitempty"`
+	DurationMs  *int32  `json:"duration_ms,omitempty"`
+
+	// Error Why this memo has no usable proposal, when it has none.
+	Error *string `json:"error,omitempty"`
+
+	// Excerpt The transcript, bounded. **The evidence for the proposal**, and the
+	// reason this is not a notification with a verb on it: a person
+	// confirming a routing decision is confirming it against what was
+	// said, not against a label.
+	Excerpt string `json:"excerpt"`
+
+	// Generation Which generation of the proposal this is. A decision carries it back
+	// so that a proposal regenerated since the client read it is REFUSED
+	// rather than confirmed against text nobody saw. Null when there is no
+	// proposal to be a generation of.
+	Generation *int `json:"generation"`
+
+	// Link How a decision's journey to Switchyard ended, or has not. Tier 2 is
+	// written first and the ticket is created after, so every gap between
+	// those two is a state somebody has to be able to see.
+	Link   *LinkState         `json:"link,omitempty"`
+	MemoId openapi_types.UUID `json:"memo_id"`
+
+	// PreAcceptable Whether this proposal clears CHRN-36's confidence threshold — the
+	// one a run of the eval set chose. It is a hint for the UI's default,
+	// never a licence to skip the confirmation.
+	PreAcceptable bool `json:"pre_acceptable"`
+
+	// Proposal What the Scribe proposed. **Derived, disposable, and never authored
+	// state** — it becomes tier 2 only when a person confirms it, which is the
+	// whole of CHRN-32's contract.
+	Proposal *Proposal `json:"proposal,omitempty"`
+
+	// Proposer Which model proposed, runner-qualified.
+	Proposer string `json:"proposer"`
+
+	// Status Where this memo is in routing — `proposed`, `needs_input`,
+	// `pre_acceptable`, and the error states. Not the memo's own state.
+	Status string `json:"status"`
+}
+
+// ClearedField defines model for ClearedField.
+type ClearedField struct {
+	Field  string `json:"field"`
+	Reason string `json:"reason"`
+
+	// Value What was proposed, kept so a person can see what was removed.
+	Value string `json:"value"`
+}
+
 // CorpusReport defines model for CorpusReport.
 type CorpusReport struct {
 	AudioPresent  int64      `json:"audio_present"`
@@ -119,6 +268,27 @@ type CorpusReport struct {
 	// OldestCapture Null on an empty corpus. Always present, so absent never means empty.
 	OldestCapture *time.Time `json:"oldest_capture"`
 	RecordedBytes int64      `json:"recorded_bytes"`
+}
+
+// DeferredItem defines model for DeferredItem.
+type DeferredItem struct {
+	// AgeSeconds Computed SERVER-SIDE. The question is "how long has this been
+	// waiting", and a client computing it from two clocks would get a
+	// different answer from the one the backlog report gives.
+	AgeSeconds int64              `json:"age_seconds"`
+	CapturedAt time.Time          `json:"captured_at"`
+	DurationMs *int32             `json:"duration_ms,omitempty"`
+	Excerpt    *string            `json:"excerpt,omitempty"`
+	HeldAt     time.Time          `json:"held_at"`
+	HeldBy     openapi_types.UUID `json:"held_by"`
+	MemoId     openapi_types.UUID `json:"memo_id"`
+	Reason     *string            `json:"reason,omitempty"`
+}
+
+// DeferredList defines model for DeferredList.
+type DeferredList struct {
+	Items []DeferredItem `json:"items"`
+	Limit int            `json:"limit"`
 }
 
 // DeviceSession defines model for DeviceSession.
@@ -196,6 +366,15 @@ type HeldMemo struct {
 	Retry string `json:"retry"`
 }
 
+// HoldRequest defines model for HoldRequest.
+type HoldRequest struct {
+	MemoId openapi_types.UUID `json:"memo_id"`
+
+	// Reason Optional. Most deferrals are "not now"; the ones that are not are
+	// the ones still legible in three weeks.
+	Reason *string `json:"reason,omitempty"`
+}
+
 // Invite A single-use invite, shown once. `sign_in_url` is the QR target and is
 // absent when this deployment has no mobile base URL configured — a link
 // built from the Access-gated host would walk a phone into an SSO wall a
@@ -212,6 +391,33 @@ type Invite struct {
 	// material**: a credential is returned exactly once, by the call that
 	// mints it.
 	User User `json:"user"`
+}
+
+// LinkState How a decision's journey to Switchyard ended, or has not. Tier 2 is
+// written first and the ticket is created after, so every gap between
+// those two is a state somebody has to be able to see.
+type LinkState struct {
+	// CandidateKeys What an `ambiguous` sweep found. More than one ticket carries this
+	// memo's id, and the service will not pick — choosing for a person
+	// here is how the wrong ticket gets linked silently.
+	CandidateKeys []string   `json:"candidate_keys,omitempty"`
+	DecidedAt     time.Time  `json:"decided_at"`
+	Destination   string     `json:"destination"`
+	DiscussionRef *string    `json:"discussion_ref,omitempty"`
+	NoteRef       *string    `json:"note_ref,omitempty"`
+	RefusedAt     *time.Time `json:"refused_at,omitempty"`
+	RefusedReason *string    `json:"refused_reason,omitempty"`
+
+	// RefusedStatus The status Switchyard answered. Kept because it CACHES 4xx: an
+	// identical resend gets the same refusal, so the remedy is a new
+	// idempotency key rather than a retry.
+	RefusedStatus *int `json:"refused_status,omitempty"`
+
+	// State `in_flight`, `linked`, `unresolved`, `ambiguous` or `refused`.
+	State     string     `json:"state"`
+	SweptAt   *time.Time `json:"swept_at,omitempty"`
+	TicketKey *string    `json:"ticket_key,omitempty"`
+	TicketUrl *string    `json:"ticket_url,omitempty"`
 }
 
 // Member An account with what the owner needs to administer it. `last_seen_at`
@@ -308,6 +514,26 @@ type OpenUploadRequest struct {
 // unrecoverable loss with no user-visible warning.
 type OpenUploadRequestRetention string
 
+// Override What the person changed. Every field is optional and an empty one means
+// "leave the proposal's value alone" — which is why this is a separate
+// object rather than a partial Proposal: a zero value here is a
+// non-instruction, not a blanking.
+type Override struct {
+	Body        *string       `json:"body,omitempty"`
+	Description *string       `json:"description,omitempty"`
+	Destination *string       `json:"destination,omitempty"`
+	OpeningPost *string       `json:"opening_post,omitempty"`
+	PagePath    *string       `json:"page_path,omitempty"`
+	ProjectKey  *string       `json:"project_key,omitempty"`
+	TargetNote  *string       `json:"target_note,omitempty"`
+	TicketType  *string       `json:"ticket_type,omitempty"`
+	Title       *string       `json:"title,omitempty"`
+	Verb        *OverrideVerb `json:"verb,omitempty"`
+}
+
+// OverrideVerb defines model for Override.Verb.
+type OverrideVerb string
+
 // PartialTranscript defines model for PartialTranscript.
 type PartialTranscript struct {
 	MemoId openapi_types.UUID `json:"memo_id"`
@@ -316,6 +542,42 @@ type PartialTranscript struct {
 	Model         string    `json:"model"`
 	TranscribedAt time.Time `json:"transcribed_at"`
 }
+
+// Proposal What the Scribe proposed. **Derived, disposable, and never authored
+// state** — it becomes tier 2 only when a person confirms it, which is the
+// whole of CHRN-32's contract.
+type Proposal struct {
+	Confidence  float64             `json:"confidence"`
+	Description *string             `json:"description,omitempty"`
+	Destination ProposalDestination `json:"destination"`
+
+	// NearestPage The closest existing page, when the proposal is a note. Always
+	// present as a field so "no nearby page" is `null` rather than absent,
+	// which a client would otherwise read as "not computed".
+	NearestPage *string `json:"nearest_page,omitempty"`
+	PagePath    *string `json:"page_path,omitempty"`
+	ProjectKey  *string `json:"project_key,omitempty"`
+
+	// Reason The model's own sentence, for a person deciding whether to agree.
+	Reason     string  `json:"reason"`
+	TicketType *string `json:"ticket_type,omitempty"`
+	Title      *string `json:"title,omitempty"`
+
+	// Verb What confirming does to existing authored text. `create` makes a new
+	// note; the other three touch one that exists, which is why
+	// `note_revisions_guard` requires a confirming person who is never an
+	// agent.
+	Verb *ProposalVerb `json:"verb,omitempty"`
+}
+
+// ProposalDestination defines model for Proposal.Destination.
+type ProposalDestination string
+
+// ProposalVerb What confirming does to existing authored text. `create` makes a new
+// note; the other three touch one that exists, which is why
+// `note_revisions_guard` requires a confirming person who is never an
+// agent.
+type ProposalVerb string
 
 // Readiness defines model for Readiness.
 type Readiness struct {
@@ -353,6 +615,11 @@ type ReconciliationReport struct {
 
 	// Orphans Audio on disk that no memo claims.
 	Orphans int `json:"orphans"`
+}
+
+// ReleaseRequest defines model for ReleaseRequest.
+type ReleaseRequest struct {
+	MemoId openapi_types.UUID `json:"memo_id"`
 }
 
 // Session A signed-in session. `session_token` is shown HERE AND NEVER AGAIN —
@@ -436,6 +703,83 @@ type TranscriptionReport struct {
 	States map[string]int64 `json:"states"`
 }
 
+// TriageBatch defines model for TriageBatch.
+type TriageBatch struct {
+	Items []BatchItem `json:"items"`
+
+	// Limit The cap this batch was clamped to, echoed because THE POST IS CAPPED
+	// AT IT and the number asked for may not be the one granted.
+	Limit int `json:"limit"`
+}
+
+// TriageDecision One person's decision about one memo.
+type TriageDecision struct {
+	// ConfirmEdit Whether the person edited the proposal before confirming. Recorded
+	// because "agreed" and "agreed after rewriting it" are different facts
+	// about the model, and CHRN-36's eval reads them apart.
+	//
+	// A changed destination or title is an `override`, not a field here:
+	// the decision says which proposal it is about, and the override says
+	// what the person altered about it.
+	ConfirmEdit *bool `json:"confirm_edit,omitempty"`
+
+	// Generation The generation this decision was made against. Sent back so the
+	// server can refuse a decision made against a proposal that has since
+	// been regenerated.
+	Generation *int               `json:"generation,omitempty"`
+	MemoId     openapi_types.UUID `json:"memo_id"`
+
+	// Override What the person changed. Every field is optional and an empty one means
+	// "leave the proposal's value alone" — which is why this is a separate
+	// object rather than a partial Proposal: a zero value here is a
+	// non-instruction, not a blanking.
+	Override *Override `json:"override,omitempty"`
+	Proposer *string   `json:"proposer,omitempty"`
+}
+
+// TriageReport defines model for TriageReport.
+type TriageReport struct {
+	// Ambiguous More than one ticket claims this memo, and nothing will guess.
+	Ambiguous []LinkState   `json:"ambiguous"`
+	Backlog   BacklogReport `json:"backlog"`
+	Deferred  int           `json:"deferred"`
+	InFlight  []LinkState   `json:"in_flight"`
+
+	// Refused Switchyard said no, and caches that answer.
+	Refused []LinkState `json:"refused"`
+
+	// Unresolved The decision wrote tier 2 and the ticket never arrived.
+	Unresolved []LinkState `json:"unresolved"`
+}
+
+// TriageResult defines model for TriageResult.
+type TriageResult struct {
+	Cleared     []ClearedField `json:"cleared,omitempty"`
+	Destination *string        `json:"destination,omitempty"`
+
+	// DiscussionRef `DSC-0007`, when it produced a discussion.
+	DiscussionRef *string            `json:"discussion_ref,omitempty"`
+	Generation    *int               `json:"generation,omitempty"`
+	MemoId        openapi_types.UUID `json:"memo_id"`
+
+	// NoteRef `CHR-0311`, when this decision produced a note.
+	NoteRef *string `json:"note_ref,omitempty"`
+	Reason  *string `json:"reason,omitempty"`
+
+	// Status What happened to this one — landed, refused, stale, and so on.
+	Status    string  `json:"status"`
+	TicketKey *string `json:"ticket_key,omitempty"`
+	TicketUrl *string `json:"ticket_url,omitempty"`
+}
+
+// TriageResults defines model for TriageResults.
+type TriageResults struct {
+	// Results One per item, IN REQUEST ORDER. There is no batch-wide status and
+	// there must not be: the interesting case is item 7 of 12 failing, and
+	// a single status could not say which one to re-show.
+	Results []TriageResult `json:"results"`
+}
+
 // UpdateMeRequest defines model for UpdateMeRequest.
 type UpdateMeRequest struct {
 	DisplayName string `json:"display_name"`
@@ -505,6 +849,9 @@ type WindowReport struct {
 	ProjectedBytes int64 `json:"projected_bytes"`
 }
 
+// Limit defines model for Limit.
+type Limit = int
+
 // SessionId defines model for SessionId.
 type SessionId = openapi_types.UUID
 
@@ -541,6 +888,9 @@ type TooLarge = Error
 // describe. See the `UploadConflict` response.
 type TransferCut = UploadState
 
+// TriageUnconfigured defines model for TriageUnconfigured.
+type TriageUnconfigured = Error
+
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = Error
 
@@ -564,6 +914,22 @@ type AppendChunkParams struct {
 	UploadOffset int64 `json:"Upload-Offset"`
 }
 
+// GetTriageBatchParams defines parameters for GetTriageBatch.
+type GetTriageBatchParams struct {
+	// Limit How many to return. CLAMPED SERVER-SIDE, and the response echoes what it
+	// was clamped to — a client composing a batch needs the cap without a
+	// second document to consult.
+	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// ListDeferredParams defines parameters for ListDeferred.
+type ListDeferredParams struct {
+	// Limit How many to return. CLAMPED SERVER-SIDE, and the response echoes what it
+	// was clamped to — a client composing a batch needs the cap without a
+	// second document to consult.
+	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
 // CreateUserJSONRequestBody defines body for CreateUser for application/json ContentType.
 type CreateUserJSONRequestBody = NewUserRequest
 
@@ -575,6 +941,15 @@ type CreateSessionJSONRequestBody = SignInRequest
 
 // OpenUploadJSONRequestBody defines body for OpenUpload for application/json ContentType.
 type OpenUploadJSONRequestBody = OpenUploadRequest
+
+// AcceptTriageJSONRequestBody defines body for AcceptTriage for application/json ContentType.
+type AcceptTriageJSONRequestBody = AcceptRequest
+
+// HoldMemoJSONRequestBody defines body for HoldMemo for application/json ContentType.
+type HoldMemoJSONRequestBody = HoldRequest
+
+// ReleaseMemoJSONRequestBody defines body for ReleaseMemo for application/json ContentType.
+type ReleaseMemoJSONRequestBody = ReleaseRequest
 
 // AsUploadState returns the union data inside the UploadConflict as a UploadState
 func (t UploadConflict) AsUploadState() (UploadState, error) {
@@ -646,6 +1021,9 @@ type ServerInterface interface {
 	// GetTranscriptionReport How transcription is going, and which memos are stuck.
 	// (GET /admin/transcription)
 	GetTranscriptionReport(w http.ResponseWriter, r *http.Request)
+	// GetTriageReport What triage left behind — the backlog by age, and the decisions that did not finish landing.
+	// (GET /admin/triage)
+	GetTriageReport(w http.ResponseWriter, r *http.Request)
 	// ListUsers Every account, with its devices and invite state.
 	// (GET /admin/users)
 	ListUsers(w http.ResponseWriter, r *http.Request)
@@ -700,6 +1078,21 @@ type ServerInterface interface {
 	// GetReadyz Readiness. Pings the database.
 	// (GET /readyz)
 	GetReadyz(w http.ResponseWriter, r *http.Request)
+	// AcceptTriage Confirm a batch of decisions.
+	// (POST /triage/accept)
+	AcceptTriage(w http.ResponseWriter, r *http.Request)
+	// GetTriageBatch The next memos awaiting a decision, with their proposals.
+	// (GET /triage/batch)
+	GetTriageBatch(w http.ResponseWriter, r *http.Request, params GetTriageBatchParams)
+	// ListDeferred What this account has deferred, oldest first.
+	// (GET /triage/deferred)
+	ListDeferred(w http.ResponseWriter, r *http.Request, params ListDeferredParams)
+	// HoldMemo Defer a memo — "not now".
+	// (POST /triage/hold)
+	HoldMemo(w http.ResponseWriter, r *http.Request)
+	// ReleaseMemo Bring a deferred memo back into the batch.
+	// (POST /triage/release)
+	ReleaseMemo(w http.ResponseWriter, r *http.Request)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -730,6 +1123,20 @@ func (siw *ServerInterfaceWrapper) GetTranscriptionReport(w http.ResponseWriter,
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetTranscriptionReport(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetTriageReport operation middleware
+func (siw *ServerInterfaceWrapper) GetTriageReport(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetTriageReport(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1091,6 +1498,114 @@ func (siw *ServerInterfaceWrapper) GetReadyz(w http.ResponseWriter, r *http.Requ
 	handler.ServeHTTP(w, r)
 }
 
+// AcceptTriage operation middleware
+func (siw *ServerInterfaceWrapper) AcceptTriage(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AcceptTriage(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetTriageBatch operation middleware
+func (siw *ServerInterfaceWrapper) GetTriageBatch(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetTriageBatchParams
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetTriageBatch(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListDeferred operation middleware
+func (siw *ServerInterfaceWrapper) ListDeferred(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListDeferredParams
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListDeferred(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// HoldMemo operation middleware
+func (siw *ServerInterfaceWrapper) HoldMemo(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.HoldMemo(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ReleaseMemo operation middleware
+func (siw *ServerInterfaceWrapper) ReleaseMemo(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ReleaseMemo(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -1231,6 +1746,12 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/memos/uploads/{id}", wrapper.AbandonUpload)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/memos/uploads/{id}", wrapper.GetUpload)
 	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/memos/uploads/{id}", wrapper.AppendChunk)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/triage/batch", wrapper.GetTriageBatch)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/triage/accept", wrapper.AcceptTriage)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/triage/hold", wrapper.HoldMemo)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/triage/release", wrapper.ReleaseMemo)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/triage/deferred", wrapper.ListDeferred)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/triage", wrapper.GetTriageReport)
 
 	return m
 }

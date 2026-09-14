@@ -10,6 +10,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Einlanzerous/chronicle/internal/api/apitest"
+	"github.com/Einlanzerous/chronicle/internal/api/wire"
 	"github.com/Einlanzerous/chronicle/internal/store"
 	"github.com/Einlanzerous/chronicle/internal/triage"
 )
@@ -169,7 +171,9 @@ func TestAWellFormedBatchReachesTheService(t *testing.T) {
 		t.Fatalf("item 1 = %+v", tr.gotItems[1])
 	}
 
-	var got acceptResponse
+	apitest.Conform(t, "acceptTriage", w)
+
+	var got wire.TriageResults
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -195,9 +199,13 @@ func TestABatchWhereEverythingFailedStillAnswers200(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
-	var got acceptResponse
+	apitest.Conform(t, "acceptTriage", w)
+
+	var got wire.TriageResults
 	_ = json.Unmarshal(w.Body.Bytes(), &got)
-	if got.Results[0].Status != triage.StatusRefused || got.Results[0].Reason == "" {
+	// `reason` is optional on the wire — absent when there is nothing to say —
+	// so a refusal carrying none is the failure, not a zero value.
+	if got.Results[0].Status != triage.StatusRefused || deref(got.Results[0].Reason) == "" {
 		t.Fatalf("result = %+v, want a refusal with a reason", got.Results[0])
 	}
 }
@@ -259,7 +267,9 @@ func TestTheBatchLimitIsClampedAndEchoed(t *testing.T) {
 		t.Fatalf("the service got limit %d, want the cap %d", tr.gotLimit, triage.MaxLimit)
 	}
 
-	var got batchResponse
+	apitest.Conform(t, "getTriageBatch", w)
+
+	var got wire.TriageBatch
 	_ = json.Unmarshal(w.Body.Bytes(), &got)
 	if got.Limit != triage.MaxLimit {
 		t.Fatalf("echoed limit = %d, want the cap the POST also enforces", got.Limit)
@@ -344,10 +354,25 @@ func TestTriageWithoutConfigurationAnswers503(t *testing.T) {
 		if w.Code != http.StatusServiceUnavailable {
 			t.Fatalf("%s %s = %d, want 503", rt.method, rt.path, w.Code)
 		}
-		var body map[string]string
+		// The envelope now, with the variables in `message` rather than a
+		// `detail` of its own: one error shape for the whole API, and the
+		// operator still gets told which variables turn triage on.
+		switch rt.path {
+		case "/triage/batch":
+			apitest.Conform(t, "getTriageBatch", w)
+		case "/triage/accept":
+			apitest.Conform(t, "acceptTriage", w)
+		case "/admin/triage":
+			apitest.Conform(t, "getTriageReport", w)
+		}
+
+		var body wire.Error
 		_ = json.Unmarshal(w.Body.Bytes(), &body)
-		if !strings.Contains(body["detail"], "CHRONICLE_SWITCHYARD_URL") {
-			t.Fatalf("%s: detail = %q, want it to name what turns triage on", rt.path, body["detail"])
+		if body.Code != codeTriageUnconfigured {
+			t.Fatalf("%s: code = %q, want %q", rt.path, body.Code, codeTriageUnconfigured)
+		}
+		if !strings.Contains(body.Message, "CHRONICLE_SWITCHYARD_URL") {
+			t.Fatalf("%s: message = %q, want it to name what turns triage on", rt.path, body.Message)
 		}
 	}
 }
