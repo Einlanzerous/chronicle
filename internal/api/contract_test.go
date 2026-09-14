@@ -5,13 +5,16 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
 
 	"github.com/Einlanzerous/chronicle/internal/api/apitest"
 	"github.com/Einlanzerous/chronicle/internal/api/wire"
+	"github.com/Einlanzerous/chronicle/internal/scribe"
 	"github.com/Einlanzerous/chronicle/internal/store"
+	"github.com/Einlanzerous/chronicle/internal/triage"
 )
 
 // CHRN-97's guards, tested where they can actually fail.
@@ -362,14 +365,15 @@ func TestDocumentedOperations(t *testing.T) {
 	sort.Strings(got)
 
 	want := []string{
-		"abandonUpload", "appendChunk", "createSelfInvite", "createSession",
-		"createSessionFromAccess", "createUser", "createUserInvite", "deleteSession",
-		"deleteUser", "getHealthz", "getMe", "getReadyz", "getStorageReport",
-		"getTranscriptionReport", "getUpload", "listSessions", "listUsers",
-		"openUpload", "revokeSession", "updateMe",
+		"abandonUpload", "acceptTriage", "appendChunk", "createSelfInvite",
+		"createSession", "createSessionFromAccess", "createUser", "createUserInvite",
+		"deleteSession", "deleteUser", "getHealthz", "getMe", "getReadyz",
+		"getStorageReport", "getTranscriptionReport", "getTriageBatch",
+		"getTriageReport", "getUpload", "holdMemo", "listDeferred", "listSessions",
+		"listUsers", "openUpload", "releaseMemo", "revokeSession", "updateMe",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Errorf("operations = %v, want %v.\nIf this is the second half of CHRN-97 landing routes, update the list.", got, want)
+		t.Errorf("operations = %v, want %v.\nAll 26 routes are in the document now; a change here is a change to the surface.", got, want)
 	}
 }
 
@@ -696,6 +700,14 @@ func TestEveryParameterBindingOperationRefusesAMalformedOne(t *testing.T) {
 		// different binder, the same envelope.
 		{"appendChunk", http.MethodPatch, "/memos/uploads/" + someUUID, "owner-token",
 			map[string]string{"Upload-Offset": "not-a-number", "Content-Type": "application/octet-stream"}},
+
+		// The two query binders. `?limit=` with an EMPTY value is one of these:
+		// the key is present and unparseable, where before CHRN-97 it read as
+		// absent and took the default. Pinned here so the change is a test
+		// rather than something a client discovers.
+		{"getTriageBatch", http.MethodGet, "/triage/batch?limit=not-a-number", "owner-token", nil},
+		{"getTriageBatch", http.MethodGet, "/triage/batch?limit=", "owner-token", nil},
+		{"listDeferred", http.MethodGet, "/triage/deferred?limit=not-a-number", "owner-token", nil},
 	}
 
 	for _, tc := range cases {
@@ -726,6 +738,86 @@ func TestEveryParameterBindingOperationRefusesAMalformedOne(t *testing.T) {
 			// "invalid UUID length: 10".
 			if strings.Contains(body.Message, "UUID") || strings.Contains(body.Message, "length") {
 				t.Errorf("message %q relays the parser's own words", body.Message)
+			}
+		})
+	}
+}
+
+// Every field the domain types put on the wire reaches the document, and the
+// document declares no field they cannot send.
+//
+// ============================================================================
+// THE GUARD triagewire.go's HEADER CLAIMS, MADE REAL.
+// ============================================================================
+//
+// That file argues against pointing `x-go-type` at internal/triage on the
+// grounds that the document would then describe whatever the Go struct happened
+// to say — "a guard that cannot fail is not one". Transcribing instead buys the
+// separation, and costs a different failure: the transcription can simply be
+// WRONG, in the same direction, in both the schema and the mapper. `Conform`
+// cannot see that, because it validates responses against the document and both
+// halves agree.
+//
+// Which is not hypothetical. The first version of this PR dropped three fields
+// off `scribe.Proposal` — `target_note`, `body` and `opening_post`, the ones a
+// person needs in order to confirm an append or read a drafted note — and
+// declared one on `BatchItem` that no type can set. Everything was green: the
+// build, the staleness guard, `Conform`, all 26 operations' response rules.
+//
+// So the two are compared directly. Not by aliasing the types, which is what
+// the header refuses — by asserting that a struct which was serialised straight
+// to the wire before CHRN-97 still has every one of its fields described.
+func TestEveryTriageFieldReachesTheDocument(t *testing.T) {
+	schemas := apitest.Doc(t).Components.Schemas
+
+	// The domain types that WERE the wire before this epic, each beside the
+	// schema that now describes it. A type here is a promise that the document
+	// covers it; adding a field to one of them and not to openapi.yaml fails.
+	cases := []struct {
+		schema string
+		value  any
+	}{
+		{"BatchItem", triage.BatchItem{}},
+		{"Proposal", scribe.Proposal{}},
+		{"ClearedField", scribe.ClearedField{}},
+		{"LinkState", triage.LinkState{}},
+		{"TriageDecision", triage.Item{}},
+		{"Override", triage.Override{}},
+		{"TriageResult", triage.Result{}},
+		{"DeferredItem", triage.DeferredItem{}},
+		{"TriageReport", triage.AdminReport{}},
+		{"BacklogReport", triage.BacklogReport{}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.schema, func(t *testing.T) {
+			ref, ok := schemas[tc.schema]
+			if !ok || ref.Value == nil {
+				t.Fatalf("openapi.yaml has no schema %q", tc.schema)
+			}
+
+			onTheType := map[string]bool{}
+			rt := reflect.TypeOf(tc.value)
+			for i := range rt.NumField() {
+				tag := rt.Field(i).Tag.Get("json")
+				if tag == "" || tag == "-" {
+					continue
+				}
+				onTheType[strings.Split(tag, ",")[0]] = true
+			}
+
+			for name := range onTheType {
+				if _, ok := ref.Value.Properties[name]; !ok {
+					t.Errorf("%s.%s is serialised by the domain type and the document does not describe it — "+
+						"a client generated from openapi.yaml will never see it", tc.schema, name)
+				}
+			}
+			for name := range ref.Value.Properties {
+				if !onTheType[name] {
+					t.Errorf("%s declares %q, which no domain field can set — "+
+						"every response will omit it, and a generated client gets a field that is always absent",
+						tc.schema, name)
+				}
 			}
 		})
 	}

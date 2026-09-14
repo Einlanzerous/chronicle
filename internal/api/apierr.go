@@ -52,6 +52,9 @@ const (
 	// Uploads. Every one is a client-visible answer with a specific remedy —
 	// a phone deciding whether to resend, wait, or give up needs to tell "we
 	// disagree about the offset" from "those were the wrong bytes".
+	codeTriageUnconfigured = "triage_unconfigured"
+	codeNotDeferrable      = "not_deferrable"
+
 	codeUploadsUnconfigured = "uploads_unconfigured"
 	codeLengthRequired      = "length_required"
 	codeKeyReused           = "idempotency_key_reused"

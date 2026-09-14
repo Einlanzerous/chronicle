@@ -102,16 +102,30 @@ var routePolicy = map[string]policy{
 	"PATCH /memos/uploads/{id}":  policyMember,
 	"DELETE /memos/uploads/{id}": policyMember,
 
+	// TRIAGE (CHRN-33) — the one place derived state becomes authored state.
+	//
+	// requireUser and not requireOwner: every account triages its own memos.
+	// The author scoping is applied inside the service, PER ITEM on the POST as
+	// well as on the GET, because a list that merely hides a memo is not access
+	// control — a client naming an id directly never went through the list.
+	"GET /triage/batch":    policyMember,
+	"POST /triage/accept":  policyMember,
+	"POST /triage/hold":    policyMember,
+	"POST /triage/release": policyMember,
+	"GET /triage/deferred": policyMember,
+
 	"GET /admin/storage":       policyOwner,
 	"GET /admin/transcription": policyOwner,
+	// Spans every author's corpus, so owner rather than member.
+	"GET /admin/triage": policyOwner,
 }
 
 // policyRouter is the ServeMux the generated registration writes into.
 //
 // It satisfies wire.ServeMux (HandleFunc + ServeHTTP) and delegates to a real
-// *http.ServeMux, which is also where the routes this epic has not migrated yet
-// are registered directly. One mux, two ways in, and only one of them can
-// forget a credential.
+// *http.ServeMux. Since CHRN-97's third PR there is no second way in: every
+// route this service serves is registered through here, so there is no longer a
+// path by which one can be added without a credential.
 type policyRouter struct {
 	mux *http.ServeMux
 	api *api

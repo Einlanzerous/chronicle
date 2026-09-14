@@ -596,10 +596,11 @@ func runServe(args []string) error {
 	// unset Amber is not a broken deployment — citations render as unconfigured,
 	// which is a true thing to say — and a SET one is not yet a working feature
 	// either, which is what the second half of that line exists to admit.
-	// CHRN-97 owns whether references resolve server-side inside the note
-	// payload or client-side against an endpoint of their own, and that is what
-	// decides where the transport is registered; saying so here costs nothing
-	// and answers none of it.
+	// CHRN-97 has since answered the question this used to leave open: ruling 3
+	// put resolution on its own resource rather than inside the note payload,
+	// so a note read never dials an upstream. CHRN-104 is the consumer, and
+	// therefore the ticket that registers the transports here — it says so, and
+	// so does CHRN-97's plan. Until it lands, both of these lines stay true.
 	if cfg.AmberConfigured() {
 		// The URL, never the token.
 		logger.Info("the capture archive is configured, and nothing resolves citations yet",
