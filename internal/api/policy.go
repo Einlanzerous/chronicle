@@ -123,6 +123,30 @@ var routePolicy = map[string]policy{
 	// and a card is a read. What bounds this surface is the cap of fifty per
 	// call and the resolver's own budget, not the sign-in limiter.
 	"POST /references/resolve": policyMember,
+
+	// THE WIKI (CHRN-98): pages, notes and search. Member and not owner:
+	// every account reads and writes notes, and the one rule about WHO may
+	// confirm authored text — a person, never an agent — is the store's
+	// (CH041), answered by requirePerson before the round trip and by the
+	// guard after it. Not this table's to express. It reaches the two
+	// revision writes and NOT POST /pages: a page is a container with no
+	// authored text and no confirming person, so an agent session may
+	// create one, and the document says so.
+	"GET /pages":                  policyMember,
+	"POST /pages":                 policyMember,
+	"GET /notes":                  policyMember,
+	"POST /notes":                 policyMember,
+	"GET /notes/{ref}":            policyMember,
+	"GET /notes/{ref}/revisions":  policyMember,
+	"POST /notes/{ref}/revisions": policyMember,
+	// SEARCH SPANS EVERY AUTHOR'S TRANSCRIPTS, so owner rather than member --
+	// GET /admin/triage's reasoning, and the triage batch's: "a list that
+	// merely hides a memo is not access control." store.Search takes no actor
+	// and its transcript half has no author predicate, so a member-visible
+	// search needs a scoped query, which is internal/store's to add and is
+	// raised on CHRN-98. Notes are a shared corpus and would be fine at member;
+	// the transcript half is what sets the policy for the one operation.
+	"GET /search": policyOwner,
 }
 
 // policyRouter is the ServeMux the generated registration writes into.

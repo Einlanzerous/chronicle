@@ -609,6 +609,11 @@ func runServe(args []string) error {
 		return err
 	}
 	deps.References = resolver
+	// The wiki (CHRN-98) reads and writes tier 2 on the main pool, and the
+	// note handler renders against the live key set — which is what makes the
+	// key set's poller finally have a reader.
+	deps.Wiki = st
+	deps.Keys = keys
 	// Chronicle's own CHR- and DSC- references resolve against tier 2
 	// directly, on the main pool: they are notes and discussions, not derived
 	// state, and there is no transport for a namespace that never leaves the
@@ -696,14 +701,14 @@ func runServe(args []string) error {
 	}
 
 	// The Switchyard project key set (CHRN-49; CHRN-51 ruling 2), given its
-	// lifetime here because this is the ticket that registers the transports
-	// it belongs beside. ITS CONSUMER IS CHRN-98's SCANNER — the renderer's
-	// HasProject predicate and the NoteMisses call are the note handler's, and
-	// until that lands this is a /v1/projects poll every KeysMaxAge whose set
-	// nothing reads. Stated so the gap reads as sequencing rather than as the
-	// thing CHRN-49 declined. The boot fetch retries with backoff rather than
-	// being one-shot, and the last good set survives a failed refresh. Nil
-	// when there is no tracker, and then nothing runs.
+	// lifetime here beside the transports it belongs with. ITS CONSUMER IS THE
+	// NOTE HANDLER (CHRN-98): the renderer's HasProject predicate decides which
+	// KEY-N tokens are references, and the scan's misses go to NoteMisses,
+	// whose background refresh is what this loop answers. The boot fetch
+	// retries with backoff rather than being one-shot, and the last good set
+	// survives a failed refresh. Nil when there is no tracker, and then
+	// nothing runs: a poller with nothing to poll is an outbound call on a
+	// schedule serving nothing.
 	if keys != nil {
 		watching.Add(1)
 		go func() {

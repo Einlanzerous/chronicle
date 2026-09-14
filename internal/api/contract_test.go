@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/getkin/kin-openapi/openapi3"
+
 	"github.com/Einlanzerous/chronicle/internal/api/apitest"
 	"github.com/Einlanzerous/chronicle/internal/api/wire"
 	"github.com/Einlanzerous/chronicle/internal/markdown"
@@ -168,6 +170,15 @@ func TestAnonymousGetsTheSameAnswerFromEveryRoute(t *testing.T) {
 		{http.MethodGet, "/triage/deferred", http.StatusUnauthorized},
 
 		{http.MethodPost, "/references/resolve", http.StatusUnauthorized},
+
+		{http.MethodGet, "/pages", http.StatusUnauthorized},
+		{http.MethodPost, "/pages", http.StatusUnauthorized},
+		{http.MethodGet, "/notes", http.StatusUnauthorized},
+		{http.MethodPost, "/notes", http.StatusUnauthorized},
+		{http.MethodGet, "/notes/CHR-0311", http.StatusUnauthorized},
+		{http.MethodGet, "/notes/CHR-0311/revisions", http.StatusUnauthorized},
+		{http.MethodPost, "/notes/CHR-0311/revisions", http.StatusUnauthorized},
+		{http.MethodGet, "/search", http.StatusUnauthorized},
 	}
 
 	for _, tc := range cases {
@@ -199,9 +210,9 @@ func TestAnonymousGetsTheSameAnswerFromEveryRoute(t *testing.T) {
 	// And the route set is closed. A path nobody declared is a 404, which is
 	// what says the generated registration added no surface of its own.
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/notes/CHR-0311", nil))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/a-route-nobody-declared", nil))
 	if rec.Code != http.StatusNotFound {
-		t.Errorf("GET /notes/CHR-0311 = %d, want 404 — that route belongs to CHRN-98", rec.Code)
+		t.Errorf("GET /a-route-nobody-declared = %d, want 404", rec.Code)
 	}
 }
 
@@ -220,6 +231,8 @@ func TestAMemberIsRefusedTheOwnerRoutes(t *testing.T) {
 		{http.MethodGet, "/admin/storage"},
 		{http.MethodGet, "/admin/triage"},
 		{http.MethodGet, "/admin/transcription"},
+		// Spans every author's transcripts (CHRN-98).
+		{http.MethodGet, "/search"},
 	}
 
 	for _, route := range owned {
@@ -369,16 +382,17 @@ func TestDocumentedOperations(t *testing.T) {
 	sort.Strings(got)
 
 	want := []string{
-		"abandonUpload", "acceptTriage", "appendChunk", "createSelfInvite",
-		"createSession", "createSessionFromAccess", "createUser", "createUserInvite",
-		"deleteSession", "deleteUser", "getHealthz", "getMe", "getReadyz",
-		"getStorageReport", "getTranscriptionReport", "getTriageBatch",
-		"getTriageReport", "getUpload", "holdMemo", "listDeferred", "listSessions",
-		"listUsers", "openUpload", "releaseMemo", "resolveReferences", "revokeSession",
+		"abandonUpload", "acceptTriage", "appendChunk", "appendRevision", "createNote",
+		"createPage", "createSelfInvite", "createSession", "createSessionFromAccess",
+		"createUser", "createUserInvite", "deleteSession", "deleteUser", "getHealthz",
+		"getMe", "getNote", "getReadyz", "getStorageReport", "getTranscriptionReport",
+		"getTriageBatch", "getTriageReport", "getUpload", "holdMemo", "listDeferred",
+		"listNoteRevisions", "listNotes", "listPages", "listSessions", "listUsers",
+		"openUpload", "releaseMemo", "resolveReferences", "revokeSession", "search",
 		"updateMe",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Errorf("operations = %v, want %v.\nAll 27 routes are in the document now; a change here is a change to the surface.", got, want)
+		t.Errorf("operations = %v, want %v.\nAll 35 routes are in the document now; a change here is a change to the surface.", got, want)
 	}
 }
 
@@ -438,6 +452,15 @@ func TestACredentialedCallerIsNotRefusedByTheWrappers(t *testing.T) {
 		{http.MethodGet, "/triage/deferred", member, "member-token"},
 
 		{http.MethodPost, "/references/resolve", member, "member-token"},
+
+		{http.MethodGet, "/pages", member, "member-token"},
+		{http.MethodPost, "/pages", member, "member-token"},
+		{http.MethodGet, "/notes", member, "member-token"},
+		{http.MethodPost, "/notes", member, "member-token"},
+		{http.MethodGet, "/notes/CHR-0311", member, "member-token"},
+		{http.MethodGet, "/notes/CHR-0311/revisions", member, "member-token"},
+		{http.MethodPost, "/notes/CHR-0311/revisions", member, "member-token"},
+		{http.MethodGet, "/search", owner, "owner-token"},
 	}
 
 	for _, route := range routes {
@@ -598,6 +621,9 @@ func TestEveryOperationDeclaresWhatItsSharedCodeCanAnswer(t *testing.T) {
 		"storage":       "the nil audio store check",
 		"transcription": "the nil transcription store check",
 		"references":    "referencesUnavailable",
+		"pages":         "wikiUnavailable",
+		"notes":         "wikiUnavailable",
+		"search":        "wikiUnavailable",
 	}
 	rules := []rule{
 		{
@@ -757,6 +783,15 @@ func TestEveryParameterBindingOperationRefusesAMalformedOne(t *testing.T) {
 		{"getTriageBatch", http.MethodGet, "/triage/batch?limit=not-a-number", "owner-token", nil},
 		{"getTriageBatch", http.MethodGet, "/triage/batch?limit=", "owner-token", nil},
 		{"listDeferred", http.MethodGet, "/triage/deferred?limit=not-a-number", "owner-token", nil},
+
+		// The wiki's binders (CHRN-98): two query limits, a cursor that is
+		// merely a string, and two REQUIRED query parameters whose absence is
+		// the binder's 400 rather than the handler's.
+		{"listNotes", http.MethodGet, "/notes?page=estate&limit=not-a-number", "owner-token", nil},
+		{"listNotes", http.MethodGet, "/notes", "owner-token", nil},
+		{"listNoteRevisions", http.MethodGet, "/notes/CHR-0311/revisions?limit=not-a-number", "owner-token", nil},
+		{"search", http.MethodGet, "/search?q=pruner&limit=not-a-number", "owner-token", nil},
+		{"search", http.MethodGet, "/search", "owner-token", nil},
 	}
 
 	for _, tc := range cases {
@@ -886,22 +921,50 @@ func TestEveryTriageFieldReachesTheDocument(t *testing.T) {
 func TestEveryResolutionFieldReachesTheDocument(t *testing.T) {
 	schemas := apitest.Doc(t).Components.Schemas
 
+	// "-" is a field DELIBERATELY not on the wire, and the table has to say so
+	// rather than leave it out: a tombstone withholds a note's title and page
+	// on purpose, and the guard should read as that decision rather than as a
+	// gap. `computed` names properties no field backs — a page's path is a
+	// fact about ancestry, produced at read time.
 	cases := []struct {
-		schema string
-		value  any
-		wire   map[string]string // Go field -> property
+		schema   string
+		value    any
+		wire     map[string]string // Go field -> property, or "-"
+		computed []string
 	}{
 		{"Resolution", resolve.Resolution{}, map[string]string{
 			"Ref": "token", "State": "state", "Upstream": "upstream",
 			"FetchedAt": "fetched_at", "LastResolvedAt": "last_resolved_at", "Explain": "explain",
-		}},
+		}, nil},
 		{"ResolutionUpstream", resolve.Upstream{}, map[string]string{
 			"Key": "key", "Outcome": "outcome", "DisplayName": "display_name",
 			"Title": "title", "URL": "url", "Recoverable": "recoverable",
-		}},
+		}, nil},
 		{"ReferenceDescriptor", markdown.Reference{}, map[string]string{
 			"System": "system", "Key": "key", "Target": "target", "Token": "token", "Number": "number",
-		}},
+		}, nil},
+
+		// CHRN-98's transcriptions of E5.
+		{"Page", store.Page{}, map[string]string{
+			"ID": "id", "ParentID": "parent_id", "Slug": "slug", "CreatedAt": "created_at", "UpdatedAt": "updated_at",
+		}, []string{"path"}},
+		{"Revision", store.NoteRevision{}, map[string]string{
+			"ID": "id", "NoteID": "-", "Seq": "seq", "Title": "title", "Body": "body", "MemoID": "memo_id",
+			"AuthorID": "author_id", "CreatedAt": "created_at", "ConfirmedBy": "confirmed_by",
+			"Verb": "verb", "RestoredFrom": "restored_from",
+		}, nil},
+		{"NoteTombstone", store.Note{}, map[string]string{
+			"ID": "-", "Number": "ref", "PageID": "-", "CurrentRevisionID": "-", "AuthorID": "-",
+			"CreatedAt": "-", "UpdatedAt": "-", "DeletedAt": "deleted_at", "DeletedBy": "deleted_by",
+		}, nil},
+		{"DiscussionSummary", store.Discussion{}, map[string]string{
+			"ID": "-", "Number": "ref", "PageID": "-", "Title": "title", "CreatedAt": "-",
+			"ResolvedAt": "resolved_at", "ResolvedBy": "-", "ResolvedNoteID": "-",
+		}, nil},
+		{"SearchHit", store.SearchHit{}, map[string]string{
+			"Kind": "kind", "NoteID": "-", "Number": "ref", "Title": "title", "PageID": "-",
+			"MemoID": "memo_id", "Model": "model", "Snippet": "snippet", "Rank": "rank", "CreatedAt": "created_at",
+		}, nil},
 	}
 
 	for _, tc := range cases {
@@ -910,6 +973,10 @@ func TestEveryResolutionFieldReachesTheDocument(t *testing.T) {
 			if !ok || ref.Value == nil {
 				t.Fatalf("openapi.yaml has no schema %q", tc.schema)
 			}
+			// A composite (`allOf`) declares its properties across its parts;
+			// Revision is RevisionMeta plus its text, and the guard has to see
+			// through that or it judges an empty property set.
+			declared := schemaProperties(ref.Value)
 
 			images := map[string]bool{}
 			rt := reflect.TypeOf(tc.value)
@@ -924,12 +991,18 @@ func TestEveryResolutionFieldReachesTheDocument(t *testing.T) {
 						"add it to openapi.yaml and to the table, or the generated clients never see it", rt.Name(), f.Name)
 					continue
 				}
-				if _, ok := ref.Value.Properties[prop]; !ok {
+				if prop == "-" {
+					continue
+				}
+				if !declared[prop] {
 					t.Errorf("%s.%s maps to %q, which schema %s does not declare", rt.Name(), f.Name, prop, tc.schema)
 				}
 				images[prop] = true
 			}
-			for name := range ref.Value.Properties {
+			for _, name := range tc.computed {
+				images[name] = true
+			}
+			for name := range declared {
 				if !images[name] {
 					t.Errorf("%s declares %q, which no domain field maps to — every response will omit it, "+
 						"and a generated client gets a field that is always absent", tc.schema, name)
@@ -937,4 +1010,21 @@ func TestEveryResolutionFieldReachesTheDocument(t *testing.T) {
 			}
 		})
 	}
+}
+
+// schemaProperties flattens a schema's properties through its allOf parts.
+func schemaProperties(s *openapi3.Schema) map[string]bool {
+	out := map[string]bool{}
+	for name := range s.Properties {
+		out[name] = true
+	}
+	for _, part := range s.AllOf {
+		if part.Value == nil {
+			continue
+		}
+		for name := range schemaProperties(part.Value) {
+			out[name] = true
+		}
+	}
+	return out
 }
