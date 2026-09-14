@@ -196,7 +196,10 @@ func (a *api) ResolveReferences(w http.ResponseWriter, r *http.Request) {
 // returned rather than classified -- the request as a whole cannot be served,
 // and the 500 says so.
 func (a *api) resolveLocal(ctx context.Context, ref markdown.Reference) (resolve.Resolution, error) {
-	res := resolve.Resolution{Ref: ref, State: resolve.StateResolved, FetchedAt: time.Now()}
+	// The router's clock, not time.Now: the upstream half of the same batch
+	// takes its instant from the resolver's clock, and a response that carried
+	// two clocks would be untestable on one and misleading on the other.
+	res := resolve.Resolution{Ref: ref, State: resolve.StateResolved, FetchedAt: a.now()}
 
 	switch ref.Target {
 	case markdown.TargetNote:

@@ -696,12 +696,14 @@ func runServe(args []string) error {
 	}
 
 	// The Switchyard project key set (CHRN-49; CHRN-51 ruling 2), given its
-	// lifetime here because this is the ticket with a consumer for it. The
-	// boot fetch retries with backoff rather than being one-shot, the last
-	// good set survives a failed refresh, and Keys.NoteMisses's background
-	// refresh now reaches something. Nil when there is no tracker, and then
-	// nothing runs: a poller with nothing to poll is an outbound call on a
-	// schedule serving nothing.
+	// lifetime here because this is the ticket that registers the transports
+	// it belongs beside. ITS CONSUMER IS CHRN-98's SCANNER — the renderer's
+	// HasProject predicate and the NoteMisses call are the note handler's, and
+	// until that lands this is a /v1/projects poll every KeysMaxAge whose set
+	// nothing reads. Stated so the gap reads as sequencing rather than as the
+	// thing CHRN-49 declined. The boot fetch retries with backoff rather than
+	// being one-shot, and the last good set survives a failed refresh. Nil
+	// when there is no tracker, and then nothing runs.
 	if keys != nil {
 		watching.Add(1)
 		go func() {

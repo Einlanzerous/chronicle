@@ -123,6 +123,12 @@ type Deps struct {
 	// never go through a Transport: there is no classifier for Chronicle's
 	// namespace, and nothing to cache or to go stale.
 	LocalReferences LocalReferences
+
+	// Now is the clock a local resolution stamps its fetched_at from. Nil is
+	// time.Now. Injectable so a test can hold the local half of a batch to
+	// the same instant the resolver's own clock gives the upstream half — a
+	// response should not carry two clocks.
+	Now func() time.Time
 }
 
 // api holds what the handlers share.
@@ -154,6 +160,7 @@ type api struct {
 	triage        Triage
 	references    References
 	localRefs     LocalReferences
+	now           func() time.Time
 }
 
 // NewRouter builds the HTTP handler.
@@ -203,6 +210,10 @@ func NewRouter(d Deps) http.Handler {
 		triage:        d.Triage,
 		references:    d.References,
 		localRefs:     d.LocalReferences,
+		now:           d.Now,
+	}
+	if a.now == nil {
+		a.now = time.Now
 	}
 
 	mux := http.NewServeMux()

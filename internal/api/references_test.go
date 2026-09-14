@@ -219,7 +219,7 @@ func newRefRig(t *testing.T, withSwitchyard, withAmber bool) *refRig {
 	f.signIn(person("member@example.com", false), "member-token")
 	rig.h = NewRouter(Deps{
 		DB: fakePinger{}, Accounts: f, Logger: logger, Version: "test", SecureCookies: true,
-		References: resolver, LocalReferences: rig.local,
+		References: resolver, LocalReferences: rig.local, Now: rig.clock.now,
 	})
 	return rig
 }
@@ -324,8 +324,10 @@ func TestResolveAnswersTheWholeCardVocabularyInOneCall(t *testing.T) {
 		str(note.Upstream.Key) != "CHR-0311" || str(note.Upstream.Title) != "Retention pruner design" {
 		t.Errorf("CHR-0311 = %s / %+v", note.State, note.Upstream)
 	}
-	if note.FetchedAt == nil {
-		t.Error("a local resolution carries no fetched_at")
+	// Stamped from the SAME clock as the upstream half, so a mixed batch
+	// carries one instant and the local card is pinnable on the rig's terms.
+	if note.FetchedAt == nil || !note.FetchedAt.Equal(rig.clock.now()) {
+		t.Errorf("a local resolution's fetched_at = %v, want the router's clock %v", note.FetchedAt, rig.clock.now())
 	}
 	if note.Upstream.Outcome != nil {
 		t.Errorf("a live note has no state to report, but outcome = %q", *note.Upstream.Outcome)
