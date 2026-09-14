@@ -21,11 +21,14 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/Einlanzerous/chronicle/internal/amber"
 	"github.com/Einlanzerous/chronicle/internal/api"
 	"github.com/Einlanzerous/chronicle/internal/asrclient"
 	"github.com/Einlanzerous/chronicle/internal/audio"
 	"github.com/Einlanzerous/chronicle/internal/config"
 	"github.com/Einlanzerous/chronicle/internal/invite"
+	"github.com/Einlanzerous/chronicle/internal/markdown"
+	"github.com/Einlanzerous/chronicle/internal/resolve"
 	"github.com/Einlanzerous/chronicle/internal/retention"
 	"github.com/Einlanzerous/chronicle/internal/scribe"
 	"github.com/Einlanzerous/chronicle/internal/scribe/catalogue"
@@ -550,12 +553,20 @@ func runServe(args []string) error {
 	// Unset, the three routes answer 503 naming the variables. NOT 404: "not
 	// configured here" and "wrong URL" are different facts, and this is the
 	// shape /admin/storage and /admin/transcription already use.
-	if cfg.ScribeEnabled() && cfg.SwitchyardConfigured() {
-		proposer, err := scribe.Proposer("ollama", cfg.ScribeModel, prompt.Version)
+	//
+	// ONE SWITCHYARD CLIENT, shared by the triager below and the reference
+	// resolver after it: a second construction would be a second place for the
+	// base URL to be parsed and the credential to be read, which is the reason
+	// resolve.NewSwitchyard takes a client rather than a URL and a token.
+	var sw *switchyard.Client
+	if cfg.SwitchyardConfigured() {
+		sw, err = switchyard.New(cfg.SwitchyardURL, cfg.SwitchyardToken)
 		if err != nil {
 			return err
 		}
-		sw, err := switchyard.New(cfg.SwitchyardURL, cfg.SwitchyardToken)
+	}
+	if cfg.ScribeEnabled() && cfg.SwitchyardConfigured() {
+		proposer, err := scribe.Proposer("ollama", cfg.ScribeModel, prompt.Version)
 		if err != nil {
 			return err
 		}
@@ -588,29 +599,21 @@ func runServe(args []string) error {
 			"visible_at", "GET /triage/batch")
 	}
 
-	// THE CAPTURE ARCHIVE (CHRN-50). Said out loud in both directions, because
-	// neither state is discoverable from anywhere else yet: no surface renders
-	// a note, so an operator has no page to look at and nothing else to read.
-	//
-	// INFO AND NOT WARN, in both branches, and that is the honest level. An
-	// unset Amber is not a broken deployment — citations render as unconfigured,
-	// which is a true thing to say — and a SET one is not yet a working feature
-	// either, which is what the second half of that line exists to admit.
-	// CHRN-97 has since answered the question this used to leave open: ruling 3
-	// put resolution on its own resource rather than inside the note payload,
-	// so a note read never dials an upstream. CHRN-104 is the consumer, and
-	// therefore the ticket that registers the transports here — it says so, and
-	// so does CHRN-97's plan. Until it lands, both of these lines stay true.
-	if cfg.AmberConfigured() {
-		// The URL, never the token.
-		logger.Info("the capture archive is configured, and nothing resolves citations yet",
-			"amber", cfg.AmberURL,
-			"pending", "CHRN-104 registers the transports and serves the resolve endpoint")
-	} else {
-		logger.Info("no capture archive: CHRONICLE_AMBER_URL and CHRONICLE_AMBER_TOKEN are unset, "+
-			"so an amber1 citation will render as unconfigured rather than as an outage",
-			"remedy", "set both to Amber's base URL and its shared API token")
+	// THE REFERENCE RESOLVER (CHRN-104), built from whichever upstreams the
+	// configuration has -- and built EVEN WHEN IT HAS NONE. buildResolver says
+	// why a Chronicle with neither starts normally; this is the composition
+	// root handing the surface its consumer, which CHRN-49 and CHRN-50 both
+	// deliberately left for the ticket that would have one.
+	resolver, keys, err := buildResolver(cfg, sw, logger)
+	if err != nil {
+		return err
 	}
+	deps.References = resolver
+	// Chronicle's own CHR- and DSC- references resolve against tier 2
+	// directly, on the main pool: they are notes and discussions, not derived
+	// state, and there is no transport for a namespace that never leaves the
+	// process.
+	deps.LocalReferences = st
 
 	if cfg.SSOEnabled() {
 		deps.CFAccess = api.NewCFAccessVerifier(cfg.CFAccessTeamDomain, cfg.CFAccessAUD...)
@@ -692,9 +695,85 @@ func runServe(args []string) error {
 		}()
 	}
 
+	// The Switchyard project key set (CHRN-49; CHRN-51 ruling 2), given its
+	// lifetime here because this is the ticket that registers the transports
+	// it belongs beside. ITS CONSUMER IS CHRN-98's SCANNER — the renderer's
+	// HasProject predicate and the NoteMisses call are the note handler's, and
+	// until that lands this is a /v1/projects poll every KeysMaxAge whose set
+	// nothing reads. Stated so the gap reads as sequencing rather than as the
+	// thing CHRN-49 declined. The boot fetch retries with backoff rather than
+	// being one-shot, and the last good set survives a failed refresh. Nil
+	// when there is no tracker, and then nothing runs.
+	if keys != nil {
+		watching.Add(1)
+		go func() {
+			defer watching.Done()
+			keys.Run(ctx)
+		}()
+	}
+
 	err = api.Serve(ctx, srv, cfg.ShutdownGrace, logger)
 	watching.Wait()
 	return err
+}
+
+// buildResolver assembles the reference resolver from whatever upstreams the
+// configuration has (CHRN-104; CHRN-97 plan, Deployment).
+//
+// EACH TRANSPORT IS REGISTERED WHEN ITS PAIR IS SET AND NOT OTHERWISE, and a
+// Chronicle with neither starts normally, says so once per upstream at Info,
+// and answers `unconfigured` for their references. That is deliberately the
+// opposite of the tier-1 DSN's refusal a few lines up, and the difference is
+// the point: an absent tier-1 credential means a boundary is not being
+// enforced, which must refuse; an absent Switchyard token means a permanent,
+// honest, stated state that CHRN-51 minted a vocabulary member for. A card
+// reading "unreachable" on a Chronicle that was never given a token would send
+// somebody to check a service that is fine.
+//
+// INFO AND NOT WARN for the unset branches. An unset Amber is not a broken
+// deployment -- citations render as unconfigured, which is a true thing to say
+// -- and REVIEW.md section 8's cautionary tale is about a silent no-op that
+// looked like a feature, which a line at boot is the cure for at either level.
+//
+// resolve.New refuses a configuration whose per-call timeout meets or exceeds
+// the budget, so a bad pair fails here rather than silently never dialling;
+// the defaults it is given here are CHRN-51's.
+func buildResolver(cfg config.Config, sw *switchyard.Client, logger *slog.Logger) (*resolve.Resolver, *resolve.Keys, error) {
+	transports := map[string]resolve.Transport{}
+	var keys *resolve.Keys
+
+	if sw != nil {
+		transports[markdown.SystemSwitchyard] = resolve.NewSwitchyard(sw)
+		keys = resolve.NewKeys(resolve.KeysOptions{
+			Fetch:  resolve.SwitchyardProjectKeys(sw),
+			Logger: logger,
+		})
+		// The URL, never the token.
+		logger.Info("ticket references will resolve against the tracker", "switchyard", cfg.SwitchyardURL)
+	} else {
+		logger.Info("no ticket tracker: CHRONICLE_SWITCHYARD_URL and CHRONICLE_SWITCHYARD_TOKEN are unset, "+
+			"so a ticket reference will render as unconfigured rather than as an outage",
+			"remedy", "set both to Switchyard's base URL and a read-only token")
+	}
+
+	if cfg.AmberConfigured() {
+		am, err := amber.New(cfg.AmberURL, cfg.AmberToken)
+		if err != nil {
+			return nil, nil, err
+		}
+		transports[markdown.SystemAmber] = am
+		logger.Info("citations will resolve against the capture archive", "amber", cfg.AmberURL)
+	} else {
+		logger.Info("no capture archive: CHRONICLE_AMBER_URL and CHRONICLE_AMBER_TOKEN are unset, "+
+			"so an amber1 citation will render as unconfigured rather than as an outage",
+			"remedy", "set both to Amber's base URL and its shared API token")
+	}
+
+	r, err := resolve.New(resolve.Options{Transports: transports, Keys: keys, Logger: logger})
+	if err != nil {
+		return nil, nil, err
+	}
+	return r, keys, nil
 }
 
 func runMigrate(args []string) error {

@@ -12,6 +12,8 @@ import (
 
 	"github.com/Einlanzerous/chronicle/internal/api/apitest"
 	"github.com/Einlanzerous/chronicle/internal/api/wire"
+	"github.com/Einlanzerous/chronicle/internal/markdown"
+	"github.com/Einlanzerous/chronicle/internal/resolve"
 	"github.com/Einlanzerous/chronicle/internal/scribe"
 	"github.com/Einlanzerous/chronicle/internal/store"
 	"github.com/Einlanzerous/chronicle/internal/triage"
@@ -164,6 +166,8 @@ func TestAnonymousGetsTheSameAnswerFromEveryRoute(t *testing.T) {
 		{http.MethodPost, "/triage/hold", http.StatusUnauthorized},
 		{http.MethodPost, "/triage/release", http.StatusUnauthorized},
 		{http.MethodGet, "/triage/deferred", http.StatusUnauthorized},
+
+		{http.MethodPost, "/references/resolve", http.StatusUnauthorized},
 	}
 
 	for _, tc := range cases {
@@ -370,10 +374,11 @@ func TestDocumentedOperations(t *testing.T) {
 		"deleteSession", "deleteUser", "getHealthz", "getMe", "getReadyz",
 		"getStorageReport", "getTranscriptionReport", "getTriageBatch",
 		"getTriageReport", "getUpload", "holdMemo", "listDeferred", "listSessions",
-		"listUsers", "openUpload", "releaseMemo", "revokeSession", "updateMe",
+		"listUsers", "openUpload", "releaseMemo", "resolveReferences", "revokeSession",
+		"updateMe",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Errorf("operations = %v, want %v.\nAll 26 routes are in the document now; a change here is a change to the surface.", got, want)
+		t.Errorf("operations = %v, want %v.\nAll 27 routes are in the document now; a change here is a change to the surface.", got, want)
 	}
 }
 
@@ -431,6 +436,8 @@ func TestACredentialedCallerIsNotRefusedByTheWrappers(t *testing.T) {
 		{http.MethodPost, "/triage/hold", member, "member-token"},
 		{http.MethodPost, "/triage/release", member, "member-token"},
 		{http.MethodGet, "/triage/deferred", member, "member-token"},
+
+		{http.MethodPost, "/references/resolve", member, "member-token"},
 	}
 
 	for _, route := range routes {
@@ -590,6 +597,7 @@ func TestEveryOperationDeclaresWhatItsSharedCodeCanAnswer(t *testing.T) {
 		"uploads":       "uploadsReady",
 		"storage":       "the nil audio store check",
 		"transcription": "the nil transcription store check",
+		"references":    "referencesUnavailable",
 	}
 	rules := []rule{
 		{
@@ -858,6 +866,73 @@ func TestEveryTriageFieldReachesTheDocument(t *testing.T) {
 					t.Errorf("%s declares %q, which no domain field can set — "+
 						"every response will omit it, and a generated client gets a field that is always absent",
 						tc.schema, name)
+				}
+			}
+		})
+	}
+}
+
+// The same guard for the reference types, which were never on the wire before
+// CHRN-104 and so carry no json tags to compare.
+//
+// The projection is therefore stated as a table -- Go field to wire property --
+// and checked in three directions: every exported field of the domain type is
+// in the table, every table entry names a property the schema declares, and
+// every schema property is the image of some field. A field added to
+// resolve.Resolution and not to openapi.yaml fails the first; a property
+// declared that nothing sets fails the third. The one deliberate projection is
+// Ref onto its token, which holds because a token is unique within one scan's
+// output and echoing all five fields back would restate the request per card.
+func TestEveryResolutionFieldReachesTheDocument(t *testing.T) {
+	schemas := apitest.Doc(t).Components.Schemas
+
+	cases := []struct {
+		schema string
+		value  any
+		wire   map[string]string // Go field -> property
+	}{
+		{"Resolution", resolve.Resolution{}, map[string]string{
+			"Ref": "token", "State": "state", "Upstream": "upstream",
+			"FetchedAt": "fetched_at", "LastResolvedAt": "last_resolved_at", "Explain": "explain",
+		}},
+		{"ResolutionUpstream", resolve.Upstream{}, map[string]string{
+			"Key": "key", "Outcome": "outcome", "DisplayName": "display_name",
+			"Title": "title", "URL": "url", "Recoverable": "recoverable",
+		}},
+		{"ReferenceDescriptor", markdown.Reference{}, map[string]string{
+			"System": "system", "Key": "key", "Target": "target", "Token": "token", "Number": "number",
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.schema, func(t *testing.T) {
+			ref, ok := schemas[tc.schema]
+			if !ok || ref.Value == nil {
+				t.Fatalf("openapi.yaml has no schema %q", tc.schema)
+			}
+
+			images := map[string]bool{}
+			rt := reflect.TypeOf(tc.value)
+			for i := range rt.NumField() {
+				f := rt.Field(i)
+				if !f.IsExported() {
+					continue
+				}
+				prop, ok := tc.wire[f.Name]
+				if !ok {
+					t.Errorf("%s.%s is on the domain type and the projection table does not say where it goes — "+
+						"add it to openapi.yaml and to the table, or the generated clients never see it", rt.Name(), f.Name)
+					continue
+				}
+				if _, ok := ref.Value.Properties[prop]; !ok {
+					t.Errorf("%s.%s maps to %q, which schema %s does not declare", rt.Name(), f.Name, prop, tc.schema)
+				}
+				images[prop] = true
+			}
+			for name := range ref.Value.Properties {
+				if !images[name] {
+					t.Errorf("%s declares %q, which no domain field maps to — every response will omit it, "+
+						"and a generated client gets a field that is always absent", tc.schema, name)
 				}
 			}
 		})

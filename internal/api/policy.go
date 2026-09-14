@@ -118,6 +118,11 @@ var routePolicy = map[string]policy{
 	"GET /admin/transcription": policyOwner,
 	// Spans every author's corpus, so owner rather than member.
 	"GET /admin/triage": policyOwner,
+
+	// REFERENCES (CHRN-104). Member and not owner: every account reads notes,
+	// and a card is a read. What bounds this surface is the cap of fifty per
+	// call and the resolver's own budget, not the sign-in limiter.
+	"POST /references/resolve": policyMember,
 }
 
 // policyRouter is the ServeMux the generated registration writes into.

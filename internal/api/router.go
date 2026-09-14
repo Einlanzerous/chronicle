@@ -109,6 +109,26 @@ type Deps struct {
 	// the same reason: "not configured here" and "wrong URL" are different
 	// facts and a client should be able to tell them apart.
 	Uploads *upload.Service
+
+	// References resolves Switchyard and Amber references into cards
+	// (CHRN-104). setup() builds it from whichever transports the
+	// configuration has, and builds it even when it has none: a Chronicle
+	// with neither upstream still resolves its own notes and answers
+	// `unconfigured` for the rest, which is a true thing to say. Nil only on
+	// a router assembled without one, and POST /references/resolve then
+	// answers 503 rather than dereferencing it inside a render.
+	References References
+
+	// LocalReferences answers Chronicle's own CHR- and DSC- references, which
+	// never go through a Transport: there is no classifier for Chronicle's
+	// namespace, and nothing to cache or to go stale.
+	LocalReferences LocalReferences
+
+	// Now is the clock a local resolution stamps its fetched_at from. Nil is
+	// time.Now. Injectable so a test can hold the local half of a batch to
+	// the same instant the resolver's own clock gives the upstream half — a
+	// response should not carry two clocks.
+	Now func() time.Time
 }
 
 // api holds what the handlers share.
@@ -138,6 +158,9 @@ type api struct {
 	transcription Transcription
 	transcribing  bool
 	triage        Triage
+	references    References
+	localRefs     LocalReferences
+	now           func() time.Time
 }
 
 // NewRouter builds the HTTP handler.
@@ -185,6 +208,12 @@ func NewRouter(d Deps) http.Handler {
 		transcription: d.Transcription,
 		transcribing:  d.Transcribing,
 		triage:        d.Triage,
+		references:    d.References,
+		localRefs:     d.LocalReferences,
+		now:           d.Now,
+	}
+	if a.now == nil {
+		a.now = time.Now
 	}
 
 	mux := http.NewServeMux()

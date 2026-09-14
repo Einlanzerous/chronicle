@@ -62,6 +62,14 @@ const (
 	codeHashMismatch        = "content_hash_mismatch"
 	codeOversend            = "oversend"
 
+	// References (CHRN-104). Two refusals a client acts on differently: a
+	// token that is not a reference is a client that sent prose, and a
+	// descriptor that disagrees with its token is a client that edited what
+	// the note payload handed it -- or is trying to pick an upstream.
+	codeInvalidReference       = "invalid_reference"
+	codeReferenceMismatch      = "reference_mismatch"
+	codeReferencesUnconfigured = "references_unconfigured"
+
 	codeAudioUnconfigured         = "audio_unconfigured"
 	codeTranscriptionUnconfigured = "transcription_unconfigured"
 	codeAccountsUnconfigured      = "accounts_unconfigured"
