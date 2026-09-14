@@ -27,19 +27,22 @@
 // an empty segment, or any segment starting with `.` (which is how
 // `.vitepress`, the renderer's own directory, stays out of reach). The read
 // goes through an fs.FS rooted at the mount, so even a path that slipped the
-// check could not leave it.
+// check could not leave it: the root is an os.Root, whose FS refuses a
+// traversal out through a symlink as well as through `..`.
 package estatewiki
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -61,6 +64,12 @@ const buildFile = "build.json"
 // error naming the file rather than a multi-gigabyte response.
 const maxPage = 8 << 20
 
+// titleHead is how much of a file List reads to find its title. The front
+// matter and the first heading are both at the top, and the same wrong-mount
+// case maxPage guards against would otherwise be read whole, per file, on
+// every listing.
+const titleHead = 8 << 10
+
 // Corpus is the mounted corpus.
 type Corpus struct {
 	root string
@@ -79,7 +88,15 @@ func New(root string) (*Corpus, error) {
 	if !info.IsDir() {
 		return nil, fmt.Errorf("estate wiki %s is not a directory", root)
 	}
-	return &Corpus{root: root, fsys: os.DirFS(root)}, nil
+	// os.Root rather than os.DirFS: DirFS follows a symlink wherever it
+	// points, so a link planted in the corpus would read outside the mount.
+	// Root's FS refuses that. The handle is held for the life of the process,
+	// which is the life of the corpus.
+	r, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, fmt.Errorf("estate wiki %s: %w", root, err)
+	}
+	return &Corpus{root: root, fsys: r.FS()}, nil
 }
 
 // Root is the directory the corpus was opened at.
@@ -145,12 +162,12 @@ func (c *Corpus) List() ([]Summary, error) {
 		if d.IsDir() || !strings.HasSuffix(p, ".md") {
 			return nil
 		}
-		raw, err := fs.ReadFile(c.fsys, p)
+		head, err := readHead(c.fsys, p)
 		if err != nil {
 			return fmt.Errorf("estatewiki: read %s: %w", p, err)
 		}
 		pagePath := strings.TrimSuffix(p, ".md")
-		title, _ := splitFrontMatter(pagePath, string(raw))
+		title, _ := splitFrontMatter(pagePath, head)
 		out = append(out, Summary{Path: pagePath, Title: title})
 		return nil
 	})
@@ -171,7 +188,7 @@ func (c *Corpus) Read(pagePath string) (Page, error) {
 		return Page{}, ErrInvalidPath
 	}
 	info, err := fs.Stat(c.fsys, pagePath+".md")
-	if errors.Is(err, fs.ErrNotExist) {
+	if notFound(err) {
 		return Page{}, ErrNotFound
 	}
 	if err != nil {
@@ -189,6 +206,28 @@ func (c *Corpus) Read(pagePath string) (Page, error) {
 	}
 	title, body := splitFrontMatter(pagePath, string(raw))
 	return Page{Path: pagePath, Title: title, Body: body}, nil
+}
+
+// notFound is the two ways a stat says "no such page": the file is absent, or
+// an intermediate segment names a regular file (ENOTDIR, which Errno.Is does
+// not map onto fs.ErrNotExist). `build.json/x` is the second, and it is a
+// 404 and not a 500.
+func notFound(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
+}
+
+// readHead reads the first titleHead bytes of a file, for its title.
+func readHead(fsys fs.FS, p string) (string, error) {
+	f, err := fsys.Open(p)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	head, err := io.ReadAll(io.LimitReader(f, titleHead))
+	if err != nil {
+		return "", err
+	}
+	return string(head), nil
 }
 
 // ValidPath reports whether p is a path this corpus could hold: relative,

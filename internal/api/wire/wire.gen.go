@@ -639,10 +639,18 @@ type Error struct {
 	Message string `json:"message"`
 }
 
-// Generated **The tier-1 marking.** Present and required on every payload that is
-// generated rather than authored, under its own key, so a client that
-// ignores it still cannot mistake the shape for a `Note`. It says who
-// regenerates the content and carries the line the tier-1 pane renders.
+// Generated **The tier-1 marking.** Present and required on every payload of the
+// `tier1` group and on the Scribe's `Proposal` — the generated *content*
+// a client might render beside a note — under its own key, so a client
+// that ignores it still cannot mistake the shape for a `Note`. It says
+// who regenerates the content and carries the line the tier-1 pane
+// renders.
+//
+// Two other payloads are built from tier-1 tables and deliberately do
+// not carry it: the transcription report (`tier1.memo_jobs`) and the
+// deferred list (`tier1.triage_holds`). Those are operational state
+// about memos, not content anyone renders as a page; the marking is for
+// the pane, not for every row the tier-1 role can reach.
 //
 // `tier` and `regenerable` are literals, not flags: there is no value a
 // client could read as "this one is authored".
@@ -1050,10 +1058,18 @@ type Proposal struct {
 	Description *string             `json:"description,omitempty"`
 	Destination ProposalDestination `json:"destination"`
 
-	// Generated **The tier-1 marking.** Present and required on every payload that is
-	// generated rather than authored, under its own key, so a client that
-	// ignores it still cannot mistake the shape for a `Note`. It says who
-	// regenerates the content and carries the line the tier-1 pane renders.
+	// Generated **The tier-1 marking.** Present and required on every payload of the
+	// `tier1` group and on the Scribe's `Proposal` — the generated *content*
+	// a client might render beside a note — under its own key, so a client
+	// that ignores it still cannot mistake the shape for a `Note`. It says
+	// who regenerates the content and carries the line the tier-1 pane
+	// renders.
+	//
+	// Two other payloads are built from tier-1 tables and deliberately do
+	// not carry it: the transcription report (`tier1.memo_jobs`) and the
+	// deferred list (`tier1.triage_holds`). Those are operational state
+	// about memos, not content anyone renders as a page; the marking is for
+	// the pane, not for every row the tier-1 role can reach.
 	//
 	// `tier` and `regenerable` are literals, not flags: there is no value a
 	// client could read as "this one is authored".
@@ -1562,10 +1578,18 @@ type Tier1Page struct {
 	// Body The page's markdown, front matter removed.
 	Body string `json:"body"`
 
-	// Generated **The tier-1 marking.** Present and required on every payload that is
-	// generated rather than authored, under its own key, so a client that
-	// ignores it still cannot mistake the shape for a `Note`. It says who
-	// regenerates the content and carries the line the tier-1 pane renders.
+	// Generated **The tier-1 marking.** Present and required on every payload of the
+	// `tier1` group and on the Scribe's `Proposal` — the generated *content*
+	// a client might render beside a note — under its own key, so a client
+	// that ignores it still cannot mistake the shape for a `Note`. It says
+	// who regenerates the content and carries the line the tier-1 pane
+	// renders.
+	//
+	// Two other payloads are built from tier-1 tables and deliberately do
+	// not carry it: the transcription report (`tier1.memo_jobs`) and the
+	// deferred list (`tier1.triage_holds`). Those are operational state
+	// about memos, not content anyone renders as a page; the marking is for
+	// the pane, not for every row the tier-1 role can reach.
 	//
 	// `tier` and `regenerable` are literals, not flags: there is no value a
 	// client could read as "this one is authored".
@@ -1583,10 +1607,18 @@ type Tier1Page struct {
 
 // Tier1PageList defines model for Tier1PageList.
 type Tier1PageList struct {
-	// Generated **The tier-1 marking.** Present and required on every payload that is
-	// generated rather than authored, under its own key, so a client that
-	// ignores it still cannot mistake the shape for a `Note`. It says who
-	// regenerates the content and carries the line the tier-1 pane renders.
+	// Generated **The tier-1 marking.** Present and required on every payload of the
+	// `tier1` group and on the Scribe's `Proposal` — the generated *content*
+	// a client might render beside a note — under its own key, so a client
+	// that ignores it still cannot mistake the shape for a `Note`. It says
+	// who regenerates the content and carries the line the tier-1 pane
+	// renders.
+	//
+	// Two other payloads are built from tier-1 tables and deliberately do
+	// not carry it: the transcription report (`tier1.memo_jobs`) and the
+	// deferred list (`tier1.triage_holds`). Those are operational state
+	// about memos, not content anyone renders as a page; the marking is for
+	// the pane, not for every row the tier-1 role can reach.
 	//
 	// `tier` and `regenerable` are literals, not flags: there is no value a
 	// client could read as "this one is authored".

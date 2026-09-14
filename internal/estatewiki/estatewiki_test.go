@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -121,7 +122,9 @@ func TestReadRefusesWhatTheCorpusCannotHold(t *testing.T) {
 			t.Errorf("Read(%q) = %v, want ErrInvalidPath", bad, err)
 		}
 	}
-	for _, missing := range []string{"nope", "services", "public/architecture/chronicle"} {
+	// build.json/x: an intermediate segment that is a regular file. ENOTDIR,
+	// not ENOENT — and still "no such page".
+	for _, missing := range []string{"nope", "services", "public/architecture/chronicle", "build.json/x", "index/x"} {
 		if _, err := c.Read(missing); !errors.Is(err, ErrNotFound) {
 			t.Errorf("Read(%q) = %v, want ErrNotFound", missing, err)
 		}
@@ -149,5 +152,58 @@ func TestAMalformedStampIsAnError(t *testing.T) {
 	}
 	if _, _, err := c.Build(); err == nil {
 		t.Fatal("a malformed build.json was read as absent")
+	}
+}
+
+// A symlink planted in the corpus does not read outside the mount. os.DirFS
+// would have followed it; os.Root's FS refuses.
+func TestASymlinkCannotLeaveTheMount(t *testing.T) {
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.md"), []byte("# leaked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "esc")); err != nil {
+		t.Skipf("symlinks unavailable here: %v", err)
+	}
+	c, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := c.Read("esc/secret")
+	if err == nil || p.Body != "" {
+		t.Fatalf("Read through a symlink out of the mount = %+v, %v; want a refusal", p, err)
+	}
+	// A listing that walked through the link would be the same escape.
+	// WalkDir does not follow directory symlinks — asserted, not assumed.
+	pages, err := c.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pg := range pages {
+		if strings.HasPrefix(pg.Path, "esc/") {
+			t.Fatalf("List walked out of the mount: %+v", pages)
+		}
+	}
+}
+
+// List reads only the head of each file for its title, so a corpus with one
+// enormous page still lists — and still lists that page correctly.
+func TestListReadsOnlyTheHeadOfEachFile(t *testing.T) {
+	root := t.TempDir()
+	big := "---\ntitle: \"Big\"\n---\n" + strings.Repeat("x", 2*titleHead)
+	if err := os.WriteFile(filepath.Join(root, "big.md"), []byte(big), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pages, err := c.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pages) != 1 || pages[0].Title != "Big" {
+		t.Fatalf("pages = %+v", pages)
 	}
 }
