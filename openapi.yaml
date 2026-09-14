@@ -1573,7 +1573,11 @@ paths:
         "409":
           description: |
             the resolution is already recorded and names a different note
-            (`resolution_fixed`), or the note named is deleted (`note_deleted`).
+            (`resolution_fixed`); the note named is deleted (`note_deleted`);
+            or another write holds the thread's lock past its timeout
+            (`thread_busy`), and a retry is the remedy. Resolving again into
+            the SAME note is a 200 that appends nothing — a retry whose first
+            answer was lost is safe.
           content:
             application/json:
               schema:

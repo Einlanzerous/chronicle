@@ -1780,9 +1780,11 @@ type ListDiscussionsParams struct {
 	// Page A page path, `estate/conventions/naming`. A redirect left by a move is followed.
 	Page PagePath `form:"page" json:"page"`
 
-	// Limit How many to return. CLAMPED SERVER-SIDE, and the response echoes what it
-	// was clamped to — a client composing a batch needs the cap without a
-	// second document to consult.
+	// Limit How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch
+	// caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and
+	// the note and revision lists cap at 200 and say so by answering a
+	// `next_cursor` for the rest. A client asking for more than the cap gets
+	// the cap.
 	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
 
 	// Cursor Opaque; the `next_cursor` of the previous page. Absent means the

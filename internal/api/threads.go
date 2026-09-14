@@ -270,6 +270,7 @@ func (a *api) ListUnread(w http.ResponseWriter, r *http.Request) {
 	// small; a store read that joins the title is the thing to add if it is
 	// ever not.
 	items := make([]wire.UnreadItem, 0, len(counts))
+	numbers := make(map[string]int64, len(counts))
 	for id, n := range counts {
 		d, err := a.threads.DiscussionByID(ctx, id)
 		if err != nil {
@@ -277,8 +278,11 @@ func (a *api) ListUnread(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		items = append(items, wire.UnreadItem{Ref: d.Ref(), Title: d.Title, Unread: n})
+		numbers[d.Ref()] = d.Number
 	}
-	sort.Slice(items, func(i, j int) bool { return items[i].Ref < items[j].Ref })
+	// By number, as every other list here orders: a ref is zero-padded to
+	// four digits and sorts wrongly as a string past 9999.
+	sort.Slice(items, func(i, j int) bool { return numbers[items[i].Ref] < numbers[items[j].Ref] })
 	writeJSON(w, http.StatusOK, wire.UnreadList{Items: items})
 }
 
@@ -628,9 +632,16 @@ func (a *api) ResolveDiscussion(w http.ResponseWriter, r *http.Request, ref stri
 			}
 			title = current.Title
 		}
-		if _, err := a.threads.ResolveIntoExistingNote(ctx, d.ID, n.ID, u.ID, title, *req.Body); err != nil {
-			a.resolveRefused(w, r, "resolve into an existing note", err)
-			return
+		// RETRY-SAFE. The store allows a repeat resolution into the same note
+		// and records nothing for it -- but ResolveIntoExistingNote appends
+		// the revision BEFORE it reaches that statement, so a retried request
+		// whose 200 was lost would append the same text twice. Already
+		// resolved into this note means there is nothing left to do.
+		if d.ResolvedNoteID == nil || *d.ResolvedNoteID != n.ID {
+			if _, err := a.threads.ResolveIntoExistingNote(ctx, d.ID, n.ID, u.ID, title, *req.Body); err != nil {
+				a.resolveRefused(w, r, "resolve into an existing note", err)
+				return
+			}
 		}
 		note = &n
 

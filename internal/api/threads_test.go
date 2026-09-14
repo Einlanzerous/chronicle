@@ -541,8 +541,12 @@ func TestAThreadIsHeldOverHTTPWithAnAgent(t *testing.T) {
 	if e := decodeInto[wire.Error](t, rec); e.Code != codeResolutionFixed {
 		t.Errorf("code = %q", e.Code)
 	}
-	// Idempotent on the same note.
+	// Idempotent on the same note: a retry appends nothing.
+	before := len(rig.wiki.revs[rig.wiki.notes[1].ID])
 	mustStatus(t, me(http.MethodPost, "/discussions/DSC-0001/resolve", `{"into":"existing_note","note_ref":"CHR-0001","body":"again"}`), http.StatusOK, "resolveDiscussion")
+	if after := len(rig.wiki.revs[rig.wiki.notes[1].ID]); after != before {
+		t.Errorf("a repeat resolution into the same note appended %d revision(s)", after-before)
+	}
 
 	// Listed on its page, resolved and all.
 	rec = me(http.MethodGet, "/discussions?page=estate", "")
