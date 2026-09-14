@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.0](https://github.com/Einlanzerous/chronicle/compare/v1.14.0...v1.15.0) (2026-09-14)
+
+
+### Features
+
+* **api:** a note's backlinks over HTTP, resolved by tier 2 from its own index (CHRN-105) ([#94](https://github.com/Einlanzerous/chronicle/issues/94)) ([ee6ad5e](https://github.com/Einlanzerous/chronicle/commit/ee6ad5ed402a76edfc8cd2278a6068caf757e091))
+
 ## [1.14.0](https://github.com/Einlanzerous/chronicle/compare/v1.13.0...v1.14.0) (2026-09-14)
 
 
