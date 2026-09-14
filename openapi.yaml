@@ -79,6 +79,14 @@ tags:
     description: |
       Turning the references a note names into live cards. Linked, never
       copied: nothing an upstream answers here is ever written to a table.
+  - name: pages
+    description: The page tree notes are filed under. Addressed by path; identified by id.
+  - name: notes
+    description: |
+      Authored notes and their revisions. Tier 2: what a person wrote,
+      rebuildable by nobody. Markdown is stored raw and rendered on read.
+  - name: search
+    description: Full-text search across notes and transcripts. Not a list.
 
 paths:
   /healthz:
@@ -929,6 +937,338 @@ paths:
         "500": { $ref: "#/components/responses/InternalError" }
         "503": { $ref: "#/components/responses/ReferencesUnconfigured" }
 
+  # ── PAGES ───────────────────────────────────────────────────────────────────
+  # CHRN-37's tree, reachable (CHRN-98). Pages are addressed by PATH and
+  # identified by id, and those are two different things on purpose: a move
+  # changes the first and never the second, which is what lets a note survive
+  # one. The path is derived from ancestry, never stored, so nothing here can
+  # hand back a stale one.
+
+  /pages:
+    get:
+      tags: [pages]
+      summary: The whole page tree, as sorted paths.
+      description: |
+        Every page's current path, sorted. A tree is a property of the paths
+        — `estate` is the parent of `estate/conventions` — so this is the tree,
+        and a client renders it however it likes. Bounded by the corpus, which
+        is a few hundred pages at most, so it is not paginated.
+      operationId: listPages
+      x-chronicle-policy: member
+      responses:
+        "200":
+          description: the tree
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PageTree"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/WikiUnconfigured" }
+
+    post:
+      tags: [pages]
+      summary: Create a page at a path.
+      description: |
+        The parent must already exist and is resolved WITHOUT following
+        redirects: a caller writing to a path needs to know it is writing where
+        it thinks it is. A single-segment path creates a root page.
+
+        Here because nothing else creates one: a note must be filed on a page,
+        and until this operation a fresh deployment had no page to file it on.
+      operationId: createPage
+      x-chronicle-policy: member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewPageRequest"
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Page"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: the parent path names no page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: a sibling already uses that slug — two rows would claim one path
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/WikiUnconfigured" }
+
+  # ── NOTES ───────────────────────────────────────────────────────────────────
+  # E5's store, reachable (CHRN-98). Three things are decided upstream and only
+  # transcribed here:
+  #
+  #   ruling 3  a note payload carries the reference DESCRIPTORS its text
+  #             produced and no upstream state. Resolution is
+  #             POST /references/resolve. A note read dials nothing.
+  #   ruling 4  a soft-deleted note answers 410 with a tombstone — ref,
+  #             deleted_at, deleted_by — and no title and no body.
+  #   ruling 5  a read carries an ETag of its current revision id and honours
+  #             If-None-Match; an append never carries If-Match, because
+  #             nothing is overwritten and there is no lost update to prevent.
+  #
+  # And one rule with exactly one caller: the note handler is the one that
+  # SCANS, so it is the one that feeds the miss feed. Nothing else does.
+
+  /notes:
+    get:
+      tags: [notes]
+      summary: The live notes filed on a page.
+      description: |
+        Soft-deleted notes are excluded, by the store rather than by this
+        handler, so a delete cannot be forgotten by one read surface.
+
+        `page` follows a redirect left by a move: a client holding an old path
+        still gets the page, and `moved_from` says the path it asked for is no
+        longer the page's own. Paginated by cursor over the note number, which
+        is append-only.
+      operationId: listNotes
+      x-chronicle-policy: member
+      parameters:
+        - $ref: "#/components/parameters/PagePath"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: the notes, oldest number first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NoteList"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: no page at that path, live or redirected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/WikiUnconfigured" }
+
+    post:
+      tags: [notes]
+      summary: Create a note, as the authenticated person.
+      description: |
+        The session's account is the author AND the confirming person. The
+        store refuses a confirmer that is an agent (`note_revisions_guard`,
+        CH041); this operation passes the account through and does not work
+        around the guard, so an agent session answers `403`.
+
+        The page is resolved WITHOUT following redirects, for the reason
+        `createPage` gives.
+      operationId: createNote
+      x-chronicle-policy: member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewNoteRequest"
+      responses:
+        "201":
+          description: the note, as `getNote` would return it
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Note"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/PersonRequired" }
+        "404":
+          description: the page path names no page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/WikiUnconfigured" }
+
+  /notes/{ref}:
+    get:
+      tags: [notes]
+      summary: A note, rendered, with the references its text names.
+      description: |
+        **A pure tier-2 read.** `html` is the current body rendered; `references`
+        are the descriptors the scan produced, and nothing an upstream said
+        about them — batch them to `POST /references/resolve` for cards. No
+        upstream is dialled, which is what lets the `ETag` mean what it says.
+
+        The `ETag` is the current revision id. Send it back as `If-None-Match`
+        and an unchanged note answers `304` with no body.
+
+        A soft-deleted note answers `410` with a tombstone: the note existed,
+        it was withdrawn, and by whom and when — and no title and no body. A
+        client holding a link can tell *withdrawn* from *never existed*, which
+        is what CHRN-39's journal is for; undelete makes the same URL answer
+        `200` again.
+      operationId: getNote
+      x-chronicle-policy: member
+      parameters:
+        - $ref: "#/components/parameters/NoteRef"
+        - name: If-None-Match
+          in: header
+          required: false
+          description: The `ETag` of the last read. A match answers `304`.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: the note
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Note"
+        "304":
+          description: unchanged since the revision `If-None-Match` named
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "410": { $ref: "#/components/responses/Gone" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/WikiUnconfigured" }
+
+  /notes/{ref}/revisions:
+    get:
+      tags: [notes]
+      summary: A note's history, oldest first, with each revision's text.
+      description: |
+        Raw markdown per revision, not rendered: history is what was written,
+        and rendering every revision would scan every revision. Paginated by
+        cursor over `seq`, which only ever grows — a restore APPENDS the old
+        text as a new revision rather than moving the pointer back, so this
+        list is a complete account of what was displayed and when.
+      operationId: listNoteRevisions
+      x-chronicle-policy: member
+      parameters:
+        - $ref: "#/components/parameters/NoteRef"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: the revisions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RevisionList"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "410": { $ref: "#/components/responses/Gone" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/WikiUnconfigured" }
+
+    post:
+      tags: [notes]
+      summary: Append a revision.
+      description: |
+        **Always appends. Nothing is overwritten**, so there is no `If-Match`
+        and no `412`: two people appending from the same base produce two
+        revisions, both in history, the second current. The response says which
+        revision this append produced and which one was current when the
+        request was read — a gap between `followed.seq` and `revision.seq`
+        means somebody else appended in between, which is E8's to render
+        ("someone else appended while you were typing") rather than the
+        server's to refuse.
+
+        The session's account confirms the text; an agent session answers
+        `403`. A title omitted keeps the current one — a rename is a revision
+        exactly as an edit is.
+      operationId: appendRevision
+      x-chronicle-policy: member
+      parameters:
+        - $ref: "#/components/parameters/NoteRef"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AppendRevisionRequest"
+      responses:
+        "201":
+          description: appended
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppendResult"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/PersonRequired" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "410": { $ref: "#/components/responses/Gone" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/WikiUnconfigured" }
+
+  # ── SEARCH ──────────────────────────────────────────────────────────────────
+  /search:
+    get:
+      tags: [search]
+      summary: Full-text search across notes and transcripts.
+      description: |
+        **Not a list.** Rank-ordered, and the ranks move as the corpus moves,
+        so a cursor over this order would be a lie with a shape. It takes
+        `limit`, answers the top N, and carries no cursor.
+
+        Transcripts are searched as well as notes because audio is pruned at
+        thirty days: from day thirty-one the transcript is the only account of
+        what somebody said, and a search over notes alone would find the small
+        fraction of the corpus that got triaged. Each hit says which it is —
+        what a person decided to write down and what they happened to say into
+        a phone are different facts.
+
+        The query language is Postgres `websearch_to_tsquery`: bare words are
+        ANDed, "quoted phrases" are phrases, `OR` is OR, a leading `-` excludes.
+      operationId: search
+      x-chronicle-policy: member
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: The query. One made only of punctuation matches nothing and is refused as an empty question rather than answered as an empty corpus.
+          schema:
+            type: string
+            minLength: 1
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: the top hits, best first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResults"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/WikiUnconfigured" }
+
 components:
   securitySchemes:
     # ONE credential, two ways of presenting it. `sessionToken` reads the
@@ -959,6 +1299,34 @@ components:
       schema:
         type: integer
         minimum: 1
+    NoteRef:
+      name: ref
+      in: path
+      required: true
+      description: |
+        A note reference, parsed leniently — `CHR-0311`, `chr-311` and
+        `CHR-00311` all name note 311 — because people quote these by hand.
+        Rendered strictly everywhere in a payload, as `CHR-0311`.
+      schema:
+        type: string
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: |
+        Opaque; the `next_cursor` of the previous page. Absent means the
+        start. Never an offset: every list here is over an append-only table,
+        and an offset silently repeats and skips rows as new ones land.
+      schema:
+        type: string
+    PagePath:
+      name: page
+      in: query
+      required: true
+      description: A page path, `estate/conventions/naming`. A redirect left by a move is followed.
+      schema:
+        type: string
+        minLength: 1
     SessionId:
       name: id
       in: path
@@ -983,6 +1351,15 @@ components:
         format: uuid
 
   headers:
+    ETag:
+      description: |
+        The note's current revision id, quoted. Send it back as
+        `If-None-Match`. It changes when and only when a revision is appended,
+        because the payload carries nothing else that can change — no upstream
+        state, by ruling 3.
+      required: true
+      schema:
+        type: string
     UploadOffset:
       description: |
         How many bytes the server holds. On a 409 or a 408 this is the resume
@@ -1110,6 +1487,35 @@ components:
         this deployment has no audio store, so there is nowhere to put a memo.
         503 and not 404, on the rule this API states in four places: "not
         configured here" and "wrong URL" are different facts.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Gone:
+      description: |
+        the note was soft-deleted. The tombstone says by whom and when, and
+        deliberately nothing else — no title, no body. Undelete makes the same
+        URL answer 200 again.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/NoteTombstone"
+    PersonRequired:
+      description: |
+        the session belongs to an agent, and authored text needs a confirming
+        person. `note_revisions_guard` (CH041) refuses the write in the store;
+        this is that refusal, answered before the round trip where the kind is
+        already known and by the store where it is not.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    WikiUnconfigured:
+      description: |
+        this router was assembled with no notes store behind it. `serve` always
+        supplies one, so no deployment reaches this; declared because the
+        handler answers it, and driven by the test that builds the router
+        without one.
       content:
         application/json:
           schema:
@@ -2276,3 +2682,290 @@ components:
             `not_in_capture` and `ambiguous` are recoverable; `held`, the only
             resolved outcome, is a constant false. Present whenever Amber
             answered and absent for every other system.
+
+    # ── PAGES AND NOTES ─────────────────────────────────────────────────────
+    # E5's types transcribed (CHRN-98), not redesigned. Titles and bodies live
+    # on revisions and never on the note row, so a rename is a revision exactly
+    # as an edit is; the note-level `title` and `body` here are the CURRENT
+    # revision's, and `revision` says which one that is.
+
+    Page:
+      type: object
+      required: [id, path, slug, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        path:
+          type: string
+          description: Derived from ancestry at read time, never stored — so it cannot be stale.
+        slug: { type: string }
+        parent_id:
+          type: string
+          format: uuid
+          description: Absent on a root page.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    PageTree:
+      type: object
+      required: [paths]
+      properties:
+        paths:
+          type: array
+          description: Every page's current path, sorted. The tree is a property of the strings.
+          items: { type: string }
+
+    NewPageRequest:
+      type: object
+      required: [path]
+      properties:
+        path:
+          type: string
+          minLength: 1
+          description: |
+            The full path of the page to create. Every segment but the last
+            must already exist; the last is the new slug — lowercase
+            alphanumeric words joined by single hyphens.
+
+    NoteSummary:
+      type: object
+      description: A note as a list carries it — enough to render a row and follow it.
+      required: [ref, title, page, created_at, updated_at]
+      properties:
+        ref:
+          type: string
+          description: "`CHR-0311`. Permanent: the number is minted once and never reused."
+        title: { type: string }
+        page:
+          type: string
+          description: The path of the page it is filed on, current as of this read.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    NoteList:
+      type: object
+      required: [page, items]
+      properties:
+        page:
+          $ref: "#/components/schemas/Page"
+        moved_from:
+          type: string
+          description: |
+            Present when the path asked for was a redirect: the page has moved
+            and this is the old path. A client holding it should update its
+            link; an operator seeing it in a log knows an old path is still in
+            circulation.
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/NoteSummary"
+        next_cursor:
+          type: string
+          description: Absent at the end.
+
+    Note:
+      description: |
+        A note, as `getNote` answers it. Tier 2. `html` is the current body
+        rendered — safe to embed, because the renderer passes no raw HTML
+        through — and `references` are the estate references that body names,
+        as descriptors: derived from the text by a deterministic scan, carrying
+        no upstream state and nothing that can go stale. Resolve them with
+        `POST /references/resolve`.
+      allOf:
+        - $ref: "#/components/schemas/NoteSummary"
+        - type: object
+          required: [body, html, references, revision, resolved_from]
+          properties:
+            body:
+              type: string
+              description: The current revision's markdown, raw, for an editor.
+            html:
+              type: string
+            references:
+              type: array
+              description: In order of appearance; a token named three times appears three times.
+              items:
+                $ref: "#/components/schemas/ReferenceDescriptor"
+              x-go-type-skip-optional-pointer: true
+            revision:
+              $ref: "#/components/schemas/RevisionMeta"
+            resolved_from:
+              type: array
+              description: |
+                The discussions that concluded into this note — the reverse
+                half of "linked both ways" (CHRN-46), read from
+                `tier2.discussions` rather than stored on the note, because a
+                note may be what several threads concluded. Empty when none.
+              items:
+                $ref: "#/components/schemas/DiscussionSummary"
+              x-go-type-skip-optional-pointer: true
+
+    NoteTombstone:
+      type: object
+      description: |
+        What a soft-deleted note answers with. The note existed and was
+        withdrawn; this says by whom and when and nothing else. Leaks, on
+        purpose, that a note with this number once existed to anyone who may
+        read notes at all.
+      required: [ref, deleted_at, deleted_by]
+      properties:
+        ref: { type: string }
+        deleted_at: { type: string, format: date-time }
+        deleted_by: { type: string, format: uuid }
+
+    RevisionMeta:
+      type: object
+      description: Which revision, by whom, and how it came to be — without its text.
+      required: [id, seq, created_at, author_id]
+      properties:
+        id: { type: string, format: uuid }
+        seq:
+          type: integer
+          description: 1 for the first revision. Only ever grows; a restore appends.
+        created_at: { type: string, format: date-time }
+        author_id:
+          type: string
+          format: uuid
+          description: Whose words these are. May be an agent, for a Scribe-routed memo.
+        confirmed_by:
+          type: string
+          format: uuid
+          description: |
+            Who agreed to this text landing — never an agent. A different
+            question from `author_id`. Absent only on rows written before the
+            guard existed.
+        verb:
+          type: string
+          enum: [create, append, supersede, relate]
+          description: What a person confirmed about a Scribe proposal. Absent when somebody typed the text directly.
+        memo_id:
+          type: string
+          format: uuid
+          description: The memo this text came from, when it came from one.
+        restored_from:
+          type: string
+          format: uuid
+          description: The revision this one reproduces, when it is a restore.
+
+    Revision:
+      description: A revision with its text — history is what was written, raw.
+      allOf:
+        - $ref: "#/components/schemas/RevisionMeta"
+        - type: object
+          required: [title, body]
+          properties:
+            title: { type: string }
+            body: { type: string }
+
+    RevisionList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Revision"
+        next_cursor:
+          type: string
+          description: Absent at the end.
+
+    NewNoteRequest:
+      type: object
+      required: [page, title, body]
+      properties:
+        page:
+          type: string
+          minLength: 1
+          description: The path to file it on. Must exist; redirects are not followed.
+        title:
+          type: string
+          minLength: 1
+        body:
+          type: string
+          description: Markdown, stored raw.
+
+    AppendRevisionRequest:
+      type: object
+      required: [body]
+      properties:
+        title:
+          type: string
+          description: Omitted keeps the current title.
+        body:
+          type: string
+          description: Markdown, stored raw. The whole new body, not a diff.
+
+    AppendResult:
+      type: object
+      required: [revision, followed]
+      properties:
+        revision:
+          $ref: "#/components/schemas/RevisionMeta"
+        followed:
+          $ref: "#/components/schemas/RevisionPointer"
+
+    RevisionPointer:
+      type: object
+      description: The revision that was current when the request was read.
+      required: [id, seq]
+      properties:
+        id: { type: string, format: uuid }
+        seq: { type: integer }
+
+    DiscussionSummary:
+      type: object
+      description: A thread, as a note's provenance names it. CHRN-99 carries the full thread.
+      required: [ref, title, resolved_at]
+      properties:
+        ref:
+          type: string
+          description: "`DSC-0007`."
+        title: { type: string }
+        resolved_at: { type: string, format: date-time }
+
+    # ── SEARCH ──────────────────────────────────────────────────────────────
+    SearchResults:
+      type: object
+      required: [query, limit, items]
+      properties:
+        query: { type: string }
+        limit:
+          type: integer
+          description: The cap the answer was clamped to.
+        items:
+          type: array
+          description: Best first. Not a page of anything.
+          items:
+            $ref: "#/components/schemas/SearchHit"
+
+    SearchHit:
+      type: object
+      description: |
+        One result. `kind` says which of the two field sets is present — a
+        note carries `ref` and `title`, a transcript carries `memo_id` and
+        `model` — and they are mutually exclusive.
+      required: [kind, snippet, rank, created_at]
+      properties:
+        kind:
+          type: string
+          enum: [note, transcript]
+          description: Authored versus transcribed, which is the distinction that is not cosmetic.
+        ref:
+          type: string
+          description: "`CHR-0311`, on a note hit."
+        title:
+          type: string
+          description: On a note hit.
+        memo_id:
+          type: string
+          format: uuid
+          description: On a transcript hit.
+        model:
+          type: string
+          description: On a transcript hit. Runner-qualified, e.g. `whisper.cpp/small.en`, so the operator can see which decode matched.
+        snippet:
+          type: string
+          description: Up to two fragments around the match, matches wrapped in `<b>`, fragments joined by ` … `.
+        rank:
+          type: number
+          format: float
+        created_at: { type: string, format: date-time }

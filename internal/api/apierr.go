@@ -70,6 +70,12 @@ const (
 	codeReferenceMismatch      = "reference_mismatch"
 	codeReferencesUnconfigured = "references_unconfigured"
 
+	// The wiki (CHRN-98). person_required is CH041 on the wire: authored text
+	// needs a confirming person. slug_taken is two rows claiming one path.
+	codeWikiUnconfigured = "wiki_unconfigured"
+	codePersonRequired   = "person_required"
+	codeSlugTaken        = "slug_taken"
+
 	codeAudioUnconfigured         = "audio_unconfigured"
 	codeTranscriptionUnconfigured = "transcription_unconfigured"
 	codeAccountsUnconfigured      = "accounts_unconfigured"

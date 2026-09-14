@@ -186,16 +186,16 @@ func (e ReferenceDescriptorSystem) Valid() bool {
 
 // Defines values for ReferenceDescriptorTarget.
 const (
-	Discussion ReferenceDescriptorTarget = "discussion"
-	Note       ReferenceDescriptorTarget = "note"
+	ReferenceDescriptorTargetDiscussion ReferenceDescriptorTarget = "discussion"
+	ReferenceDescriptorTargetNote       ReferenceDescriptorTarget = "note"
 )
 
 // Valid indicates whether the value is a known member of the ReferenceDescriptorTarget enum.
 func (e ReferenceDescriptorTarget) Valid() bool {
 	switch e {
-	case Discussion:
+	case ReferenceDescriptorTargetDiscussion:
 		return true
-	case Note:
+	case ReferenceDescriptorTargetNote:
 		return true
 	default:
 		return false
@@ -229,6 +229,72 @@ func (e ResolutionState) Valid() bool {
 	}
 }
 
+// Defines values for RevisionVerb.
+const (
+	RevisionVerbAppend    RevisionVerb = "append"
+	RevisionVerbCreate    RevisionVerb = "create"
+	RevisionVerbRelate    RevisionVerb = "relate"
+	RevisionVerbSupersede RevisionVerb = "supersede"
+)
+
+// Valid indicates whether the value is a known member of the RevisionVerb enum.
+func (e RevisionVerb) Valid() bool {
+	switch e {
+	case RevisionVerbAppend:
+		return true
+	case RevisionVerbCreate:
+		return true
+	case RevisionVerbRelate:
+		return true
+	case RevisionVerbSupersede:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RevisionMetaVerb.
+const (
+	RevisionMetaVerbAppend    RevisionMetaVerb = "append"
+	RevisionMetaVerbCreate    RevisionMetaVerb = "create"
+	RevisionMetaVerbRelate    RevisionMetaVerb = "relate"
+	RevisionMetaVerbSupersede RevisionMetaVerb = "supersede"
+)
+
+// Valid indicates whether the value is a known member of the RevisionMetaVerb enum.
+func (e RevisionMetaVerb) Valid() bool {
+	switch e {
+	case RevisionMetaVerbAppend:
+		return true
+	case RevisionMetaVerbCreate:
+		return true
+	case RevisionMetaVerbRelate:
+		return true
+	case RevisionMetaVerbSupersede:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SearchHitKind.
+const (
+	SearchHitKindNote       SearchHitKind = "note"
+	SearchHitKindTranscript SearchHitKind = "transcript"
+)
+
+// Valid indicates whether the value is a known member of the SearchHitKind enum.
+func (e SearchHitKind) Valid() bool {
+	switch e {
+	case SearchHitKindNote:
+		return true
+	case SearchHitKindTranscript:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for UploadStateStatus.
 const (
 	Complete   UploadStateStatus = "complete"
@@ -250,6 +316,24 @@ func (e UploadStateStatus) Valid() bool {
 // AcceptRequest defines model for AcceptRequest.
 type AcceptRequest struct {
 	Items []TriageDecision `json:"items"`
+}
+
+// AppendResult defines model for AppendResult.
+type AppendResult struct {
+	// Followed The revision that was current when the request was read.
+	Followed RevisionPointer `json:"followed"`
+
+	// Revision Which revision, by whom, and how it came to be — without its text.
+	Revision RevisionMeta `json:"revision"`
+}
+
+// AppendRevisionRequest defines model for AppendRevisionRequest.
+type AppendRevisionRequest struct {
+	// Body Markdown, stored raw. The whole new body, not a diff.
+	Body string `json:"body"`
+
+	// Title Omitted keeps the current title.
+	Title *string `json:"title,omitempty"`
 }
 
 // BacklogReport defines model for BacklogReport.
@@ -364,6 +448,14 @@ type DeviceSession struct {
 	DeviceLabel string             `json:"device_label"`
 	Id          openapi_types.UUID `json:"id"`
 	LastSeenAt  *time.Time         `json:"last_seen_at"`
+}
+
+// DiscussionSummary A thread, as a note's provenance names it. CHRN-99 carries the full thread.
+type DiscussionSummary struct {
+	// Ref `DSC-0007`.
+	Ref        string    `json:"ref"`
+	ResolvedAt time.Time `json:"resolved_at"`
+	Title      string    `json:"title"`
 }
 
 // DiskReport defines model for DiskReport.
@@ -537,6 +629,24 @@ type Mismatch struct {
 	Ref string `json:"ref"`
 }
 
+// NewNoteRequest defines model for NewNoteRequest.
+type NewNoteRequest struct {
+	// Body Markdown, stored raw.
+	Body string `json:"body"`
+
+	// Page The path to file it on. Must exist; redirects are not followed.
+	Page  string `json:"page"`
+	Title string `json:"title"`
+}
+
+// NewPageRequest defines model for NewPageRequest.
+type NewPageRequest struct {
+	// Path The full path of the page to create. Every segment but the last
+	// must already exist; the last is the new slug — lowercase
+	// alphanumeric words joined by single hyphens.
+	Path string `json:"path"`
+}
+
 // NewUserRequest defines model for NewUserRequest.
 type NewUserRequest struct {
 	DisplayName *string `json:"display_name,omitempty"`
@@ -548,6 +658,77 @@ type NewUserRequest struct {
 	// an owner and never confirms authored text — `note_revisions_guard`
 	// refuses any revision whose `confirmed_by` names one.
 	Kind *string `json:"kind,omitempty"`
+}
+
+// Note A note, as `getNote` answers it. Tier 2. `html` is the current body
+// rendered — safe to embed, because the renderer passes no raw HTML
+// through — and `references` are the estate references that body names,
+// as descriptors: derived from the text by a deterministic scan, carrying
+// no upstream state and nothing that can go stale. Resolve them with
+// `POST /references/resolve`.
+type Note struct {
+	// Body The current revision's markdown, raw, for an editor.
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"created_at"`
+	Html      string    `json:"html"`
+
+	// Page The path of the page it is filed on, current as of this read.
+	Page string `json:"page"`
+
+	// Ref `CHR-0311`. Permanent: the number is minted once and never reused.
+	Ref string `json:"ref"`
+
+	// References In order of appearance; a token named three times appears three times.
+	References []ReferenceDescriptor `json:"references"`
+
+	// ResolvedFrom The discussions that concluded into this note — the reverse
+	// half of "linked both ways" (CHRN-46), read from
+	// `tier2.discussions` rather than stored on the note, because a
+	// note may be what several threads concluded. Empty when none.
+	ResolvedFrom []DiscussionSummary `json:"resolved_from"`
+
+	// Revision Which revision, by whom, and how it came to be — without its text.
+	Revision  RevisionMeta `json:"revision"`
+	Title     string       `json:"title"`
+	UpdatedAt time.Time    `json:"updated_at"`
+}
+
+// NoteList defines model for NoteList.
+type NoteList struct {
+	Items []NoteSummary `json:"items"`
+
+	// MovedFrom Present when the path asked for was a redirect: the page has moved
+	// and this is the old path. A client holding it should update its
+	// link; an operator seeing it in a log knows an old path is still in
+	// circulation.
+	MovedFrom *string `json:"moved_from,omitempty"`
+
+	// NextCursor Absent at the end.
+	NextCursor *string `json:"next_cursor,omitempty"`
+	Page       Page    `json:"page"`
+}
+
+// NoteSummary A note as a list carries it — enough to render a row and follow it.
+type NoteSummary struct {
+	CreatedAt time.Time `json:"created_at"`
+
+	// Page The path of the page it is filed on, current as of this read.
+	Page string `json:"page"`
+
+	// Ref `CHR-0311`. Permanent: the number is minted once and never reused.
+	Ref       string    `json:"ref"`
+	Title     string    `json:"title"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// NoteTombstone What a soft-deleted note answers with. The note existed and was
+// withdrawn; this says by whom and when and nothing else. Leaks, on
+// purpose, that a note with this number once existed to anyone who may
+// read notes at all.
+type NoteTombstone struct {
+	DeletedAt time.Time          `json:"deleted_at"`
+	DeletedBy openapi_types.UUID `json:"deleted_by"`
+	Ref       string             `json:"ref"`
 }
 
 // OpenUploadRequest defines model for OpenUploadRequest.
@@ -596,6 +777,26 @@ type Override struct {
 
 // OverrideVerb defines model for Override.Verb.
 type OverrideVerb string
+
+// Page defines model for Page.
+type Page struct {
+	CreatedAt time.Time          `json:"created_at"`
+	Id        openapi_types.UUID `json:"id"`
+
+	// ParentId Absent on a root page.
+	ParentId *openapi_types.UUID `json:"parent_id,omitempty"`
+
+	// Path Derived from ancestry at read time, never stored — so it cannot be stale.
+	Path      string    `json:"path"`
+	Slug      string    `json:"slug"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// PageTree defines model for PageTree.
+type PageTree struct {
+	// Paths Every page's current path, sorted. The tree is a property of the strings.
+	Paths []string `json:"paths"`
+}
 
 // PartialTranscript defines model for PartialTranscript.
 type PartialTranscript struct {
@@ -885,6 +1086,117 @@ type ResolveResponse struct {
 	Resolutions []Resolution `json:"resolutions"`
 }
 
+// Revision A revision with its text — history is what was written, raw.
+type Revision struct {
+	// AuthorId Whose words these are. May be an agent, for a Scribe-routed memo.
+	AuthorId openapi_types.UUID `json:"author_id"`
+	Body     string             `json:"body"`
+
+	// ConfirmedBy Who agreed to this text landing — never an agent. A different
+	// question from `author_id`. Absent only on rows written before the
+	// guard existed.
+	ConfirmedBy *openapi_types.UUID `json:"confirmed_by,omitempty"`
+	CreatedAt   time.Time           `json:"created_at"`
+	Id          openapi_types.UUID  `json:"id"`
+
+	// MemoId The memo this text came from, when it came from one.
+	MemoId *openapi_types.UUID `json:"memo_id,omitempty"`
+
+	// RestoredFrom The revision this one reproduces, when it is a restore.
+	RestoredFrom *openapi_types.UUID `json:"restored_from,omitempty"`
+
+	// Seq 1 for the first revision. Only ever grows; a restore appends.
+	Seq   int    `json:"seq"`
+	Title string `json:"title"`
+
+	// Verb What a person confirmed about a Scribe proposal. Absent when somebody typed the text directly.
+	Verb *RevisionVerb `json:"verb,omitempty"`
+}
+
+// RevisionVerb What a person confirmed about a Scribe proposal. Absent when somebody typed the text directly.
+type RevisionVerb string
+
+// RevisionList defines model for RevisionList.
+type RevisionList struct {
+	Items []Revision `json:"items"`
+
+	// NextCursor Absent at the end.
+	NextCursor *string `json:"next_cursor,omitempty"`
+}
+
+// RevisionMeta Which revision, by whom, and how it came to be — without its text.
+type RevisionMeta struct {
+	// AuthorId Whose words these are. May be an agent, for a Scribe-routed memo.
+	AuthorId openapi_types.UUID `json:"author_id"`
+
+	// ConfirmedBy Who agreed to this text landing — never an agent. A different
+	// question from `author_id`. Absent only on rows written before the
+	// guard existed.
+	ConfirmedBy *openapi_types.UUID `json:"confirmed_by,omitempty"`
+	CreatedAt   time.Time           `json:"created_at"`
+	Id          openapi_types.UUID  `json:"id"`
+
+	// MemoId The memo this text came from, when it came from one.
+	MemoId *openapi_types.UUID `json:"memo_id,omitempty"`
+
+	// RestoredFrom The revision this one reproduces, when it is a restore.
+	RestoredFrom *openapi_types.UUID `json:"restored_from,omitempty"`
+
+	// Seq 1 for the first revision. Only ever grows; a restore appends.
+	Seq int `json:"seq"`
+
+	// Verb What a person confirmed about a Scribe proposal. Absent when somebody typed the text directly.
+	Verb *RevisionMetaVerb `json:"verb,omitempty"`
+}
+
+// RevisionMetaVerb What a person confirmed about a Scribe proposal. Absent when somebody typed the text directly.
+type RevisionMetaVerb string
+
+// RevisionPointer The revision that was current when the request was read.
+type RevisionPointer struct {
+	Id  openapi_types.UUID `json:"id"`
+	Seq int                `json:"seq"`
+}
+
+// SearchHit One result. `kind` says which of the two field sets is present — a
+// note carries `ref` and `title`, a transcript carries `memo_id` and
+// `model` — and they are mutually exclusive.
+type SearchHit struct {
+	CreatedAt time.Time `json:"created_at"`
+
+	// Kind Authored versus transcribed, which is the distinction that is not cosmetic.
+	Kind SearchHitKind `json:"kind"`
+
+	// MemoId On a transcript hit.
+	MemoId *openapi_types.UUID `json:"memo_id,omitempty"`
+
+	// Model On a transcript hit. Runner-qualified, e.g. `whisper.cpp/small.en`, so the operator can see which decode matched.
+	Model *string `json:"model,omitempty"`
+	Rank  float32 `json:"rank"`
+
+	// Ref `CHR-0311`, on a note hit.
+	Ref *string `json:"ref,omitempty"`
+
+	// Snippet Up to two fragments around the match, matches wrapped in `<b>`, fragments joined by ` … `.
+	Snippet string `json:"snippet"`
+
+	// Title On a note hit.
+	Title *string `json:"title,omitempty"`
+}
+
+// SearchHitKind Authored versus transcribed, which is the distinction that is not cosmetic.
+type SearchHitKind string
+
+// SearchResults defines model for SearchResults.
+type SearchResults struct {
+	// Items Best first. Not a page of anything.
+	Items []SearchHit `json:"items"`
+
+	// Limit The cap the answer was clamped to.
+	Limit int    `json:"limit"`
+	Query string `json:"query"`
+}
+
 // Session A signed-in session. `session_token` is shown HERE AND NEVER AGAIN —
 // there is no endpoint that returns it a second time, because it is stored
 // hashed.
@@ -1112,8 +1424,17 @@ type WindowReport struct {
 	ProjectedBytes int64 `json:"projected_bytes"`
 }
 
+// Cursor defines model for Cursor.
+type Cursor = string
+
 // Limit defines model for Limit.
 type Limit = int
+
+// NoteRef defines model for NoteRef.
+type NoteRef = string
+
+// PagePath defines model for PagePath.
+type PagePath = string
 
 // SessionId defines model for SessionId.
 type SessionId = openapi_types.UUID
@@ -1130,11 +1451,20 @@ type BadRequest = Error
 // Forbidden defines model for Forbidden.
 type Forbidden = Error
 
+// Gone What a soft-deleted note answers with. The note existed and was
+// withdrawn; this says by whom and when and nothing else. Leaks, on
+// purpose, that a note with this number once existed to anyone who may
+// read notes at all.
+type Gone = NoteTombstone
+
 // InternalError defines model for InternalError.
 type InternalError = Error
 
 // NotFound defines model for NotFound.
 type NotFound = Error
+
+// PersonRequired defines model for PersonRequired.
+type PersonRequired = Error
 
 // RateLimited defines model for RateLimited.
 type RateLimited = Error
@@ -1174,10 +1504,59 @@ type UploadConflict struct {
 // UploadsUnconfigured defines model for UploadsUnconfigured.
 type UploadsUnconfigured = Error
 
+// WikiUnconfigured defines model for WikiUnconfigured.
+type WikiUnconfigured = Error
+
 // AppendChunkParams defines parameters for AppendChunk.
 type AppendChunkParams struct {
 	// UploadOffset The offset these bytes start at. A disagreement answers 409 carrying the server's.
 	UploadOffset int64 `json:"Upload-Offset"`
+}
+
+// ListNotesParams defines parameters for ListNotes.
+type ListNotesParams struct {
+	// Page A page path, `estate/conventions/naming`. A redirect left by a move is followed.
+	Page PagePath `form:"page" json:"page"`
+
+	// Limit How many to return. CLAMPED SERVER-SIDE, and the response echoes what it
+	// was clamped to — a client composing a batch needs the cap without a
+	// second document to consult.
+	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor Opaque; the `next_cursor` of the previous page. Absent means the
+	// start. Never an offset: every list here is over an append-only table,
+	// and an offset silently repeats and skips rows as new ones land.
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
+// GetNoteParams defines parameters for GetNote.
+type GetNoteParams struct {
+	// IfNoneMatch The `ETag` of the last read. A match answers `304`.
+	IfNoneMatch *string `json:"If-None-Match,omitempty"`
+}
+
+// ListNoteRevisionsParams defines parameters for ListNoteRevisions.
+type ListNoteRevisionsParams struct {
+	// Limit How many to return. CLAMPED SERVER-SIDE, and the response echoes what it
+	// was clamped to — a client composing a batch needs the cap without a
+	// second document to consult.
+	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor Opaque; the `next_cursor` of the previous page. Absent means the
+	// start. Never an offset: every list here is over an append-only table,
+	// and an offset silently repeats and skips rows as new ones land.
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
+// SearchParams defines parameters for Search.
+type SearchParams struct {
+	// Q The query. One made only of punctuation matches nothing and is refused as an empty question rather than answered as an empty corpus.
+	Q string `form:"q" json:"q"`
+
+	// Limit How many to return. CLAMPED SERVER-SIDE, and the response echoes what it
+	// was clamped to — a client composing a batch needs the cap without a
+	// second document to consult.
+	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
 // GetTriageBatchParams defines parameters for GetTriageBatch.
@@ -1207,6 +1586,15 @@ type CreateSessionJSONRequestBody = SignInRequest
 
 // OpenUploadJSONRequestBody defines body for OpenUpload for application/json ContentType.
 type OpenUploadJSONRequestBody = OpenUploadRequest
+
+// CreateNoteJSONRequestBody defines body for CreateNote for application/json ContentType.
+type CreateNoteJSONRequestBody = NewNoteRequest
+
+// AppendRevisionJSONRequestBody defines body for AppendRevision for application/json ContentType.
+type AppendRevisionJSONRequestBody = AppendRevisionRequest
+
+// CreatePageJSONRequestBody defines body for CreatePage for application/json ContentType.
+type CreatePageJSONRequestBody = NewPageRequest
 
 // ResolveReferencesJSONRequestBody defines body for ResolveReferences for application/json ContentType.
 type ResolveReferencesJSONRequestBody = ResolveRequest
@@ -1344,12 +1732,36 @@ type ServerInterface interface {
 	// AppendChunk Append a chunk.
 	// (PATCH /memos/uploads/{id})
 	AppendChunk(w http.ResponseWriter, r *http.Request, id UploadId, params AppendChunkParams)
+	// ListNotes The live notes filed on a page.
+	// (GET /notes)
+	ListNotes(w http.ResponseWriter, r *http.Request, params ListNotesParams)
+	// CreateNote Create a note, as the authenticated person.
+	// (POST /notes)
+	CreateNote(w http.ResponseWriter, r *http.Request)
+	// GetNote A note, rendered, with the references its text names.
+	// (GET /notes/{ref})
+	GetNote(w http.ResponseWriter, r *http.Request, ref NoteRef, params GetNoteParams)
+	// ListNoteRevisions A note's history, oldest first, with each revision's text.
+	// (GET /notes/{ref}/revisions)
+	ListNoteRevisions(w http.ResponseWriter, r *http.Request, ref NoteRef, params ListNoteRevisionsParams)
+	// AppendRevision Append a revision.
+	// (POST /notes/{ref}/revisions)
+	AppendRevision(w http.ResponseWriter, r *http.Request, ref NoteRef)
+	// ListPages The whole page tree, as sorted paths.
+	// (GET /pages)
+	ListPages(w http.ResponseWriter, r *http.Request)
+	// CreatePage Create a page at a path.
+	// (POST /pages)
+	CreatePage(w http.ResponseWriter, r *http.Request)
 	// GetReadyz Readiness. Pings the database.
 	// (GET /readyz)
 	GetReadyz(w http.ResponseWriter, r *http.Request)
 	// ResolveReferences Resolve a batch of references into live cards.
 	// (POST /references/resolve)
 	ResolveReferences(w http.ResponseWriter, r *http.Request)
+	// Search Full-text search across notes and transcripts.
+	// (GET /search)
+	Search(w http.ResponseWriter, r *http.Request, params SearchParams)
 	// AcceptTriage Confirm a batch of decisions.
 	// (POST /triage/accept)
 	AcceptTriage(w http.ResponseWriter, r *http.Request)
@@ -1756,6 +2168,238 @@ func (siw *ServerInterfaceWrapper) AppendChunk(w http.ResponseWriter, r *http.Re
 	handler.ServeHTTP(w, r)
 }
 
+// ListNotes operation middleware
+func (siw *ServerInterfaceWrapper) ListNotes(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListNotesParams
+
+	// ------------- Required query parameter "page" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "page", r.URL.Query(), &params.Page, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "page"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "page", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "cursor", r.URL.Query(), &params.Cursor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "cursor"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListNotes(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateNote operation middleware
+func (siw *ServerInterfaceWrapper) CreateNote(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateNote(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetNote operation middleware
+func (siw *ServerInterfaceWrapper) GetNote(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "ref" -------------
+	var ref NoteRef
+
+	err = runtime.BindStyledParameterWithOptions("simple", "ref", r.PathValue("ref"), &ref, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "ref", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetNoteParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "If-None-Match" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("If-None-Match")]; found {
+		var IfNoneMatch string
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "If-None-Match", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "If-None-Match", valueList[0], &IfNoneMatch, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "If-None-Match", Err: err})
+			return
+		}
+
+		params.IfNoneMatch = &IfNoneMatch
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetNote(w, r, ref, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListNoteRevisions operation middleware
+func (siw *ServerInterfaceWrapper) ListNoteRevisions(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "ref" -------------
+	var ref NoteRef
+
+	err = runtime.BindStyledParameterWithOptions("simple", "ref", r.PathValue("ref"), &ref, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "ref", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListNoteRevisionsParams
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "cursor", r.URL.Query(), &params.Cursor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "cursor"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListNoteRevisions(w, r, ref, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AppendRevision operation middleware
+func (siw *ServerInterfaceWrapper) AppendRevision(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "ref" -------------
+	var ref NoteRef
+
+	err = runtime.BindStyledParameterWithOptions("simple", "ref", r.PathValue("ref"), &ref, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "ref", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AppendRevision(w, r, ref)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListPages operation middleware
+func (siw *ServerInterfaceWrapper) ListPages(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListPages(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreatePage operation middleware
+func (siw *ServerInterfaceWrapper) CreatePage(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreatePage(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetReadyz operation middleware
 func (siw *ServerInterfaceWrapper) GetReadyz(w http.ResponseWriter, r *http.Request) {
 
@@ -1775,6 +2419,52 @@ func (siw *ServerInterfaceWrapper) ResolveReferences(w http.ResponseWriter, r *h
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ResolveReferences(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// Search operation middleware
+func (siw *ServerInterfaceWrapper) Search(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params SearchParams
+
+	// ------------- Required query parameter "q" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "q", r.URL.Query(), &params.Q, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "q"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "q", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.Search(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2039,6 +2729,14 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/triage/deferred", wrapper.ListDeferred)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/triage", wrapper.GetTriageReport)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/references/resolve", wrapper.ResolveReferences)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/pages", wrapper.ListPages)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/pages", wrapper.CreatePage)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/notes", wrapper.ListNotes)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/notes", wrapper.CreateNote)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/notes/{ref}", wrapper.GetNote)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/notes/{ref}/revisions", wrapper.ListNoteRevisions)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/notes/{ref}/revisions", wrapper.AppendRevision)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/search", wrapper.Search)
 
 	return m
 }

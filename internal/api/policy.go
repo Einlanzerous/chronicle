@@ -123,6 +123,20 @@ var routePolicy = map[string]policy{
 	// and a card is a read. What bounds this surface is the cap of fifty per
 	// call and the resolver's own budget, not the sign-in limiter.
 	"POST /references/resolve": policyMember,
+
+	// THE WIKI (CHRN-98): pages, notes and search. Member and not owner:
+	// every account reads and writes notes, and the one rule about WHO may
+	// confirm authored text — a person, never an agent — is the store's
+	// (CH041), answered by requirePerson before the round trip and by the
+	// guard after it. Not this table's to express.
+	"GET /pages":                  policyMember,
+	"POST /pages":                 policyMember,
+	"GET /notes":                  policyMember,
+	"POST /notes":                 policyMember,
+	"GET /notes/{ref}":            policyMember,
+	"GET /notes/{ref}/revisions":  policyMember,
+	"POST /notes/{ref}/revisions": policyMember,
+	"GET /search":                 policyMember,
 }
 
 // policyRouter is the ServeMux the generated registration writes into.

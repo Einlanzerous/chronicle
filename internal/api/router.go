@@ -14,6 +14,8 @@ import (
 
 	"github.com/Einlanzerous/chronicle/internal/api/wire"
 	"github.com/Einlanzerous/chronicle/internal/audio"
+	"github.com/Einlanzerous/chronicle/internal/markdown"
+	"github.com/Einlanzerous/chronicle/internal/resolve"
 	"github.com/Einlanzerous/chronicle/internal/store"
 	"github.com/Einlanzerous/chronicle/internal/upload"
 )
@@ -124,6 +126,20 @@ type Deps struct {
 	// namespace, and nothing to cache or to go stale.
 	LocalReferences LocalReferences
 
+	// Wiki is E5's store, reachable (CHRN-98): pages, notes, revisions and
+	// search. Nil only on a router assembled without one, and the eight
+	// routes then answer 503 rather than dereferencing it.
+	Wiki Wiki
+
+	// Keys is the live Switchyard project key set — the renderer's predicate
+	// for which KEY-N tokens are references, and the miss feed's destination.
+	// Nil when no tracker is configured: the renderer then runs the pure path
+	// (CHR, DSC and amber1 mark; every ticket-shaped token stays prose) and
+	// there is nothing to report a miss to. A *resolve.Keys, not the
+	// interface, so that a nil pointer cannot arrive here as a non-nil
+	// interface and be dereferenced inside a render.
+	Keys *resolve.Keys
+
 	// Now is the clock a local resolution stamps its fetched_at from. Nil is
 	// time.Now. Injectable so a test can hold the local half of a batch to
 	// the same instant the resolver's own clock gives the upstream half — a
@@ -161,6 +177,9 @@ type api struct {
 	references    References
 	localRefs     LocalReferences
 	now           func() time.Time
+	wiki          Wiki
+	keys          *resolve.Keys
+	renderer      *markdown.Renderer
 }
 
 // NewRouter builds the HTTP handler.
@@ -211,10 +230,20 @@ func NewRouter(d Deps) http.Handler {
 		references:    d.References,
 		localRefs:     d.LocalReferences,
 		now:           d.Now,
+		wiki:          d.Wiki,
+		keys:          d.Keys,
 	}
 	if a.now == nil {
 		a.now = time.Now
 	}
+	// THE PREDICATE IS NIL WHEN THE KEY SET IS, and the two nils must not be
+	// confused: a nil *resolve.Keys stored in a markdown.ProjectKeys is a
+	// non-nil interface whose method dereferences nil on the first render.
+	var predicate markdown.ProjectKeys
+	if d.Keys != nil {
+		predicate = d.Keys
+	}
+	a.renderer = newRenderer(predicate)
 
 	mux := http.NewServeMux()
 
