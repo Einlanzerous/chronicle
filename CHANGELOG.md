@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.14.0](https://github.com/Einlanzerous/chronicle/compare/v1.13.0...v1.14.0) (2026-09-14)
+
+
+### Features
+
+* **api:** discussions over HTTP — threads, replies, unread and resolve (CHRN-99) ([#92](https://github.com/Einlanzerous/chronicle/issues/92)) ([7ab94ac](https://github.com/Einlanzerous/chronicle/commit/7ab94ac38b0aaa0255b100e2c6e381c5d301dcf1))
+* **api:** notes, pages and search over HTTP (CHRN-98) ([#91](https://github.com/Einlanzerous/chronicle/issues/91)) ([d06f94e](https://github.com/Einlanzerous/chronicle/commit/d06f94e011612d3ad31b6f665cf129622020ba43))
+* **api:** reference resolution over HTTP, and the transports registered at last (CHRN-104) ([#90](https://github.com/Einlanzerous/chronicle/issues/90)) ([7be51ba](https://github.com/Einlanzerous/chronicle/commit/7be51ba7e03f0bcdd860c2f0d9deab6382a9661e))
+* **api:** the generated estate wiki over HTTP, from a read-only mount, and the tier-1 marking (CHRN-100) ([#93](https://github.com/Einlanzerous/chronicle/issues/93)) ([8d13c8c](https://github.com/Einlanzerous/chronicle/commit/8d13c8c1571562ebeb272eac82e726225802fc75))
+
+
+### Bug Fixes
+
+* **api:** two things the post-merge notes surfaced (CHRN-104) ([#88](https://github.com/Einlanzerous/chronicle/issues/88)) ([8db9925](https://github.com/Einlanzerous/chronicle/commit/8db9925e2c747250b881dd94d574d68b6e294e9e))
+
 ## [1.13.0](https://github.com/Einlanzerous/chronicle/compare/v1.12.0...v1.13.0) (2026-09-14)
 
 
