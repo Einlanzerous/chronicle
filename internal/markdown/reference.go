@@ -135,8 +135,10 @@ type Result struct {
 	// RETURNED AS DATA BECAUSE THIS PACKAGE HAS NO LOGGER AND SHOULD NOT GET
 	// ONE. A miss renders as ordinary prose, so nothing about the page says
 	// anything is wrong, and this slice is the only signal that the key set is
-	// stale or that somebody typed `SY-412`. The caller with a logger — CHRN-97's
-	// handler — logs it. Adding a dependency to a leaf package for a debug line
+	// stale or that somebody typed `SY-412`. The caller with a logger logs it:
+	// CHRN-98's note handler, which is what scans, per CHRN-97 ruling 3 — the
+	// note payload carries descriptors and never dials, so the scanner and the
+	// resolver are different callers and only the scanner sees a miss. Adding a dependency to a leaf package for a debug line
 	// is the wrong trade.
 	UnknownKeys []string
 }
