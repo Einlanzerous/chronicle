@@ -225,13 +225,11 @@ type Config struct {
 	// in a note into live upstream state (CHRN-50). Nothing else in Chronicle
 	// calls Amber, and nothing ever writes what it answers to a table.
 	//
-	// THE PAIR IS READ AND VALIDATED AT BOOT AND NOTHING DIALS YET, which is
-	// stated here rather than discovered: no surface renders a note today, and
-	// CHRN-97 — a decision ticket — owns whether references resolve server-side
-	// inside the note payload or client-side against an endpoint of their own.
-	// That is what decides where the transport is registered, so registering it
-	// here first would be answering CHRN-97's question by accident. A malformed
-	// URL still refuses to boot now rather than at the first citation.
+	// THE PAIR IS READ AND VALIDATED HERE AND DIALLED BY THE RESOLVER. `serve`
+	// registers the Amber transport in the composition root when both are set
+	// (CHRN-104, on CHRN-97 ruling 3: references resolve against their own
+	// endpoint, POST /references/resolve, and never inside a note payload). A
+	// malformed URL refuses to boot here rather than at the first citation.
 	//
 	// BOTH OR NEITHER. Amber fails closed — every /v1 route answers 401 without
 	// a bearer token and 503 when Amber itself has none — so a URL with no
@@ -585,14 +583,18 @@ type Scribe struct {
 	MaxAttempts int
 
 	// SwitchyardURL and SwitchyardToken are the whole of Chronicle's access to
-	// the estate's ticket tracker. THREE THINGS NOW USE THEM, and the list has
-	// grown twice since it was written down here:
+	// the estate's ticket tracker. FOUR THINGS NOW USE THEM, and the list has
+	// grown three times since it was written down here:
 	//
 	//   * the live project list rendered into the routing prompt (CHRN-31);
 	//   * creating a ticket when a memo routes to TICKET (CHRN-35), and
 	//     searching by memo id to recover a decision whose confirm never
 	//     landed (CHRN-33);
-	//   * the host of the deep link a triage result hands back to the client.
+	//   * the host of the deep link a triage result hands back to the client;
+	//   * resolving a ticket reference in a note into a live card, and the
+	//     project key set the scanner recognises references against
+	//     (CHRN-104) — which is why `serve` reads the pair whether or not the
+	//     Scribe is on.
 	//
 	// They live on Scribe rather than only on Config because `chronicle eval`
 	// must reach the catalogue with no database configured at all. Config

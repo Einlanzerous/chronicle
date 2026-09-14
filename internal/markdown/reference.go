@@ -353,3 +353,45 @@ func isAmberByte(b byte) bool {
 func isRefWordByte(b byte) bool {
 	return isAlnum(b) || b == '-' || b == '_' || b == '/'
 }
+
+// acceptAll is the predicate ParseReference scans under. Shape is decided here;
+// membership is not, and for a single token it is not this package's to ask.
+type acceptAll struct{}
+
+func (acceptAll) HasProject(string) bool { return true }
+
+// ParseReference parses ONE token under the grammar above and reports whether
+// the whole of it is a reference (CHRN-97 ruling 8, CHRN-104).
+//
+// ============================================================================
+// THE EXPORTED SINGLE-TOKEN PARSE, AND WHY IT TAKES NO PREDICATE.
+// ============================================================================
+//
+// The resolve endpoint receives descriptors a note payload handed out and must
+// re-derive System, Key, Target and Number from the token rather than believe
+// them -- the one field a client must never choose is which upstream gets
+// dialled. This is that derivation, over the same scanSegment the renderer and
+// Scan use, so there is one grammar and not two.
+//
+// It consults NO project key set, on purpose, and the header above already says
+// why: "SHAPE IS DECIDED HERE. MEMBERSHIP IS NOT." Membership is the scanner's
+// question -- should this prose become a card -- and the scanner is the one
+// caller of the miss feed. A parse that consulted the key set would either
+// refuse a token the scan accepted a minute ago because the set has since
+// refreshed, or become a second producer of misses. So a well-shaped KEY-N that
+// is not CHR or DSC parses as a Switchyard reference whatever the key, and
+// membership is answered where it belongs: by the tracker, with a 404 that
+// classifies as broken. A cold Chronicle with no key set at all can therefore
+// still resolve `SWY-389`, which is what lets a deployment with no tracker
+// answer `unconfigured` for it rather than refusing the request.
+//
+// The whole token must be the reference: `SWY-389 ` and `xSWY-389` are not one,
+// and neither is prose containing one. An empty string is not one either.
+func ParseReference(token string) (Reference, bool) {
+	src := []byte(token)
+	ms := scanSegment(src, 0, len(src), acceptAll{})
+	if len(ms) != 1 || ms[0].start != 0 || ms[0].end != len(src) || ms[0].ref.System == "" {
+		return Reference{}, false
+	}
+	return ms[0].ref, true
+}

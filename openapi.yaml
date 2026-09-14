@@ -75,6 +75,10 @@ tags:
     description: What the corpus costs, and whether the disk agrees with the database.
   - name: transcription
     description: How transcription is going, and which memos are stuck.
+  - name: references
+    description: |
+      Turning the references a note names into live cards. Linked, never
+      copied: nothing an upstream answers here is ever written to a table.
 
 paths:
   /healthz:
@@ -852,6 +856,79 @@ paths:
         "500": { $ref: "#/components/responses/InternalError" }
         "503": { $ref: "#/components/responses/TriageUnconfigured" }
 
+  # ── REFERENCES ──────────────────────────────────────────────────────────────
+  # The second phase of the two-phase render CHRN-97 ruling 3 picked. A note
+  # read (CHRN-98) hands back the descriptors its text produced and no upstream
+  # state at all; a client batches whichever of them it wants drawn as cards to
+  # this endpoint and gets one CHRN-51 Resolution each (CHRN-104).
+  #
+  # NOTHING HERE IS STORED. Switchyard and Amber are linked, never copied
+  # (CLAUDE.md invariant 2): the resolver's sixty-second cache dies with the
+  # process, and every answer carries the instant it was true.
+
+  /references/resolve:
+    post:
+      tags: [references]
+      summary: Resolve a batch of references into live cards.
+      description: |
+        Takes the descriptors a note payload handed out and answers one
+        resolution per descriptor, **keyed on `token`** — a token is unique
+        within one scan's output, so a client aligns answers without depending
+        on order. Order is preserved anyway.
+
+        **The server re-derives every descriptor from its `token`** (CHRN-97
+        ruling 8). `system`, `key`, `target` and `number` are parsed from the
+        token under the same grammar that produced them, and a descriptor that
+        disagrees with the grammar is refused with `400`. The one thing a
+        client may not choose is which upstream gets dialled: this is the one
+        code path in the design that leaves the process.
+
+        **Chronicle's own `CHR-` and `DSC-` references never leave the
+        process.** They resolve against the notes and discussions tables — no
+        network, no staleness. A soft-deleted note answers `broken` with
+        `outcome: deleted`, no title and no URL.
+
+        **This endpoint parses tokens; it does not scan documents, and it never
+        feeds the miss feed.** Whoever scans owns that — the note handler — and
+        a second caller would make one dead key in one note log twice per page
+        render.
+
+        At most 50 descriptors per call, which is CHRN-51's cap: a larger batch
+        could never be checked in one render, so it is refused rather than
+        silently truncated.
+      operationId: resolveReferences
+      x-chronicle-policy: member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResolveRequest"
+      responses:
+        "200":
+          description: one resolution per descriptor, in request order
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResolveResponse"
+        "400":
+          description: |
+            the body is malformed, empty or over the cap — or a descriptor
+            disagrees with its own token. `invalid_reference` is a token the
+            grammar does not recognise as a reference at all;
+            `reference_mismatch` is a descriptor whose `system`, `key`,
+            `target` or `number` is not what its token parses to. Both name
+            the offending position and neither echoes the token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/ReferencesUnconfigured" }
+
 components:
   securitySchemes:
     # ONE credential, two ways of presenting it. `sessionToken` reads the
@@ -1033,6 +1110,19 @@ components:
         this deployment has no audio store, so there is nowhere to put a memo.
         503 and not 404, on the rule this API states in four places: "not
         configured here" and "wrong URL" are different facts.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ReferencesUnconfigured:
+      description: |
+        this router was assembled with no reference resolver behind it.
+        `serve` always supplies one — a Chronicle with neither upstream
+        configured still resolves its own notes and answers `unconfigured` for
+        the rest, which is a true thing to say — so no deployment reaches
+        this. It is declared because the handler answers it, and a declared
+        status that no test drives is the one kind of drift `Conform` cannot
+        see; the test that drives it builds the router without one.
       content:
         application/json:
           schema:
@@ -1989,3 +2079,200 @@ components:
         this_week: { type: integer }
         older: { type: integer }
         oldest_captured_at: { type: string, format: date-time }
+
+    # ── REFERENCES ──────────────────────────────────────────────────────────
+    # CHRN-51's Resolution, serialised (CHRN-104). The five states are the
+    # contract; `upstream` is present when and only when an upstream answered;
+    # `fetched_at` is absent on exactly the two states where nothing was
+    # attempted (CHRN-97 ruling 7). Not a field added, not a state collapsed.
+
+    ReferenceDescriptor:
+      type: object
+      description: |
+        One estate reference as a note's text named it — CHRN-48's marker, as
+        data. Derived from authored text by a deterministic scan: nothing in it
+        is a copy of anything upstream, and nothing in it can go stale.
+
+        A note payload (CHRN-98) emits these and the resolve endpoint takes
+        them back. `token` is the text exactly as written and is never
+        normalised — `CHR-0311` and `CHR-311` both carry `number: 311` and
+        their own spelling — and everything else is what the grammar derives
+        from it, which is why the server re-derives it rather than believing
+        it.
+      required: [system, token]
+      properties:
+        system:
+          type: string
+          enum: [switchyard, amber, chronicle]
+          description: |
+            Which upstream owns the namespace. **Colour keys off this and never
+            off the project key** — coral is Switchyard, gold is Amber,
+            anywhere either resolves. With fifteen live project keys a marker
+            keyed on the project would make the estate colour rule a
+            fifteen-way mapping every client has to duplicate.
+        key:
+          type: string
+          description: |
+            The project key for `switchyard` (`SWY`, `CHRN`), and `CHR` or
+            `DSC` for `chronicle`. Absent for `amber`, whose citations carry no
+            key.
+        target:
+          type: string
+          enum: [note, discussion]
+          description: What a `chronicle` reference points at. Absent for the other two systems.
+        token:
+          type: string
+          description: The reference exactly as written.
+        number:
+          type: integer
+          format: int64
+          description: The number after the hyphen, for the `KEY-N` forms. Absent for `amber`.
+
+    ResolveRequest:
+      type: object
+      required: [references]
+      properties:
+        references:
+          type: array
+          minItems: 1
+          maxItems: 50
+          description: |
+            At most 50 — CHRN-51's cap, which counts attempts per render. The
+            bound is enforced server-side as well as declared, and a larger
+            batch is refused rather than truncated: a client that sent sixty
+            and got fifty back would hold ten cards it could never explain.
+          items:
+            $ref: "#/components/schemas/ReferenceDescriptor"
+
+    ResolveResponse:
+      type: object
+      required: [resolutions]
+      properties:
+        resolutions:
+          type: array
+          description: One per descriptor, in request order, each carrying its `token`.
+          items:
+            $ref: "#/components/schemas/Resolution"
+
+    Resolution:
+      type: object
+      description: |
+        What Chronicle can say about one reference, right now. **An answer
+        about a reference, never a copy of one.**
+
+        The one distinction everything rests on: a fact about the REFERENT is
+        not a fact about our ABILITY TO ASK. `upstream` is present when and
+        only when an upstream answered — `resolved` and `broken` — and absent
+        on the three states where nobody did. `state` says whether anybody
+        could ask.
+      required: [token, state]
+      properties:
+        token:
+          type: string
+          description: The descriptor's `token`, echoed so a client aligns the answer without depending on order.
+        state:
+          type: string
+          enum: [resolved, broken, unreachable, unconfigured, unchecked]
+          description: |
+            Five, not two, and the length is the point.
+
+            - `resolved` — the upstream answered and `upstream` is its answer.
+            - `broken` — the upstream answered that there is no such thing, or
+              that the reference is wrong. Still a fact about the referent, so
+              `upstream` is present with whatever the answer contained.
+            - `unreachable` — Chronicle ASKED and could not obtain an answer. A
+              fact about Chronicle's knowledge, and the one no upstream can
+              report. `last_resolved_at` says how long the outage has run.
+            - `unconfigured` — this deployment has no credential for that
+              upstream: nothing was dialled and nothing will be until a
+              redeploy. A permanent state and not an outage; a card reading
+              "unreachable" here would send somebody to check a service that
+              is fine.
+            - `unchecked` — NOBODY ASKED. The cap, the budget, or an earlier
+              failure in this batch declined to dial, and no claim about this
+              reference is being made. Draw it as "not checked", never as
+              "checking…" — that is the state that is never answered.
+        upstream:
+          $ref: "#/components/schemas/ResolutionUpstream"
+        fetched_at:
+          type: string
+          format: date-time
+          description: |
+            When the attempt was made. Present on `resolved`, `broken` and
+            `unreachable`; **absent on `unchecked` and `unconfigured`**, where
+            nothing was attempted (CHRN-97 ruling 7). Serialised as required
+            it would carry `0001-01-01T00:00:00Z` on exactly the two states
+            that exist to stop Chronicle making claims, and an ordinary
+            relative-time formatter renders that as "checked 2,025 years ago".
+            The Go type is a non-pointer that is zero there by convention; a
+            convention does not cross a language boundary, so the wire makes
+            the illegal state unrepresentable instead.
+        last_resolved_at:
+          type: string
+          format: date-time
+          description: |
+            When this reference last resolved SUCCESSFULLY, within this
+            process's memory. Absence means *never resolved within this
+            process's memory* — not *not resolved now*. It travels through an
+            `unreachable` so a card can say how long an outage has run; a
+            client that read absence as staleness would render a cold start as
+            an outage.
+        explain:
+          type: string
+          description: |
+            One sentence — the upstream's own where it has one (Amber's is
+            relayed verbatim), Chronicle's for the states no upstream can
+            report. Absent when a resolved answer had nothing to add. **It
+            never carries a relative time**: "4 s ago" is true at
+            serialisation and false in the hands of a client holding the
+            payload.
+
+    ResolutionUpstream:
+      type: object
+      description: |
+        What the upstream said, present only when it said something. Chronicle
+        is the upstream for its own `CHR-` and `DSC-` namespace, and it is the
+        only namespace Chronicle mints a vocabulary member in.
+      properties:
+        key:
+          type: string
+          description: |
+            The key AS ANSWERED, which is not always the key as written:
+            Switchyard follows ticket aliases after a move, so `IDEA-21` can
+            answer with key `CHRN-7`, and a `CHR-311` written by hand answers
+            `CHR-0311`. On a `broken`, the key as written. Absent for Amber,
+            which has no key.
+        outcome:
+          type: string
+          description: |
+            The UPSTREAM'S OWN vocabulary member, where it publishes one.
+            Switchyard: the status category of a live ticket, and nothing on
+            a missing one — it has no member meaning "deleted", and Chronicle
+            does not mint one in somebody else's namespace to fill a field.
+            Amber: `held`, `not_captured`, `prompt_only`, `not_in_capture`,
+            `block_out_of_range`, `ambiguous`, or `malformed`. Chronicle's own:
+            `deleted` on a soft-deleted note, `open` or `resolved` on a
+            discussion, and nothing on a live note, which has no state to
+            report.
+        display_name:
+          type: string
+          description: The status as a person reads it. Switchyard only.
+        title:
+          type: string
+          description: |
+            The ticket's, the note's or the thread's title. Amber's card has no
+            title to show, and a deleted note's is withheld along with its body.
+        url:
+          type: string
+          description: |
+            The outbound arrow's target. Absent where one would not land — a
+            deleted ticket answers 404, Amber serves no HTML — and absent for
+            Chronicle's own references, which the client holding them already
+            knows how to open.
+        recoverable:
+          type: boolean
+          description: |
+            Amber's, relayed verbatim, and MEANINGFUL ONLY ON `broken`:
+            `not_in_capture` and `ambiguous` are recoverable; `held`, the only
+            resolved outcome, is a constant false. Present whenever Amber
+            answered and absent for every other system.

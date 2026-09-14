@@ -163,6 +163,72 @@ func (e ReadinessStatus) Valid() bool {
 	}
 }
 
+// Defines values for ReferenceDescriptorSystem.
+const (
+	Amber      ReferenceDescriptorSystem = "amber"
+	Chronicle  ReferenceDescriptorSystem = "chronicle"
+	Switchyard ReferenceDescriptorSystem = "switchyard"
+)
+
+// Valid indicates whether the value is a known member of the ReferenceDescriptorSystem enum.
+func (e ReferenceDescriptorSystem) Valid() bool {
+	switch e {
+	case Amber:
+		return true
+	case Chronicle:
+		return true
+	case Switchyard:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ReferenceDescriptorTarget.
+const (
+	Discussion ReferenceDescriptorTarget = "discussion"
+	Note       ReferenceDescriptorTarget = "note"
+)
+
+// Valid indicates whether the value is a known member of the ReferenceDescriptorTarget enum.
+func (e ReferenceDescriptorTarget) Valid() bool {
+	switch e {
+	case Discussion:
+		return true
+	case Note:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ResolutionState.
+const (
+	Broken       ResolutionState = "broken"
+	Resolved     ResolutionState = "resolved"
+	Unchecked    ResolutionState = "unchecked"
+	Unconfigured ResolutionState = "unconfigured"
+	Unreachable  ResolutionState = "unreachable"
+)
+
+// Valid indicates whether the value is a known member of the ResolutionState enum.
+func (e ResolutionState) Valid() bool {
+	switch e {
+	case Broken:
+		return true
+	case Resolved:
+		return true
+	case Unchecked:
+		return true
+	case Unconfigured:
+		return true
+	case Unreachable:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for UploadStateStatus.
 const (
 	Complete   UploadStateStatus = "complete"
@@ -629,9 +695,194 @@ type ReconciliationReport struct {
 	Orphans int `json:"orphans"`
 }
 
+// ReferenceDescriptor One estate reference as a note's text named it — CHRN-48's marker, as
+// data. Derived from authored text by a deterministic scan: nothing in it
+// is a copy of anything upstream, and nothing in it can go stale.
+//
+// A note payload (CHRN-98) emits these and the resolve endpoint takes
+// them back. `token` is the text exactly as written and is never
+// normalised — `CHR-0311` and `CHR-311` both carry `number: 311` and
+// their own spelling — and everything else is what the grammar derives
+// from it, which is why the server re-derives it rather than believing
+// it.
+type ReferenceDescriptor struct {
+	// Key The project key for `switchyard` (`SWY`, `CHRN`), and `CHR` or
+	// `DSC` for `chronicle`. Absent for `amber`, whose citations carry no
+	// key.
+	Key *string `json:"key,omitempty"`
+
+	// Number The number after the hyphen, for the `KEY-N` forms. Absent for `amber`.
+	Number *int64 `json:"number,omitempty"`
+
+	// System Which upstream owns the namespace. **Colour keys off this and never
+	// off the project key** — coral is Switchyard, gold is Amber,
+	// anywhere either resolves. With fifteen live project keys a marker
+	// keyed on the project would make the estate colour rule a
+	// fifteen-way mapping every client has to duplicate.
+	System ReferenceDescriptorSystem `json:"system"`
+
+	// Target What a `chronicle` reference points at. Absent for the other two systems.
+	Target *ReferenceDescriptorTarget `json:"target,omitempty"`
+
+	// Token The reference exactly as written.
+	Token string `json:"token"`
+}
+
+// ReferenceDescriptorSystem Which upstream owns the namespace. **Colour keys off this and never
+// off the project key** — coral is Switchyard, gold is Amber,
+// anywhere either resolves. With fifteen live project keys a marker
+// keyed on the project would make the estate colour rule a
+// fifteen-way mapping every client has to duplicate.
+type ReferenceDescriptorSystem string
+
+// ReferenceDescriptorTarget What a `chronicle` reference points at. Absent for the other two systems.
+type ReferenceDescriptorTarget string
+
 // ReleaseRequest defines model for ReleaseRequest.
 type ReleaseRequest struct {
 	MemoId openapi_types.UUID `json:"memo_id"`
+}
+
+// Resolution What Chronicle can say about one reference, right now. **An answer
+// about a reference, never a copy of one.**
+//
+// The one distinction everything rests on: a fact about the REFERENT is
+// not a fact about our ABILITY TO ASK. `upstream` is present when and
+// only when an upstream answered — `resolved` and `broken` — and absent
+// on the three states where nobody did. `state` says whether anybody
+// could ask.
+type Resolution struct {
+	// Explain One sentence — the upstream's own where it has one (Amber's is
+	// relayed verbatim), Chronicle's for the states no upstream can
+	// report. Absent when a resolved answer had nothing to add. **It
+	// never carries a relative time**: "4 s ago" is true at
+	// serialisation and false in the hands of a client holding the
+	// payload.
+	Explain *string `json:"explain,omitempty"`
+
+	// FetchedAt When the attempt was made. Present on `resolved`, `broken` and
+	// `unreachable`; **absent on `unchecked` and `unconfigured`**, where
+	// nothing was attempted (CHRN-97 ruling 7). Serialised as required
+	// it would carry `0001-01-01T00:00:00Z` on exactly the two states
+	// that exist to stop Chronicle making claims, and an ordinary
+	// relative-time formatter renders that as "checked 2,025 years ago".
+	// The Go type is a non-pointer that is zero there by convention; a
+	// convention does not cross a language boundary, so the wire makes
+	// the illegal state unrepresentable instead.
+	FetchedAt *time.Time `json:"fetched_at,omitempty"`
+
+	// LastResolvedAt When this reference last resolved SUCCESSFULLY, within this
+	// process's memory. Absence means *never resolved within this
+	// process's memory* — not *not resolved now*. It travels through an
+	// `unreachable` so a card can say how long an outage has run; a
+	// client that read absence as staleness would render a cold start as
+	// an outage.
+	LastResolvedAt *time.Time `json:"last_resolved_at,omitempty"`
+
+	// State Five, not two, and the length is the point.
+	//
+	// - `resolved` — the upstream answered and `upstream` is its answer.
+	// - `broken` — the upstream answered that there is no such thing, or
+	//   that the reference is wrong. Still a fact about the referent, so
+	//   `upstream` is present with whatever the answer contained.
+	// - `unreachable` — Chronicle ASKED and could not obtain an answer. A
+	//   fact about Chronicle's knowledge, and the one no upstream can
+	//   report. `last_resolved_at` says how long the outage has run.
+	// - `unconfigured` — this deployment has no credential for that
+	//   upstream: nothing was dialled and nothing will be until a
+	//   redeploy. A permanent state and not an outage; a card reading
+	//   "unreachable" here would send somebody to check a service that
+	//   is fine.
+	// - `unchecked` — NOBODY ASKED. The cap, the budget, or an earlier
+	//   failure in this batch declined to dial, and no claim about this
+	//   reference is being made. Draw it as "not checked", never as
+	//   "checking…" — that is the state that is never answered.
+	State ResolutionState `json:"state"`
+
+	// Token The descriptor's `token`, echoed so a client aligns the answer without depending on order.
+	Token string `json:"token"`
+
+	// Upstream What the upstream said, present only when it said something. Chronicle
+	// is the upstream for its own `CHR-` and `DSC-` namespace, and it is the
+	// only namespace Chronicle mints a vocabulary member in.
+	Upstream *ResolutionUpstream `json:"upstream,omitempty"`
+}
+
+// ResolutionState Five, not two, and the length is the point.
+//
+//   - `resolved` — the upstream answered and `upstream` is its answer.
+//   - `broken` — the upstream answered that there is no such thing, or
+//     that the reference is wrong. Still a fact about the referent, so
+//     `upstream` is present with whatever the answer contained.
+//   - `unreachable` — Chronicle ASKED and could not obtain an answer. A
+//     fact about Chronicle's knowledge, and the one no upstream can
+//     report. `last_resolved_at` says how long the outage has run.
+//   - `unconfigured` — this deployment has no credential for that
+//     upstream: nothing was dialled and nothing will be until a
+//     redeploy. A permanent state and not an outage; a card reading
+//     "unreachable" here would send somebody to check a service that
+//     is fine.
+//   - `unchecked` — NOBODY ASKED. The cap, the budget, or an earlier
+//     failure in this batch declined to dial, and no claim about this
+//     reference is being made. Draw it as "not checked", never as
+//     "checking…" — that is the state that is never answered.
+type ResolutionState string
+
+// ResolutionUpstream What the upstream said, present only when it said something. Chronicle
+// is the upstream for its own `CHR-` and `DSC-` namespace, and it is the
+// only namespace Chronicle mints a vocabulary member in.
+type ResolutionUpstream struct {
+	// DisplayName The status as a person reads it. Switchyard only.
+	DisplayName *string `json:"display_name,omitempty"`
+
+	// Key The key AS ANSWERED, which is not always the key as written:
+	// Switchyard follows ticket aliases after a move, so `IDEA-21` can
+	// answer with key `CHRN-7`, and a `CHR-311` written by hand answers
+	// `CHR-0311`. On a `broken`, the key as written. Absent for Amber,
+	// which has no key.
+	Key *string `json:"key,omitempty"`
+
+	// Outcome The UPSTREAM'S OWN vocabulary member, where it publishes one.
+	// Switchyard: the status category of a live ticket, and nothing on
+	// a missing one — it has no member meaning "deleted", and Chronicle
+	// does not mint one in somebody else's namespace to fill a field.
+	// Amber: `held`, `not_captured`, `prompt_only`, `not_in_capture`,
+	// `block_out_of_range`, `ambiguous`, or `malformed`. Chronicle's own:
+	// `deleted` on a soft-deleted note, `open` or `resolved` on a
+	// discussion, and nothing on a live note, which has no state to
+	// report.
+	Outcome *string `json:"outcome,omitempty"`
+
+	// Recoverable Amber's, relayed verbatim, and MEANINGFUL ONLY ON `broken`:
+	// `not_in_capture` and `ambiguous` are recoverable; `held`, the only
+	// resolved outcome, is a constant false. Present whenever Amber
+	// answered and absent for every other system.
+	Recoverable *bool `json:"recoverable,omitempty"`
+
+	// Title The ticket's, the note's or the thread's title. Amber's card has no
+	// title to show, and a deleted note's is withheld along with its body.
+	Title *string `json:"title,omitempty"`
+
+	// Url The outbound arrow's target. Absent where one would not land — a
+	// deleted ticket answers 404, Amber serves no HTML — and absent for
+	// Chronicle's own references, which the client holding them already
+	// knows how to open.
+	Url *string `json:"url,omitempty"`
+}
+
+// ResolveRequest defines model for ResolveRequest.
+type ResolveRequest struct {
+	// References At most 50 — CHRN-51's cap, which counts attempts per render. The
+	// bound is enforced server-side as well as declared, and a larger
+	// batch is refused rather than truncated: a client that sent sixty
+	// and got fifty back would hold ten cards it could never explain.
+	References []ReferenceDescriptor `json:"references"`
+}
+
+// ResolveResponse defines model for ResolveResponse.
+type ResolveResponse struct {
+	// Resolutions One per descriptor, in request order, each carrying its `token`.
+	Resolutions []Resolution `json:"resolutions"`
 }
 
 // Session A signed-in session. `session_token` is shown HERE AND NEVER AGAIN —
@@ -888,6 +1139,9 @@ type NotFound = Error
 // RateLimited defines model for RateLimited.
 type RateLimited = Error
 
+// ReferencesUnconfigured defines model for ReferencesUnconfigured.
+type ReferencesUnconfigured = Error
+
 // TooLarge defines model for TooLarge.
 type TooLarge = Error
 
@@ -953,6 +1207,9 @@ type CreateSessionJSONRequestBody = SignInRequest
 
 // OpenUploadJSONRequestBody defines body for OpenUpload for application/json ContentType.
 type OpenUploadJSONRequestBody = OpenUploadRequest
+
+// ResolveReferencesJSONRequestBody defines body for ResolveReferences for application/json ContentType.
+type ResolveReferencesJSONRequestBody = ResolveRequest
 
 // AcceptTriageJSONRequestBody defines body for AcceptTriage for application/json ContentType.
 type AcceptTriageJSONRequestBody = AcceptRequest
@@ -1090,6 +1347,9 @@ type ServerInterface interface {
 	// GetReadyz Readiness. Pings the database.
 	// (GET /readyz)
 	GetReadyz(w http.ResponseWriter, r *http.Request)
+	// ResolveReferences Resolve a batch of references into live cards.
+	// (POST /references/resolve)
+	ResolveReferences(w http.ResponseWriter, r *http.Request)
 	// AcceptTriage Confirm a batch of decisions.
 	// (POST /triage/accept)
 	AcceptTriage(w http.ResponseWriter, r *http.Request)
@@ -1510,6 +1770,20 @@ func (siw *ServerInterfaceWrapper) GetReadyz(w http.ResponseWriter, r *http.Requ
 	handler.ServeHTTP(w, r)
 }
 
+// ResolveReferences operation middleware
+func (siw *ServerInterfaceWrapper) ResolveReferences(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ResolveReferences(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // AcceptTriage operation middleware
 func (siw *ServerInterfaceWrapper) AcceptTriage(w http.ResponseWriter, r *http.Request) {
 
@@ -1764,6 +2038,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/triage/release", wrapper.ReleaseMemo)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/triage/deferred", wrapper.ListDeferred)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/triage", wrapper.GetTriageReport)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/references/resolve", wrapper.ResolveReferences)
 
 	return m
 }
