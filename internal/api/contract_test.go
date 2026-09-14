@@ -181,6 +181,7 @@ func TestAnonymousGetsTheSameAnswerFromEveryRoute(t *testing.T) {
 		{http.MethodGet, "/notes/CHR-0311", http.StatusUnauthorized},
 		{http.MethodGet, "/notes/CHR-0311/revisions", http.StatusUnauthorized},
 		{http.MethodPost, "/notes/CHR-0311/revisions", http.StatusUnauthorized},
+		{http.MethodGet, "/notes/CHR-0311/backlinks", http.StatusUnauthorized},
 		{http.MethodGet, "/search", http.StatusUnauthorized},
 
 		{http.MethodGet, "/discussions", http.StatusUnauthorized},
@@ -475,6 +476,7 @@ func TestACredentialedCallerIsNotRefusedByTheWrappers(t *testing.T) {
 		{http.MethodGet, "/notes/CHR-0311", member, "member-token"},
 		{http.MethodGet, "/notes/CHR-0311/revisions", member, "member-token"},
 		{http.MethodPost, "/notes/CHR-0311/revisions", member, "member-token"},
+		{http.MethodGet, "/notes/CHR-0311/backlinks", member, "member-token"},
 		{http.MethodGet, "/search", owner, "owner-token"},
 
 		{http.MethodGet, "/discussions", member, "member-token"},
