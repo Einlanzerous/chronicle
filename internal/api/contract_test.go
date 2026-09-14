@@ -231,6 +231,8 @@ func TestAMemberIsRefusedTheOwnerRoutes(t *testing.T) {
 		{http.MethodGet, "/admin/storage"},
 		{http.MethodGet, "/admin/triage"},
 		{http.MethodGet, "/admin/transcription"},
+		// Spans every author's transcripts (CHRN-98).
+		{http.MethodGet, "/search"},
 	}
 
 	for _, route := range owned {
@@ -458,7 +460,7 @@ func TestACredentialedCallerIsNotRefusedByTheWrappers(t *testing.T) {
 		{http.MethodGet, "/notes/CHR-0311", member, "member-token"},
 		{http.MethodGet, "/notes/CHR-0311/revisions", member, "member-token"},
 		{http.MethodPost, "/notes/CHR-0311/revisions", member, "member-token"},
-		{http.MethodGet, "/search", member, "member-token"},
+		{http.MethodGet, "/search", owner, "owner-token"},
 	}
 
 	for _, route := range routes {

@@ -1250,8 +1250,16 @@ paths:
 
         The query language is Postgres `websearch_to_tsquery`: bare words are
         ANDed, "quoted phrases" are phrases, `OR` is OR, a leading `-` excludes.
+
+        **Owner only, because the transcript half spans every author's
+        memos** — including ones never triaged — and the store's query takes
+        no actor. This API refuses that elsewhere: "a list that merely hides a
+        memo is not access control", which is why `GET /admin/triage` is owner
+        too. The same rule holds here rather than being crossed unstated. A
+        member-visible search scoped to the caller's own transcripts beside the
+        shared notes is a store query this ticket raised rather than added.
       operationId: search
-      x-chronicle-policy: member
+      x-chronicle-policy: owner
       parameters:
         - name: q
           in: query
@@ -1270,6 +1278,7 @@ paths:
                 $ref: "#/components/schemas/SearchResults"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "500": { $ref: "#/components/responses/InternalError" }
         "503": { $ref: "#/components/responses/WikiUnconfigured" }
 

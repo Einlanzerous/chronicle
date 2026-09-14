@@ -314,6 +314,7 @@ func newWikiRig(t *testing.T, withKeys bool) *wikiRig {
 
 	f := newFakeAccounts()
 	rig.member = f.signIn(person("member@example.com", false), "member-token")
+	f.signIn(person("owner@example.com", true), "owner-token")
 	rig.agent = f.signIn(store.User{ID: uuid.New(), Email: store.ScribeEmail, DisplayName: "Scribe", Kind: store.KindAgent}, "agent-token")
 	rig.wiki.agents[rig.agent.ID] = true
 
@@ -648,7 +649,10 @@ func TestNotesOnAPageFollowARedirectAndPageByCursor(t *testing.T) {
 
 func TestSearchIsNotAList(t *testing.T) {
 	rig := newWikiRig(t, false)
-	call := rig.as("member-token")
+	// Owner only: the transcript half spans every author's memos.
+	call := rig.as("owner-token")
+	rec := rig.do(http.MethodGet, "/search?q=pruner", "", "member-token")
+	mustStatus(t, rec, http.StatusForbidden, "search")
 	noteID, memoID, number := uuid.New(), uuid.New(), int64(311)
 	rig.wiki.hits = []store.SearchHit{
 		{Kind: store.HitNote, NoteID: &noteID, Number: &number, Title: "Retention pruner",
@@ -659,7 +663,7 @@ func TestSearchIsNotAList(t *testing.T) {
 		{Kind: store.HitTranscript, MemoID: &memoID, Model: "whisper.cpp/small.en", Snippet: "we said the <b>pruner</b>", Rank: 0.4, CreatedAt: time.Now()},
 	}
 
-	rec := call(http.MethodGet, "/search?q=pruner&limit=500", "")
+	rec = call(http.MethodGet, "/search?q=pruner&limit=500", "")
 	mustStatus(t, rec, http.StatusOK, "search")
 	res := decodeInto[wire.SearchResults](t, rec)
 	if res.Query != "pruner" || res.Limit != maxSearch || len(res.Items) != 2 {
@@ -692,7 +696,8 @@ func TestSearchIsNotAList(t *testing.T) {
 
 func TestWikiWithoutAStoreAnswersTheDocumented503(t *testing.T) {
 	f := newFakeAccounts()
-	f.signIn(person("member@example.com", false), "member-token")
+	// The owner reaches every member route as well as search.
+	f.signIn(person("owner@example.com", true), "member-token")
 	h := testRouter(f)
 	for _, tc := range []struct{ method, path, body, op string }{
 		{http.MethodGet, "/pages", "", "listPages"},

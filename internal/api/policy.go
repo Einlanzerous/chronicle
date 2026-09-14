@@ -139,7 +139,14 @@ var routePolicy = map[string]policy{
 	"GET /notes/{ref}":            policyMember,
 	"GET /notes/{ref}/revisions":  policyMember,
 	"POST /notes/{ref}/revisions": policyMember,
-	"GET /search":                 policyMember,
+	// SEARCH SPANS EVERY AUTHOR'S TRANSCRIPTS, so owner rather than member --
+	// GET /admin/triage's reasoning, and the triage batch's: "a list that
+	// merely hides a memo is not access control." store.Search takes no actor
+	// and its transcript half has no author predicate, so a member-visible
+	// search needs a scoped query, which is internal/store's to add and is
+	// raised on CHRN-98. Notes are a shared corpus and would be fine at member;
+	// the transcript half is what sets the policy for the one operation.
+	"GET /search": policyOwner,
 }
 
 // policyRouter is the ServeMux the generated registration writes into.
