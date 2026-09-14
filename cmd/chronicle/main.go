@@ -605,7 +605,7 @@ func runServe(args []string) error {
 		// The URL, never the token.
 		logger.Info("the capture archive is configured, and nothing resolves citations yet",
 			"amber", cfg.AmberURL,
-			"pending", "CHRN-97 decides where a reference resolver is built")
+			"pending", "CHRN-104 registers the transports and serves the resolve endpoint")
 	} else {
 		logger.Info("no capture archive: CHRONICLE_AMBER_URL and CHRONICLE_AMBER_TOKEN are unset, "+
 			"so an amber1 citation will render as unconfigured rather than as an outage",
