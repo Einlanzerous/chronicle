@@ -15,6 +15,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Einlanzerous/chronicle/internal/api/apitest"
+	"github.com/Einlanzerous/chronicle/internal/api/wire"
 	"github.com/Einlanzerous/chronicle/internal/store"
 )
 
@@ -288,7 +290,9 @@ func TestSignInIssuesBothCarriers(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 
-	var got sessionResponse
+	apitest.Conform(t, "createSession", rec)
+
+	var got wire.Session
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -430,7 +434,9 @@ func TestSelfInviteIsNotAnAdminRoute(t *testing.T) {
 		t.Fatalf("status = %d, want 201", rec.Code)
 	}
 
-	var got inviteJSON
+	apitest.Conform(t, "createSelfInvite", rec)
+
+	var got wire.Invite
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -439,8 +445,14 @@ func TestSelfInviteIsNotAnAdminRoute(t *testing.T) {
 	}
 	// The scannable link is built server-side, because only the server knows
 	// which of its origins a phone can reach.
-	if got.SignInURL != "https://chronicle.example.com/sign-in?token="+got.InviteToken {
-		t.Errorf("SignInURL = %q", got.SignInURL)
+	// Optional on the wire, because a deployment with no mobile base URL has no
+	// origin a phone could reach and omits it rather than publishing a link
+	// that walks one into an SSO wall.
+	if got.SignInUrl == nil {
+		t.Fatal("no sign_in_url, though this deployment has a mobile base URL")
+	}
+	if *got.SignInUrl != "https://chronicle.example.com/sign-in?token="+got.InviteToken {
+		t.Errorf("sign_in_url = %q", *got.SignInUrl)
 	}
 }
 
@@ -453,12 +465,14 @@ func TestSSODisabledWhenUnconfigured(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rec.Code)
 	}
-	var body ssoErrorBody
+	apitest.Conform(t, "createSessionFromAccess", rec)
+
+	var body wire.SsoError
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if body.Error != "sso_disabled" {
-		t.Errorf("error = %q, want sso_disabled", body.Error)
+	if body.Code != "sso_disabled" {
+		t.Errorf("code = %q, want sso_disabled", body.Code)
 	}
 }
 
@@ -479,12 +493,14 @@ func TestForgedAccessHeaderIsRefused(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rec.Code)
 	}
-	var body ssoErrorBody
+	apitest.Conform(t, "createSessionFromAccess", rec)
+
+	var body wire.SsoError
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if body.Error != "unauthorized" {
-		t.Errorf("error = %q, want unauthorized", body.Error)
+	if body.Code != "unauthorized" {
+		t.Errorf("code = %q, want unauthorized", body.Code)
 	}
 }
 
@@ -690,7 +706,9 @@ func TestSSOReusesTheSessionTheBrowserAlreadyHolds(t *testing.T) {
 		t.Errorf("minted %v; the browser's existing session should have been reused", f.mintedSessions)
 	}
 
-	var got sessionResponse
+	apitest.Conform(t, "createSessionFromAccess", rec)
+
+	var got wire.Session
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Einlanzerous/chronicle/internal/api/wire"
 	"github.com/Einlanzerous/chronicle/internal/audio"
 	"github.com/Einlanzerous/chronicle/internal/store"
 	"github.com/Einlanzerous/chronicle/internal/upload"
@@ -62,88 +63,54 @@ type uploadOpenRequest struct {
 	OriginalFilename string `json:"original_filename"`
 }
 
-// uploadResponse is the one shape all four calls answer with, discriminated by
-// Status. One shape rather than two because a client polling a session and a
+// wire.UploadState is the one shape all four calls answer with, discriminated
+// by Status. One shape rather than two because a client polling a session and a
 // client finishing one are the same client, and it should not have to switch
-// parsers on a status code.
-type uploadResponse struct {
-	// Status is "incomplete" — more bytes are expected — or "complete", in
-	// which case Memo is set and UploadID is not.
-	Status   string `json:"status"`
-	UploadID string `json:"upload_id,omitempty"`
-	ByteSize int64  `json:"byte_size"`
+// parsers on a status code — which is also why the 409 and the 408 carry it
+// rather than an error envelope: both are resume instructions.
+//
+// The shapes live in openapi.yaml now. Two properties that were comments here
+// are documented there instead, where three clients can read them: `offset`
+// carries no omitempty, because zero is the answer for a session that has
+// received nothing and dropping it would leave a client unable to tell "nothing
+// yet" from "the server did not say"; and `duplicate` is IngestResult.Collapsed
+// — these bytes were already known — never inferred from a delivery count
+// (CHRN-18 §10).
 
-	// No omitempty: an offset of zero is the answer for a session that has
-	// received nothing, and dropping the field there would leave a client
-	// unable to tell "nothing yet" from "the server did not say". Same
-	// reasoning as the volume figures in the storage report.
-	Offset int64 `json:"offset"`
-
-	ExpiresAt *time.Time `json:"expires_at,omitempty"`
-
-	Memo *memoJSON `json:"memo,omitempty"`
-	// Duplicate is IngestResult.Collapsed: these bytes were already known.
-	// Never inferred from a delivery count — CHRN-18 §10.
-	Duplicate bool `json:"duplicate"`
-}
-
-// memoJSON is the wire shape of a memo. Deliberately not a path: CHRN-23
-// derives one from the row, and publishing it would invite a client to build
-// its own.
-type memoJSON struct {
-	ID          uuid.UUID `json:"id"`
-	State       string    `json:"state"`
-	Retention   string    `json:"retention"`
-	ContentHash string    `json:"content_hash"`
-	ByteSize    int64     `json:"byte_size"`
-	CapturedAt  time.Time `json:"captured_at"`
-	AudioPruned bool      `json:"audio_pruned"`
-
-	// CHRN-22 §3. A STATUS RATHER THAN A DATE, because for a memo with no
-	// durable transcript there is no date the pruner will use — and a
-	// `PRUNES 2026-09-20` label that passes with nothing happening is the
-	// label lying, which CHRN-25 §5 already refused in the other direction.
-	//
-	// `prunes_at` is set only for `scheduled` and `pruned`. The renderer is
-	// E8's; the shape is this ticket's, and it is the same clause the sweep
-	// evaluates, which is what makes the date the UI shows the date the job
-	// uses by construction.
-	RetentionStatus string     `json:"retention_status"`
-	PrunesAt        *time.Time `json:"prunes_at"`
-
-	// Filled by CHRN-21; null until it has run.
-	DurationMS   *int32  `json:"duration_ms"`
-	Codec        *string `json:"codec"`
-	SampleRateHz *int32  `json:"sample_rate_hz"`
-
-	OriginalFilename *string `json:"original_filename,omitempty"`
-}
-
-func toMemoJSON(m store.Memo, retentionStatus string, prunesAt *time.Time) memoJSON {
-	return memoJSON{
+// toMemo renders a memo for the wire. Deliberately not a path: CHRN-23 derives
+// one from the row, and publishing it would invite a client to build its own.
+//
+// `retention_status` is a STATUS RATHER THAN A DATE, because for a memo with no
+// durable transcript there is no date the pruner will use — and a
+// `PRUNES 2026-09-20` label that passes with nothing happening is the label
+// lying, which CHRN-25 §5 already refused in the other direction. `prunes_at`
+// is set only for `scheduled` and `pruned`, and it is the same clause the sweep
+// evaluates, which is what makes the date a UI shows the date the job uses.
+func toMemo(m store.Memo, retentionStatus string, prunesAt *time.Time) wire.Memo {
+	return wire.Memo{
 		RetentionStatus:  retentionStatus,
 		PrunesAt:         prunesAt,
-		ID:               m.ID,
+		Id:               m.ID,
 		State:            m.State,
-		Retention:        m.Retention,
+		Retention:        wire.MemoRetention(m.Retention),
 		ContentHash:      m.ContentHash,
 		ByteSize:         m.ByteSize,
 		CapturedAt:       m.CapturedAt,
 		AudioPruned:      m.AudioPruned(),
-		DurationMS:       m.DurationMS,
+		DurationMs:       m.DurationMS,
 		Codec:            m.Codec,
 		SampleRateHz:     m.SampleRateHz,
 		OriginalFilename: m.OriginalFilename,
 	}
 }
 
-// handleUploadOpen declares an upload.
+// OpenUpload declares an upload.
 //
 // Three answers, and the third is the one that makes re-delivery cheap:
 // 201 with a fresh session, 200 with the session this key already has, or 200
 // with a memo because the author already holds those bytes and nothing needs
 // sending.
-func (a *api) handleUploadOpen(w http.ResponseWriter, r *http.Request) {
+func (a *api) OpenUpload(w http.ResponseWriter, r *http.Request) {
 	if !a.uploadsReady(w) {
 		return
 	}
@@ -157,23 +124,23 @@ func (a *api) handleUploadOpen(w http.ResponseWriter, r *http.Request) {
 	// answer it with. The store's checks stay where they are — they guard every
 	// caller, not just this one.
 	if l := len(req.IdempotencyKey); l < 16 || l > 200 {
-		http.Error(w, "idempotency_key must be 16 to 200 characters", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, codeInvalidBody, "idempotency_key must be 16 to 200 characters")
 		return
 	}
 	if !hexDigest.MatchString(req.ContentHash) {
-		http.Error(w, "content_hash must be the SHA-256 of the file as 64 lowercase hex characters",
-			http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, codeInvalidBody,
+			"content_hash must be the SHA-256 of the file as 64 lowercase hex characters")
 		return
 	}
 	if req.ByteSize <= 0 {
-		http.Error(w, "byte_size must be a positive number of bytes", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, codeInvalidBody, "byte_size must be a positive number of bytes")
 		return
 	}
 	switch req.Retention {
 	case "", store.RetentionDiscardNow, store.RetentionDays30, store.RetentionForever:
 	default:
-		http.Error(w, `retention must be one of "discard_now", "days_30", "forever", or omitted`,
-			http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, codeInvalidBody,
+			`retention must be one of "discard_now", "days_30", "forever", or omitted`)
 		return
 	}
 	if !checkLen(w, "original_filename", req.OriginalFilename, maxFilenameLen) {
@@ -199,17 +166,17 @@ func (a *api) handleUploadOpen(w http.ResponseWriter, r *http.Request) {
 	a.writeUpload(w, r, status, res)
 }
 
-// handleUploadAppend takes the next chunk.
-func (a *api) handleUploadAppend(w http.ResponseWriter, r *http.Request) {
+// AppendChunk takes the next chunk.
+func (a *api) AppendChunk(w http.ResponseWriter, r *http.Request, id wire.UploadId, params wire.AppendChunkParams) {
 	if !a.uploadsReady(w) {
 		return
 	}
-	u, ok := a.findUpload(w, r)
+	u, ok := a.findUpload(w, r, id)
 	if !ok {
 		return
 	}
 	if ct := r.Header.Get("Content-Type"); ct != uploadBodyType {
-		http.Error(w, "Content-Type must be "+uploadBodyType, http.StatusUnsupportedMediaType)
+		writeError(w, http.StatusUnsupportedMediaType, codeUnsupportedMedia, "Content-Type must be "+uploadBodyType)
 		return
 	}
 	// A chunk must declare its length. Go reports -1 for a chunked body, and
@@ -218,19 +185,20 @@ func (a *api) handleUploadAppend(w http.ResponseWriter, r *http.Request) {
 	// is what internal/upload's oversend check relies on not to wait forever on
 	// a client that has stopped sending.
 	if r.ContentLength < 0 {
-		http.Error(w, "a chunk must carry a Content-Length; chunked bodies are not accepted",
-			http.StatusLengthRequired)
+		writeError(w, http.StatusLengthRequired, codeLengthRequired,
+			"a chunk must carry a Content-Length; chunked bodies are not accepted")
 		return
 	}
 
-	raw := r.Header.Get(UploadOffsetHeader)
-	if raw == "" {
-		http.Error(w, UploadOffsetHeader+" is required", http.StatusBadRequest)
-		return
-	}
-	offset, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || offset < 0 {
-		http.Error(w, UploadOffsetHeader+" must be a non-negative integer", http.StatusBadRequest)
+	// Bound by the generator from the declared header parameter: absent or
+	// unparseable answers 400 through bindError before this runs. What it does
+	// NOT enforce is the schema's `minimum: 0` — std-http-server binds types,
+	// not constraints — so the negative case is still checked here rather than
+	// assumed away by a line in the document.
+	offset := params.UploadOffset
+	if offset < 0 {
+		writeError(w, http.StatusBadRequest, codeInvalidParameter,
+			UploadOffsetHeader+" must be a non-negative integer")
 		return
 	}
 
@@ -239,8 +207,8 @@ func (a *api) handleUploadAppend(w http.ResponseWriter, r *http.Request) {
 	// cheap case, not the guarantee, and a wrong offset still resolves as a 409
 	// there because the offset is checked before anything is read either way.
 	if remaining := u.ByteSize - offset; r.ContentLength > remaining {
-		http.Error(w, "this chunk is longer than the upload has left to receive",
-			http.StatusUnprocessableEntity)
+		writeError(w, http.StatusUnprocessableEntity, codeOversend,
+			"this chunk is longer than the upload has left to receive")
 		return
 	}
 
@@ -252,13 +220,13 @@ func (a *api) handleUploadAppend(w http.ResponseWriter, r *http.Request) {
 	a.writeUpload(w, r, http.StatusOK, res)
 }
 
-// handleUploadStatus reports how far a session got. It is how a client that
+// GetUpload reports how far a session got. It is how a client that
 // crashed mid-chunk finds out where to resume without guessing.
-func (a *api) handleUploadStatus(w http.ResponseWriter, r *http.Request) {
+func (a *api) GetUpload(w http.ResponseWriter, r *http.Request, id wire.UploadId) {
 	if !a.uploadsReady(w) {
 		return
 	}
-	u, ok := a.findUpload(w, r)
+	u, ok := a.findUpload(w, r, id)
 	if !ok {
 		return
 	}
@@ -270,12 +238,12 @@ func (a *api) handleUploadStatus(w http.ResponseWriter, r *http.Request) {
 	a.writeUpload(w, r, http.StatusOK, res)
 }
 
-// handleUploadAbandon drops a session and its bytes.
-func (a *api) handleUploadAbandon(w http.ResponseWriter, r *http.Request) {
+// AbandonUpload drops a session and its bytes.
+func (a *api) AbandonUpload(w http.ResponseWriter, r *http.Request, id wire.UploadId) {
 	if !a.uploadsReady(w) {
 		return
 	}
-	u, ok := a.findUpload(w, r)
+	u, ok := a.findUpload(w, r, id)
 	if !ok {
 		return
 	}
@@ -292,7 +260,7 @@ func (a *api) handleUploadAbandon(w http.ResponseWriter, r *http.Request) {
 // the storage report uses.
 func (a *api) uploadsReady(w http.ResponseWriter) bool {
 	if a.uploads == nil {
-		http.Error(w, "uploads are not configured: set CHRONICLE_AUDIO_DIR", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, codeUploadsUnconfigured, "uploads are not configured: set CHRONICLE_AUDIO_DIR")
 		return false
 	}
 	return true
@@ -303,14 +271,10 @@ func (a *api) uploadsReady(w http.ResponseWriter) bool {
 // A session belonging to somebody else is 404 and not 403. 403 would confirm
 // that the id names a real upload, which is a fact about another account's
 // activity that no caller is owed.
-func (a *api) findUpload(w http.ResponseWriter, r *http.Request) (store.Upload, bool) {
-	id, ok := pathUUID(w, r, "id", "upload")
-	if !ok {
-		return store.Upload{}, false
-	}
+func (a *api) findUpload(w http.ResponseWriter, r *http.Request, id uuid.UUID) (store.Upload, bool) {
 	u, err := a.uploads.Find(r.Context(), id, userFrom(r.Context()).ID)
 	if errors.Is(err, store.ErrNotFound) {
-		http.Error(w, "no such upload", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, codeNotFound, "no such upload")
 		return store.Upload{}, false
 	}
 	if err != nil {
@@ -340,19 +304,20 @@ func (a *api) retentionOf(r *http.Request, memoID uuid.UUID) (string, *time.Time
 }
 
 func (a *api) writeUpload(w http.ResponseWriter, r *http.Request, status int, res upload.Result) {
-	body := uploadResponse{}
+	body := wire.UploadState{}
 	switch {
 	case res.Committed != nil:
 		status, prunesAt := a.retentionOf(r, res.Committed.Memo.ID)
-		m := toMemoJSON(res.Committed.Memo, status, prunesAt)
-		body.Status = "complete"
+		m := toMemo(res.Committed.Memo, status, prunesAt)
+		body.Status = wire.Complete
 		body.ByteSize = res.Committed.Memo.ByteSize
 		body.Offset = res.Committed.Memo.ByteSize
 		body.Memo = &m
 		body.Duplicate = res.Committed.Collapsed
 	case res.Session != nil:
-		body.Status = "incomplete"
-		body.UploadID = res.Session.ID.String()
+		body.Status = wire.Incomplete
+		uploadID := res.Session.ID.String()
+		body.UploadId = &uploadID
 		body.ByteSize = res.Session.ByteSize
 		body.Offset = res.Session.Offset
 		expires := res.Session.ExpiresAt
@@ -361,7 +326,7 @@ func (a *api) writeUpload(w http.ResponseWriter, r *http.Request, status int, re
 		// Not reachable: Open, Append and Status each set exactly one. Answered
 		// rather than left to render as an empty object, because a client
 		// parsing `{"status":""}` would be debugging its own code.
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, codeInternal, "internal error")
 		return
 	}
 	w.Header().Set(UploadOffsetHeader, strconv.FormatInt(body.Offset, 10))
@@ -381,23 +346,23 @@ func (a *api) uploadError(w http.ResponseWriter, r *http.Request, what string, e
 	case errors.As(err, &conflict):
 		// The whole point of the 409: it carries where to resume from.
 		w.Header().Set(UploadOffsetHeader, strconv.FormatInt(conflict.Offset, 10))
-		writeJSON(w, http.StatusConflict, uploadResponse{
-			Status: "incomplete",
+		writeJSON(w, http.StatusConflict, wire.UploadState{
+			Status: wire.Incomplete,
 			Offset: conflict.Offset,
 		})
 	case errors.Is(err, store.ErrUploadKeyReused):
-		http.Error(w, "that idempotency_key is already in use for different content; mint a new one",
-			http.StatusConflict)
+		writeError(w, http.StatusConflict, codeKeyReused,
+			"that idempotency_key is already in use for different content; mint a new one")
 	case errors.Is(err, upload.ErrTooLarge):
-		http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+		writeError(w, http.StatusRequestEntityTooLarge, codeBodyTooLarge, err.Error())
 	case errors.Is(err, upload.ErrTooManyOpen):
-		http.Error(w, "too many uploads already open; finish or abandon one first",
-			http.StatusTooManyRequests)
+		writeError(w, http.StatusTooManyRequests, codeTooManyOpen,
+			"too many uploads already open; finish or abandon one first")
 	case errors.Is(err, upload.ErrHashMismatch):
-		http.Error(w, "the bytes received do not match content_hash; the upload has been discarded",
-			http.StatusUnprocessableEntity)
+		writeError(w, http.StatusUnprocessableEntity, codeHashMismatch,
+			"the bytes received do not match content_hash; the upload has been discarded")
 	case errors.Is(err, upload.ErrOversend):
-		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		writeError(w, http.StatusUnprocessableEntity, codeOversend, err.Error())
 	case errors.As(err, &cut):
 		// A dropped connection is the ordinary event this endpoint was built
 		// for, and it must not answer like a fault. On the default branch it
@@ -411,24 +376,24 @@ func (a *api) uploadError(w http.ResponseWriter, r *http.Request, what string, e
 		// requestLogger classifies a 4xx as a warning on its own, so correcting
 		// the status is the whole of the fix — no special-cased log line.
 		w.Header().Set(UploadOffsetHeader, strconv.FormatInt(cut.Offset, 10))
-		writeJSON(w, http.StatusRequestTimeout, uploadResponse{
-			Status: "incomplete",
+		writeJSON(w, http.StatusRequestTimeout, wire.UploadState{
+			Status: wire.Incomplete,
 			Offset: cut.Offset,
 		})
 	case errors.Is(err, store.ErrKeyReused):
-		http.Error(w, "that idempotency_key already produced a different memo; mint a new one",
-			http.StatusConflict)
+		writeError(w, http.StatusConflict, codeKeyReused,
+			"that idempotency_key already produced a different memo; mint a new one")
 	case errors.Is(err, store.ErrInvalidInput):
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, codeInvalidBody, err.Error())
 	case errors.Is(err, upload.ErrStagingLost):
 		// The declaration still stands and the session is left alone, so the
 		// remedy is to send the bytes again from the beginning. Answered as a
 		// conflict carrying offset 0, which is the shape a client already
 		// handles.
 		w.Header().Set(UploadOffsetHeader, "0")
-		writeJSON(w, http.StatusConflict, uploadResponse{Status: "incomplete", Offset: 0})
+		writeJSON(w, http.StatusConflict, wire.UploadState{Status: wire.Incomplete, Offset: 0})
 	case errors.Is(err, store.ErrNotFound):
-		http.Error(w, "no such upload", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, codeNotFound, "no such upload")
 	default:
 		a.serverError(w, r, what, err)
 	}

@@ -197,6 +197,477 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  # ── AUTH ────────────────────────────────────────────────────────────────────
+  # No passwords. A one-time invite redeems into a durable per-device session,
+  # and two sign-in paths mint the same kind of session. Both are credential-
+  # free and both are rate-limited: they are the only two unauthenticated
+  # endpoints that MINT a credential, and limiting one of them just moves the
+  # target.
+
+  /auth/session:
+    post:
+      tags: [auth]
+      summary: Redeem an invite for a session.
+      description: |
+        How the app and the MCP sign in. The session token is returned here and
+        never again; the client stores it and sends it as `Authorization:
+        Bearer`, or accepts the cookie.
+
+        A spent, expired or unknown invite is `401` with an identical body,
+        indistinguishable on purpose — probing cannot tell a used invite from
+        one that never existed.
+      operationId: createSession
+      security: []
+      x-chronicle-policy: signin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SignInRequest"
+      responses:
+        "200":
+          description: signed in
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: |
+            the invite is spent, expired or unknown — one answer for all three.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+    delete:
+      tags: [auth]
+      summary: Sign out, revoking this session.
+      operationId: deleteSession
+      x-chronicle-policy: member
+      responses:
+        "204": { description: signed out; the cookie is cleared }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /auth/sso/cloudflare:
+    post:
+      tags: [auth]
+      summary: Exchange a verified Cloudflare Access identity for a session.
+      description: |
+        The browser calls this on load: the tunnel injects a
+        `Cf-Access-Jwt-Assertion` header, Chronicle verifies it **itself**
+        against the JWKS rather than trusting the header the edge injected, and
+        a verified email matched to an account mints the same kind of session
+        the invite path does.
+
+        **The assertion header is deliberately not declared as a parameter.**
+        Declaring it required would make the generated wrapper answer `400` when
+        it is absent, where this operation answers `401` with a code saying
+        which of "no assertion", "not configured here" and "no such account"
+        happened — a distinction a person debugging an SSO wall needs.
+      operationId: createSessionFromAccess
+      security: []
+      x-chronicle-policy: signin
+      responses:
+        "200":
+          description: signed in
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "401":
+          description: no assertion, an unverifiable one, or SSO is not configured here
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SsoError"
+        "403":
+          description: the assertion verified, and names an email no account holds
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SsoError"
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /auth/me:
+    get:
+      tags: [auth]
+      summary: The account this session belongs to.
+      operationId: getMe
+      x-chronicle-policy: member
+      responses:
+        "200":
+          description: the account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+    patch:
+      tags: [auth]
+      summary: Change your own display name.
+      operationId: updateMe
+      x-chronicle-policy: member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMeRequest"
+      responses:
+        "200":
+          description: the updated account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /auth/invite:
+    post:
+      tags: [auth]
+      summary: Mint an invite for another of your own devices.
+      description: |
+        Self-service, so adding a second phone does not need the owner. The
+        invite is single-use and short-lived; `sign_in_url` is the QR target and
+        is absent when no mobile base URL is configured.
+      operationId: createSelfInvite
+      x-chronicle-policy: member
+      responses:
+        "201":
+          description: the invite, shown once
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Invite"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /auth/sessions:
+    get:
+      tags: [auth]
+      summary: Your own signed-in devices.
+      description: |
+        The one real risk in a password-free model: a session does not expire,
+        so a lost device stays signed in forever unless its holder can see it
+        and cut it off. Hence this list, and the revoke below it.
+      operationId: listSessions
+      x-chronicle-policy: member
+      responses:
+        "200":
+          description: this account's sessions, the current one marked
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DeviceSession"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /auth/sessions/{id}:
+    delete:
+      tags: [auth]
+      summary: Revoke one of your own sessions.
+      description: |
+        Revoking the session you are calling with is a sign-out, and clears the
+        cookie too. Another account's session answers exactly as one that does
+        not exist.
+      operationId: revokeSession
+      x-chronicle-policy: member
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "204": { description: "revoked, or already gone" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  # ── ACCOUNTS ────────────────────────────────────────────────────────────────
+  # Owner only, and never an agent. Not served on the WAN host at all:
+  # construct-server's `chronicle-public-admin` router blackholes /admin there,
+  # because POST /admin/users/{id}/invite mints a live credential and
+  # requireOwner alone is not the boundary that should be holding it.
+
+  /admin/users:
+    get:
+      tags: [accounts]
+      summary: Every account, with its devices and invite state.
+      operationId: listUsers
+      x-chronicle-policy: owner
+      responses:
+        "200":
+          description: the roster
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Member"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+    post:
+      tags: [accounts]
+      summary: Create an account and mint its first invite.
+      operationId: createUser
+      x-chronicle-policy: owner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewUserRequest"
+      responses:
+        "201":
+          description: the account and its invite, shown once
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Invite"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: that email is already registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /admin/users/{id}/invite:
+    post:
+      tags: [accounts]
+      summary: Mint a fresh invite for an existing account.
+      description: A second device, or a replacement for one never redeemed.
+      operationId: createUserInvite
+      x-chronicle-policy: owner
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      responses:
+        "201":
+          description: the invite, shown once
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Invite"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /admin/users/{id}:
+    delete:
+      tags: [accounts]
+      summary: Remove an account and its credentials.
+      description: |
+        The owner cannot be removed, and neither can an author the corpus
+        references — that answers `409`, because it is a refusal the caller can
+        act on rather than a fault. Tier 2 is authored and irreplaceable, so a
+        memo keeps the author that recorded it.
+      operationId: deleteUser
+      x-chronicle-policy: owner
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      responses:
+        "204": { description: removed }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: the owner account cannot be removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: this account has memos and cannot be removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  # ── UPLOADS ─────────────────────────────────────────────────────────────────
+  # Resumable memo ingest (CHRN-20). Every refusal here is a client-visible
+  # answer with a specific remedy, which is why they are enumerated rather than
+  # collapsed into 400: a phone deciding whether to resend, wait, or give up
+  # needs to tell "we disagree about the offset" from "those were the wrong
+  # bytes".
+  #
+  # `Upload-Offset` is the resume instruction and rides on the RESPONSE of every
+  # state-carrying answer, including 409 and 408.
+
+  /memos/uploads:
+    post:
+      tags: [uploads]
+      summary: Declare an upload and open a session for it.
+      description: |
+        `idempotency_key` is minted per capture and persisted by the client
+        BEFORE the request goes out, so an HTTP retry is a replay rather than a
+        second memo. A replay — same key, same declaration — answers `200` with
+        the existing session; a mismatch answers `409` and the client mints a
+        fresh key.
+      operationId: openUpload
+      x-chronicle-policy: member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OpenUploadRequest"
+      responses:
+        "200":
+          description: a replay of an upload already open
+          headers:
+            Upload-Offset: { $ref: "#/components/headers/UploadOffset" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadState"
+        "201":
+          description: opened
+          headers:
+            Upload-Offset: { $ref: "#/components/headers/UploadOffset" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadState"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/UploadConflict" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/UploadsUnconfigured" }
+
+  /memos/uploads/{id}:
+    get:
+      tags: [uploads]
+      summary: Where this upload got to.
+      description: |
+        **This can finalise.** `Status` completes an upload whose bytes are all
+        present, which is what makes a client's "where did I get to" call safe
+        after a restart that landed the last chunk and died before committing —
+        and it means this read answers the same refusals the append does. A
+        client polling here needs the 409 and 422 branches as much as one
+        sending bytes.
+      operationId: getUpload
+      x-chronicle-policy: member
+      parameters:
+        - $ref: "#/components/parameters/UploadId"
+      responses:
+        "200":
+          description: the session's state, or the memo if this call completed it
+          headers:
+            Upload-Offset: { $ref: "#/components/headers/UploadOffset" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadState"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/UploadConflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/UploadsUnconfigured" }
+
+    patch:
+      tags: [uploads]
+      summary: Append a chunk.
+      description: |
+        The body is raw bytes, not a form part and not base64 — that costs a
+        third of the bytes and forces both ends to hold the whole thing in
+        memory.
+
+        **A chunk must carry a `Content-Length`**; a chunked body is refused,
+        because the offset arithmetic this endpoint is built on needs to know
+        the length before it reads. The last chunk completing the declared size
+        finalises the memo and returns it.
+      operationId: appendChunk
+      x-chronicle-policy: member
+      parameters:
+        - $ref: "#/components/parameters/UploadId"
+        - name: Upload-Offset
+          in: header
+          required: true
+          description: The offset these bytes start at. A disagreement answers 409 carrying the server's.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "200":
+          description: accepted; the memo is present once the upload completes
+          headers:
+            Upload-Offset: { $ref: "#/components/headers/UploadOffset" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadState"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "408": { $ref: "#/components/responses/TransferCut" }
+        "409": { $ref: "#/components/responses/UploadConflict" }
+        "411":
+          description: |
+            no `Content-Length`. A chunked body cannot be accepted here.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/UploadsUnconfigured" }
+
+    delete:
+      tags: [uploads]
+      summary: Abandon an upload and discard its staged bytes.
+      operationId: abandonUpload
+      x-chronicle-policy: member
+      parameters:
+        - $ref: "#/components/parameters/UploadId"
+      responses:
+        "204": { description: "abandoned, or already gone" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/UploadsUnconfigured" }
+
 components:
   securitySchemes:
     # ONE credential, two ways of presenting it. `sessionToken` reads the
@@ -215,7 +686,152 @@ components:
         The same token, set as an HttpOnly cookie by the sign-in routes. What
         the web client uses; an XSS cannot read it.
 
+  parameters:
+    SessionId:
+      name: id
+      in: path
+      required: true
+      description: A session's id, from GET /auth/sessions.
+      schema:
+        type: string
+        format: uuid
+    UserId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    UploadId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  headers:
+    UploadOffset:
+      description: |
+        How many bytes the server holds. On a 409 or a 408 this is the resume
+        instruction — the offset to send from next — which is why those answers
+        carry it rather than only the successful ones.
+      required: true
+      schema:
+        type: integer
+        format: int64
+
   responses:
+    BadRequest:
+      description: |
+        a parameter or a field is missing or malformed. The `code` carries the
+        machine-readable part; the message stays flat rather than describing the
+        value it rejected.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: |
+        no such thing, for this caller. Another account's row answers this too —
+        a list that merely hides a row is not access control.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    TooLarge:
+      description: the request body is larger than this endpoint accepts
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    UnsupportedMediaType:
+      description: |
+        the wrong `Content-Type`. On the JSON routes this is what closes login
+        CSRF: a cross-site form cannot produce `application/json`, so the check
+        is a security control rather than pedantry.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    RateLimited:
+      description: too many attempts; slow down
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unprocessable:
+      description: |
+        the request was understood and refused on its content — the bytes did
+        not match `content_hash`, or more were sent than were declared.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    UploadConflict:
+      description: |
+        A disagreement the client can act on. **Two shapes, because there are
+        two different answers**, and conflating them is how a client ends up
+        retrying something that can never work:
+
+        - **Resume.** An offset mismatch, or staging lost — the session is
+          alive and these are instructions for continuing it. The body is an
+          `UploadState` and `Upload-Offset` says where to send from.
+        - **Mint a new key.** A reused `idempotency_key` presented with a
+          different declaration. There is no session to describe and nothing to
+          resume; the body is an `Error` with code `idempotency_key_reused` and
+          there is no `Upload-Offset`.
+
+        **Tell them apart by which field is present** — `status` on the first,
+        `code` on the second. They are disjoint, and a client that reads the
+        second as the first sees `offset: 0` on a refusal meaning *this key can
+        never work again*, which reads exactly like a live session holding
+        nothing.
+
+        3.0.3 cannot give one status two response objects, so this is a `oneOf`
+        rather than two entries. Giving key reuse a status of its own was the
+        alternative and was refused: 409 is the correct code for both — a
+        conflict with the current state of the resource — and moving one of
+        them to a less accurate status to make the document simpler would be
+        the document lying for its own convenience.
+      headers:
+        Upload-Offset:
+          description: |
+            Where to resume from. Present on the resume shape and ABSENT on the
+            key-reuse one, which is why this is not required here while the
+            same header is required on the 200, 201 and 408.
+          required: false
+          schema:
+            type: integer
+            format: int64
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: "#/components/schemas/UploadState"
+              - $ref: "#/components/schemas/Error"
+    TransferCut:
+      description: |
+        the connection dropped mid-chunk. **Not a fault**: it is the ordinary
+        event this endpoint was built for, and the bytes that landed were kept,
+        so this is a resume instruction carrying the new offset. Answering 500
+        here made every phone that lost signal emit a line indistinguishable
+        from a real failure.
+      headers:
+        Upload-Offset: { $ref: "#/components/headers/UploadOffset" }
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/UploadState"
+    UploadsUnconfigured:
+      description: |
+        this deployment has no audio store, so there is nowhere to put a memo.
+        503 and not 404, on the rule this API states in four places: "not
+        configured here" and "wrong URL" are different facts.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
     Unauthorized:
       description: no session, or one this deployment does not know
       content:
@@ -550,3 +1166,268 @@ components:
         transcribed_at:
           type: string
           format: date-time
+
+    SsoError:
+      type: object
+      description: |
+        The Access path's error, which carries one field more than the shared
+        envelope: the **email the assertion named**. Without it a person facing
+        an SSO wall cannot tell which identity was rejected, and that is the
+        whole question they have.
+
+        `code` rather than `error`: the handler's own vocabulary has always
+        called it a code, and two names for one concept in one document is the
+        drift this contract exists to remove.
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          example: no_account
+        message:
+          type: string
+        email:
+          type: string
+          description: The verified email the assertion named. Absent when there was no assertion to read.
+
+    SignInRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+          description: A single-use invite token.
+        device_label:
+          type: string
+          description: |
+            What this device is called in the session list its holder reads.
+            Optional, and bounded — it reaches a TEXT column with no length of
+            its own.
+
+    UpdateMeRequest:
+      type: object
+      required: [display_name]
+      properties:
+        display_name:
+          type: string
+
+    NewUserRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          description: Also the Access identity this account is matched to on SSO.
+        display_name:
+          type: string
+        kind:
+          type: string
+          description: |
+            `person` or `agent`. An agent account can hold a token but is never
+            an owner and never confirms authored text — `note_revisions_guard`
+            refuses any revision whose `confirmed_by` names one.
+
+    User:
+      type: object
+      description: |
+        An account, as the wire carries it. It deliberately holds **no token
+        material**: a credential is returned exactly once, by the call that
+        mints it.
+      required: [id, email, display_name, kind, is_owner]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string }
+        display_name: { type: string }
+        kind: { type: string }
+        is_owner: { type: boolean }
+
+    Member:
+      description: |
+        An account with what the owner needs to administer it. `last_seen_at`
+        null and `invite_expires_at` set is an invite never redeemed.
+      allOf:
+        - $ref: "#/components/schemas/User"
+        - type: object
+          required: [last_seen_at, invite_expires_at, session_count]
+          properties:
+            last_seen_at:
+              type: string
+              format: date-time
+              nullable: true
+            invite_expires_at:
+              type: string
+              format: date-time
+              nullable: true
+            session_count:
+              type: integer
+
+    Session:
+      type: object
+      description: |
+        A signed-in session. `session_token` is shown HERE AND NEVER AGAIN —
+        there is no endpoint that returns it a second time, because it is stored
+        hashed.
+      required: [user, session_token]
+      properties:
+        user:
+          $ref: "#/components/schemas/User"
+        session_token:
+          type: string
+
+    Invite:
+      type: object
+      description: |
+        A single-use invite, shown once. `sign_in_url` is the QR target and is
+        absent when this deployment has no mobile base URL configured — a link
+        built from the Access-gated host would walk a phone into an SSO wall a
+        bearer token cannot open.
+      required: [user, invite_token, expires_in]
+      properties:
+        user:
+          $ref: "#/components/schemas/User"
+        invite_token:
+          type: string
+        sign_in_url:
+          type: string
+        expires_in:
+          type: string
+          description: How long the invite is good for, as a Go duration string.
+          example: 24h0m0s
+
+    DeviceSession:
+      type: object
+      required: [id, device_label, created_at, last_seen_at, current]
+      properties:
+        id: { type: string, format: uuid }
+        device_label: { type: string }
+        created_at: { type: string, format: date-time }
+        last_seen_at:
+          type: string
+          format: date-time
+          nullable: true
+        current:
+          type: boolean
+          description: |
+            Whether this is the session making the request. What lets a person
+            revoke every device but the one in their hand.
+
+    OpenUploadRequest:
+      type: object
+      required: [idempotency_key, content_hash, byte_size]
+      properties:
+        idempotency_key:
+          type: string
+          minLength: 16
+          maxLength: 200
+          description: |
+            Minted per capture and persisted by the client BEFORE the request
+            goes out, so an HTTP retry is a replay rather than a second memo.
+        content_hash:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+          description: |
+            SHA-256 of the file, lowercase hex. Checked on completion: bytes
+            that do not match it are discarded rather than stored as a memo
+            nobody can verify.
+        byte_size:
+          type: integer
+          format: int64
+          minimum: 1
+        retention:
+          type: string
+          enum: [discard_now, days_30, forever]
+          description: |
+            Omitted means the deployment default. `days_30` is pruned by policy
+            once a durable transcript exists — never on the calendar alone,
+            because pruning audio whose transcription never succeeded is
+            unrecoverable loss with no user-visible warning.
+        original_filename:
+          type: string
+
+    UploadState:
+      type: object
+      description: |
+        Where an upload got to. The same shape answers the successful cases and
+        every answer that carries a RESUME INSTRUCTION — the 408, and the half
+        of the 409 that means "continue from here" — so a client has one thing
+        to parse for everything it can act on by sending more bytes.
+
+        The other half of that 409 is an `Error`: a reused key has no session to
+        describe. See the `UploadConflict` response.
+      required: [status, byte_size, offset, duplicate]
+      properties:
+        status:
+          type: string
+          description: |
+            `incomplete` — more bytes are expected, and `offset` says from
+            where. `complete` — `memo` is set and there is no session left to
+            name. There is no third member: a freshly opened session is
+            `incomplete` with `offset: 0`, because "opened" and "opened and
+            nothing received" are the same fact and a client that had to tell
+            them apart would be switching on a distinction the server does not
+            make.
+          enum: [incomplete, complete]
+        upload_id:
+          type: string
+        byte_size:
+          type: integer
+          format: int64
+        offset:
+          type: integer
+          format: int64
+          description: How many bytes the server holds. Send from here next.
+        expires_at:
+          type: string
+          format: date-time
+        memo:
+          $ref: "#/components/schemas/Memo"
+        duplicate:
+          type: boolean
+          description: |
+            Whether this declaration matched a memo that already exists. A
+            replay is a success, not a conflict.
+
+    Memo:
+      type: object
+      description: |
+        A captured recording. **Tier 2**: what a person said, derivable from
+        nothing, rebuildable by nobody.
+      required: [id, state, retention, content_hash, byte_size, captured_at, audio_pruned, retention_status, prunes_at, duration_ms, codec, sample_rate_hz]
+      properties:
+        id: { type: string, format: uuid }
+        state:
+          type: string
+          description: captured, queued, transcribing, transcribed, held, discarded.
+        retention:
+          type: string
+          enum: [discard_now, days_30, forever]
+        content_hash: { type: string }
+        byte_size: { type: integer, format: int64 }
+        captured_at: { type: string, format: date-time }
+        audio_pruned:
+          type: boolean
+          description: |
+            The recording is gone and the transcript remains. Never true without
+            a durable transcript — that predicate, not the calendar, is what
+            gates deletion.
+        retention_status:
+          type: string
+          description: What will happen to this memo's audio — the same clause the pruner sweeps with.
+        prunes_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When, on that clause. Null when nothing will prune it.
+        duration_ms:
+          type: integer
+          format: int32
+          nullable: true
+          description: Null until something has decoded the file; a declaration is not a measurement.
+        codec:
+          type: string
+          nullable: true
+        sample_rate_hz:
+          type: integer
+          format: int32
+          nullable: true
+        original_filename:
+          type: string

@@ -361,7 +361,13 @@ func TestDocumentedOperations(t *testing.T) {
 	}
 	sort.Strings(got)
 
-	want := []string{"getHealthz", "getReadyz", "getStorageReport", "getTranscriptionReport"}
+	want := []string{
+		"abandonUpload", "appendChunk", "createSelfInvite", "createSession",
+		"createSessionFromAccess", "createUser", "createUserInvite", "deleteSession",
+		"deleteUser", "getHealthz", "getMe", "getReadyz", "getStorageReport",
+		"getTranscriptionReport", "getUpload", "listSessions", "listUsers",
+		"openUpload", "revokeSession", "updateMe",
+	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("operations = %v, want %v.\nIf this is the second half of CHRN-97 landing routes, update the list.", got, want)
 	}
@@ -476,26 +482,33 @@ func TestEveryGeneratedRouteIsRegisteredThroughThePolicyPath(t *testing.T) {
 		ErrorHandlerFunc: bindError(discardLogger()),
 	})
 
-	want := map[string]policy{
-		"GET /healthz":             policyPublic,
-		"GET /readyz":              policyPublic,
-		"GET /admin/storage":       policyOwner,
-		"GET /admin/transcription": policyOwner,
-	}
-
-	if len(routed.seen) != len(want) {
-		t.Fatalf("registered %d routes through the policy path, want %d: %v",
-			len(routed.seen), len(want), routed.seen)
-	}
-	for pattern, pol := range want {
+	// THE NON-TRIVIAL HALF IS routePolicy ⊆ seen. The other direction is true by
+	// construction — the shim populates `seen` from its own lookups — but this
+	// one says every declared route was actually REGISTERED, which catches a
+	// table entry the generator never reaches: dead code that reads like a live
+	// credential. Together with TestPolicyTableMatchesTheDocument, which ties
+	// the table to the document in both directions, that closes the loop
+	// without any list here to keep in step with three other places.
+	for pattern, pol := range routePolicy {
 		got, ok := routed.seen[pattern]
 		if !ok {
-			t.Errorf("%s was not registered through the policy path", pattern)
+			t.Errorf("%s is in routePolicy but the generator registered no such route — "+
+				"the wrap it names is dead code", pattern)
 			continue
 		}
 		if got != pol {
 			t.Errorf("%s registered as %q, want %q", pattern, got, pol)
 		}
+	}
+	if len(routed.seen) != len(routePolicy) {
+		t.Errorf("registered %d routes through the policy path, table has %d",
+			len(routed.seen), len(routePolicy))
+	}
+	// And the count is the document's, so a route that reached neither is still
+	// a failure rather than a smaller green test.
+	if n := len(apitest.Operations(t)); len(routed.seen) != n {
+		t.Errorf("registered %d routes, but openapi.yaml declares %d operations",
+			len(routed.seen), n)
 	}
 }
 
@@ -646,5 +659,74 @@ func TestAFailingStoreAnswersTheDocumented500(t *testing.T) {
 	// The cause belongs in the log, not in a body that may cross the WAN.
 	if strings.Contains(body.Message, "connection reset") {
 		t.Errorf("message %q relays the underlying error", body.Message)
+	}
+}
+
+// Every operation that binds a parameter, called with a malformed one.
+//
+// This is criterion 9's last clause, and it is live for the first time: PR 1
+// migrated four operations that bind nothing, so `bindError` could only be
+// tested directly. These six bind an `{id}`, and one binds a header too.
+//
+// What it holds: the generated wrapper answers BEFORE the handler runs, from
+// code inside wire.gen.go that is not "a handler" — so every other guard in
+// this package passes while it answers text/plain. Conform is what says the
+// body is the documented envelope, and the loop is what stops a future
+// operation opting out by simply not being tested.
+func TestEveryParameterBindingOperationRefusesAMalformedOne(t *testing.T) {
+	f := newFakeAccounts()
+	owner := f.signIn(person("owner@example.com", true), "owner-token")
+	_ = owner
+	h := testRouter(f)
+
+	cases := []struct {
+		operationID  string
+		method, path string
+		token        string
+		headers      map[string]string
+	}{
+		{"revokeSession", http.MethodDelete, "/auth/sessions/not-a-uuid", "owner-token", nil},
+		{"createUserInvite", http.MethodPost, "/admin/users/not-a-uuid/invite", "owner-token", nil},
+		{"deleteUser", http.MethodDelete, "/admin/users/not-a-uuid", "owner-token", nil},
+		{"getUpload", http.MethodGet, "/memos/uploads/not-a-uuid", "owner-token", nil},
+		{"abandonUpload", http.MethodDelete, "/memos/uploads/not-a-uuid", "owner-token", nil},
+		{"appendChunk", http.MethodPatch, "/memos/uploads/not-a-uuid", "owner-token",
+			map[string]string{"Upload-Offset": "0", "Content-Type": "application/octet-stream"}},
+		// The header parameter, malformed rather than the path one — a
+		// different binder, the same envelope.
+		{"appendChunk", http.MethodPatch, "/memos/uploads/" + someUUID, "owner-token",
+			map[string]string{"Upload-Offset": "not-a-number", "Content-Type": "application/octet-stream"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.operationID+" "+tc.path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			r := httptest.NewRequest(tc.method, tc.path, nil)
+			r.Header.Set("Authorization", "Bearer "+tc.token)
+			for k, v := range tc.headers {
+				r.Header.Set(k, v)
+			}
+			h.ServeHTTP(rec, r)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+			}
+			apitest.Conform(t, tc.operationID, rec)
+
+			var body wire.Error
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("body is not the documented envelope: %v", err)
+			}
+			if body.Code != codeInvalidParameter {
+				t.Errorf("code = %q, want %q", body.Code, codeInvalidParameter)
+			}
+			// The regression bindError exists to prevent: pathUUID answered a
+			// flat message "rather than leaking the shape of the id space
+			// through a lookup", where the generated text says
+			// "invalid UUID length: 10".
+			if strings.Contains(body.Message, "UUID") || strings.Contains(body.Message, "length") {
+				t.Errorf("message %q relays the parser's own words", body.Message)
+			}
+		})
 	}
 }

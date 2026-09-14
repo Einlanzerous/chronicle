@@ -5,7 +5,7 @@ package api
 //
 // A browser reaching Chronicle through the tunnel has already cleared Access,
 // and the edge injects a `Cf-Access-Jwt-Assertion` header carrying a
-// Cloudflare-signed identity. handleAuthCFAccess turns that into a Chronicle
+// Cloudflare-signed identity. CreateSessionFromAccess turns that into a Chronicle
 // session, so there is no second login.
 //
 // Chronicle verifies the JWT itself rather than trusting the header, even
