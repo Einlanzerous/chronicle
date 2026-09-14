@@ -651,7 +651,11 @@ func TestSearchIsNotAList(t *testing.T) {
 	call := rig.as("member-token")
 	noteID, memoID, number := uuid.New(), uuid.New(), int64(311)
 	rig.wiki.hits = []store.SearchHit{
-		{Kind: store.HitNote, NoteID: &noteID, Number: &number, Title: "Retention pruner", Snippet: "the <b>pruner</b> gates on", Rank: 0.9, CreatedAt: time.Now()},
+		{Kind: store.HitNote, NoteID: &noteID, Number: &number, Title: "Retention pruner",
+			// ts_headline returns the rest of the document verbatim, and a
+			// note body is stored raw: this is what a snippet of a hostile
+			// note looks like on the way out of the store.
+			Snippet: `the <b>pruner</b> gates on <img src=x onerror="steal()"> & <b>bold</b>`, Rank: 0.9, CreatedAt: time.Now()},
 		{Kind: store.HitTranscript, MemoID: &memoID, Model: "whisper.cpp/small.en", Snippet: "we said the <b>pruner</b>", Rank: 0.4, CreatedAt: time.Now()},
 	}
 
@@ -664,6 +668,14 @@ func TestSearchIsNotAList(t *testing.T) {
 	note, tr := res.Items[0], res.Items[1]
 	if note.Kind != wire.SearchHitKindNote || note.Ref == nil || *note.Ref != "CHR-0311" || note.MemoId != nil {
 		t.Errorf("note hit = %+v", note)
+	}
+	// Safe to embed: the markup in the body is escaped, the highlight tags
+	// survive, and nothing with an attribute can.
+	if want := `the <b>pruner</b> gates on &lt;img src=x onerror=&#34;steal()&#34;&gt; &amp; <b>bold</b>`; note.Snippet != want {
+		t.Errorf("snippet = %q\nwant      %q", note.Snippet, want)
+	}
+	if strings.Contains(note.Snippet, "<img") || strings.Contains(note.Snippet, "onerror=\"") {
+		t.Errorf("raw markup reached the wire: %q", note.Snippet)
 	}
 	if tr.Kind != wire.SearchHitKindTranscript || tr.MemoId == nil || *tr.MemoId != memoID || tr.Ref != nil || tr.Model == nil {
 		t.Errorf("transcript hit = %+v", tr)
@@ -765,6 +777,11 @@ func TestWikiWritesDriveTheSharedRefusals(t *testing.T) {
 	mustStatus(t, call(http.MethodGet, "/notes/CHR-9999/revisions", ""), http.StatusNotFound, "listNoteRevisions")
 	mustStatus(t, call(http.MethodPost, "/notes/CHR-9999/revisions", `{"body":"b"}`), http.StatusNotFound, "appendRevision")
 	mustStatus(t, call(http.MethodPost, "/notes", `{"page":"nowhere","title":"t","body":"b"}`), http.StatusNotFound, "createNote")
+	// Malformed is not missing: the same string answers 400 on both routes.
+	mustStatus(t, call(http.MethodPost, "/notes", `{"page":"Estate//","title":"t","body":"b"}`), http.StatusBadRequest, "createNote")
+	mustStatus(t, call(http.MethodGet, "/notes?page=Estate//", ""), http.StatusBadRequest, "listNotes")
+	// An agent may create a page; it is a container, not authored text.
+	mustStatus(t, rig.do(http.MethodPost, "/pages", `{"path":"by-an-agent"}`, "agent-token"), http.StatusCreated, "createPage")
 }
 
 // The provenance link, read backwards: a note carries the threads that

@@ -360,7 +360,13 @@ func (a *api) CreateNote(w http.ResponseWriter, r *http.Request) {
 	// land on the old page's successor without the writer knowing.
 	page, err := a.wiki.PageByPath(ctx, req.Page)
 	switch {
-	case errors.Is(err, store.ErrNotFound), errors.Is(err, store.ErrInvalidSlug):
+	case errors.Is(err, store.ErrInvalidSlug):
+		// Malformed is not missing. SplitPath's own comment says answering
+		// "not found" for a request that is really malformed is precisely
+		// what it exists to prevent, and listNotes already answers 400.
+		writeError(w, http.StatusBadRequest, codeInvalidBody, "page is not a page path")
+		return
+	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, codeNotFound, "the page path names no page")
 		return
 	case err != nil:

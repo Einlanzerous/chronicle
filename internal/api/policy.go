@@ -128,7 +128,10 @@ var routePolicy = map[string]policy{
 	// every account reads and writes notes, and the one rule about WHO may
 	// confirm authored text — a person, never an agent — is the store's
 	// (CH041), answered by requirePerson before the round trip and by the
-	// guard after it. Not this table's to express.
+	// guard after it. Not this table's to express. It reaches the two
+	// revision writes and NOT POST /pages: a page is a container with no
+	// authored text and no confirming person, so an agent session may
+	// create one, and the document says so.
 	"GET /pages":                  policyMember,
 	"POST /pages":                 policyMember,
 	"GET /notes":                  policyMember,

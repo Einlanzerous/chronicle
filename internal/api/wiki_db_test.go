@@ -140,12 +140,26 @@ func TestNotesRoundTripThroughTheRealStore(t *testing.T) {
 		t.Errorf("list = %+v", l)
 	}
 
-	// Search across the real index finds it, as a note.
+	// Search across the real index finds it, as a note -- and a hostile note
+	// beside it comes back escaped, with ts_headline's real markers intact.
+	mustStatus(t, call(http.MethodPost, "/notes",
+		`{"page":"estate","title":"Hostile","body":"A transcript mention beside <img src=x onerror=\"steal()\"> markup."}`, owner), http.StatusCreated, "createNote")
 	rec = call(http.MethodGet, "/search?q=transcript", "", owner)
 	mustStatus(t, rec, http.StatusOK, "search")
 	res := decodeInto[wire.SearchResults](t, rec)
-	if len(res.Items) != 1 || res.Items[0].Kind != wire.SearchHitKindNote || res.Items[0].Ref == nil || *res.Items[0].Ref != "CHR-0001" {
-		t.Errorf("search = %+v", res)
+	if len(res.Items) != 2 {
+		t.Fatalf("search = %+v", res)
+	}
+	for _, hit := range res.Items {
+		if hit.Kind != wire.SearchHitKindNote || hit.Ref == nil {
+			t.Errorf("hit = %+v", hit)
+		}
+		if strings.Contains(hit.Snippet, "<img") {
+			t.Errorf("raw markup reached the wire: %q", hit.Snippet)
+		}
+		if !strings.Contains(hit.Snippet, "<b>transcript</b>") {
+			t.Errorf("the highlight did not survive escaping: %q", hit.Snippet)
+		}
 	}
 	mustStatus(t, call(http.MethodGet, "/search?q=%21%21%21", "", owner), http.StatusBadRequest, "search")
 

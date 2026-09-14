@@ -1177,7 +1177,10 @@ type SearchHit struct {
 	// Ref `CHR-0311`, on a note hit.
 	Ref *string `json:"ref,omitempty"`
 
-	// Snippet Up to two fragments around the match, matches wrapped in `<b>`, fragments joined by ` … `.
+	// Snippet Up to two fragments around the match, fragments joined by ` … `,
+	// each match wrapped in a bare `<b>`. Safe to embed: everything but
+	// those two tags is HTML-escaped, because a note body is stored raw
+	// and the fragment is a slice of it.
 	Snippet string `json:"snippet"`
 
 	// Title On a note hit.
@@ -1518,9 +1521,11 @@ type ListNotesParams struct {
 	// Page A page path, `estate/conventions/naming`. A redirect left by a move is followed.
 	Page PagePath `form:"page" json:"page"`
 
-	// Limit How many to return. CLAMPED SERVER-SIDE, and the response echoes what it
-	// was clamped to — a client composing a batch needs the cap without a
-	// second document to consult.
+	// Limit How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch
+	// caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and
+	// the note and revision lists cap at 200 and say so by answering a
+	// `next_cursor` for the rest. A client asking for more than the cap gets
+	// the cap.
 	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
 
 	// Cursor Opaque; the `next_cursor` of the previous page. Absent means the
@@ -1537,9 +1542,11 @@ type GetNoteParams struct {
 
 // ListNoteRevisionsParams defines parameters for ListNoteRevisions.
 type ListNoteRevisionsParams struct {
-	// Limit How many to return. CLAMPED SERVER-SIDE, and the response echoes what it
-	// was clamped to — a client composing a batch needs the cap without a
-	// second document to consult.
+	// Limit How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch
+	// caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and
+	// the note and revision lists cap at 200 and say so by answering a
+	// `next_cursor` for the rest. A client asking for more than the cap gets
+	// the cap.
 	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
 
 	// Cursor Opaque; the `next_cursor` of the previous page. Absent means the
@@ -1553,25 +1560,31 @@ type SearchParams struct {
 	// Q The query. One made only of punctuation matches nothing and is refused as an empty question rather than answered as an empty corpus.
 	Q string `form:"q" json:"q"`
 
-	// Limit How many to return. CLAMPED SERVER-SIDE, and the response echoes what it
-	// was clamped to — a client composing a batch needs the cap without a
-	// second document to consult.
+	// Limit How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch
+	// caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and
+	// the note and revision lists cap at 200 and say so by answering a
+	// `next_cursor` for the rest. A client asking for more than the cap gets
+	// the cap.
 	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
 // GetTriageBatchParams defines parameters for GetTriageBatch.
 type GetTriageBatchParams struct {
-	// Limit How many to return. CLAMPED SERVER-SIDE, and the response echoes what it
-	// was clamped to — a client composing a batch needs the cap without a
-	// second document to consult.
+	// Limit How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch
+	// caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and
+	// the note and revision lists cap at 200 and say so by answering a
+	// `next_cursor` for the rest. A client asking for more than the cap gets
+	// the cap.
 	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
 // ListDeferredParams defines parameters for ListDeferred.
 type ListDeferredParams struct {
-	// Limit How many to return. CLAMPED SERVER-SIDE, and the response echoes what it
-	// was clamped to — a client composing a batch needs the cap without a
-	// second document to consult.
+	// Limit How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch
+	// caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and
+	// the note and revision lists cap at 200 and say so by answering a
+	// `next_cursor` for the rest. A client asking for more than the cap gets
+	// the cap.
 	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
 }
 

@@ -976,6 +976,10 @@ paths:
 
         Here because nothing else creates one: a note must be filed on a page,
         and until this operation a fresh deployment had no page to file it on.
+
+        An agent session may create a page. A page is a container and carries
+        no authored text and no confirming person; the person-only rule
+        (CH041) is about revisions, and it holds where they are written.
       operationId: createPage
       x-chronicle-policy: member
       requestBody:
@@ -1293,9 +1297,11 @@ components:
       in: query
       required: false
       description: |
-        How many to return. CLAMPED SERVER-SIDE, and the response echoes what it
-        was clamped to — a client composing a batch needs the cap without a
-        second document to consult.
+        How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch
+        caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and
+        the note and revision lists cap at 200 and say so by answering a
+        `next_cursor` for the rest. A client asking for more than the cap gets
+        the cap.
       schema:
         type: integer
         minimum: 1
@@ -2964,7 +2970,11 @@ components:
           description: On a transcript hit. Runner-qualified, e.g. `whisper.cpp/small.en`, so the operator can see which decode matched.
         snippet:
           type: string
-          description: Up to two fragments around the match, matches wrapped in `<b>`, fragments joined by ` … `.
+          description: |
+            Up to two fragments around the match, fragments joined by ` … `,
+            each match wrapped in a bare `<b>`. Safe to embed: everything but
+            those two tags is HTML-escaped, because a note body is stored raw
+            and the fragment is a slice of it.
         rank:
           type: number
           format: float

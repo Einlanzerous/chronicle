@@ -1,6 +1,9 @@
 package api
 
 import (
+	"html"
+	"strings"
+
 	"github.com/Einlanzerous/chronicle/internal/api/wire"
 	"github.com/Einlanzerous/chronicle/internal/store"
 )
@@ -93,7 +96,7 @@ func toSearchHits(in []store.SearchHit) []wire.SearchHit {
 	for _, h := range in {
 		hit := wire.SearchHit{
 			Kind:      wire.SearchHitKind(h.Kind),
-			Snippet:   h.Snippet,
+			Snippet:   safeSnippet(h.Snippet),
 			Rank:      h.Rank,
 			CreatedAt: h.CreatedAt,
 		}
@@ -109,4 +112,27 @@ func toSearchHits(in []store.SearchHit) []wire.SearchHit {
 		out = append(out, hit)
 	}
 	return out
+}
+
+// safeSnippet makes a ts_headline fragment safe to embed.
+//
+// ts_headline wraps each match in <b>…</b> and returns THE REST OF THE
+// DOCUMENT VERBATIM -- Postgres escapes nothing and offers no option to. A
+// note body is stored raw (CHRN-40), so a snippet of one carrying
+// `<img onerror=…>` would reach a client whose document tells it the field is
+// HTML, and Note.html's whole argument -- "the renderer is the only thing that
+// writes HTML here" -- would be undone by the field beside it.
+//
+// So everything is escaped, and then exactly the two bare tags ts_headline
+// writes are put back. Nothing with an attribute can survive: the only way to
+// get `&lt;b&gt;` after escaping is a literal `<b>` in the text, and a bare
+// <b> is a bold mark and never markup. The one imprecision is that a `<b>`
+// somebody typed into a note reads as a highlight, which is a cosmetic wrong
+// rather than an injection; the clean fix is sentinel StartSel/StopSel in the
+// store's ts_headline call, which is internal/store's to make and is raised on
+// the ticket.
+func safeSnippet(s string) string {
+	escaped := html.EscapeString(s)
+	escaped = strings.ReplaceAll(escaped, "&lt;b&gt;", "<b>")
+	return strings.ReplaceAll(escaped, "&lt;/b&gt;", "</b>")
 }
