@@ -608,6 +608,8 @@ func TestThreadRefusalsAreTheDocumentedOnes(t *testing.T) {
 		{http.MethodPost, "/discussions/DSC-0001/resolve", `{"into":"existing_note","note_ref":"nope","body":"b"}`, "resolveDiscussion"},
 		{http.MethodPost, "/discussions/DSC-0001/participants", `{}`, "addParticipant"},
 		{http.MethodGet, "/discussions?page=Bad%20Path", "", "listDiscussions"},
+		{http.MethodPost, "/discussions", `{"title":"t","page":"Estate//","body":"b"}`, "openDiscussion"},
+		{http.MethodPost, "/discussions/DSC-0001/resolve", `{"into":"new_note","page":"Estate//","title":"t","body":"b"}`, "resolveDiscussion"},
 		{http.MethodGet, "/discussions?page=estate&cursor=x", "", "listDiscussions"},
 	} {
 		mustStatus(t, me(tc.method, tc.path, tc.body), http.StatusBadRequest, tc.op)

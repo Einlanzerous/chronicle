@@ -220,7 +220,11 @@ func (a *api) OpenDiscussion(w http.ResponseWriter, r *http.Request) {
 	if req.Page != nil && *req.Page != "" {
 		page, err := a.wiki.PageByPath(ctx, *req.Page)
 		switch {
-		case errors.Is(err, store.ErrNotFound), errors.Is(err, store.ErrInvalidSlug):
+		case errors.Is(err, store.ErrInvalidSlug):
+			// Malformed is not missing -- createNote's reasoning.
+			writeError(w, http.StatusBadRequest, codeInvalidBody, "page is not a page path")
+			return
+		case errors.Is(err, store.ErrNotFound):
 			writeError(w, http.StatusNotFound, codeNotFound, "the page path names no page")
 			return
 		case err != nil:
@@ -573,7 +577,10 @@ func (a *api) ResolveDiscussion(w http.ResponseWriter, r *http.Request, ref stri
 		}
 		page, err := a.wiki.PageByPath(ctx, *req.Page)
 		switch {
-		case errors.Is(err, store.ErrNotFound), errors.Is(err, store.ErrInvalidSlug):
+		case errors.Is(err, store.ErrInvalidSlug):
+			writeError(w, http.StatusBadRequest, codeInvalidBody, "page is not a page path")
+			return
+		case errors.Is(err, store.ErrNotFound):
 			writeError(w, http.StatusNotFound, codeNotFound, "the page path names no page")
 			return
 		case err != nil:
