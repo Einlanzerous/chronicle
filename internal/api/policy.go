@@ -147,6 +147,20 @@ var routePolicy = map[string]policy{
 	// raised on CHRN-98. Notes are a shared corpus and would be fine at member;
 	// the transcript half is what sets the policy for the one operation.
 	"GET /search": policyOwner,
+
+	// DISCUSSIONS (CHRN-99). Member and not owner, agents included: an agent
+	// posts a turn through the same door as a person, and what it may not do
+	// — reply to itself, open a thread, resolve one, carry a marker, add a
+	// participant — is the store's to refuse, per turn, not this table's.
+	"GET /discussions":                            policyMember,
+	"POST /discussions":                           policyMember,
+	"GET /discussions/unread":                     policyMember,
+	"GET /discussions/{ref}":                      policyMember,
+	"POST /discussions/{ref}/turns":               policyMember,
+	"POST /discussions/{ref}/read":                policyMember,
+	"POST /discussions/{ref}/resolve":             policyMember,
+	"POST /discussions/{ref}/participants":        policyMember,
+	"DELETE /discussions/{ref}/participants/{id}": policyMember,
 }
 
 // policyRouter is the ServeMux the generated registration writes into.

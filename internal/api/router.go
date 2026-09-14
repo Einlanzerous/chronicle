@@ -131,6 +131,10 @@ type Deps struct {
 	// routes then answer 503 rather than dereferencing it.
 	Wiki Wiki
 
+	// Threads is E6's store, reachable (CHRN-99). Nil only on a router
+	// assembled without one, and the nine routes then answer 503.
+	Threads Threads
+
 	// Keys is the live Switchyard project key set — the renderer's predicate
 	// for which KEY-N tokens are references, and the miss feed's destination.
 	// Nil when no tracker is configured: the renderer then runs the pure path
@@ -178,6 +182,7 @@ type api struct {
 	localRefs     LocalReferences
 	now           func() time.Time
 	wiki          Wiki
+	threads       Threads
 	keys          *resolve.Keys
 	renderer      *markdown.Renderer
 }
@@ -231,6 +236,7 @@ func NewRouter(d Deps) http.Handler {
 		localRefs:     d.LocalReferences,
 		now:           d.Now,
 		wiki:          d.Wiki,
+		threads:       d.Threads,
 		keys:          d.Keys,
 	}
 	if a.now == nil {

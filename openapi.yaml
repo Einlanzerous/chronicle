@@ -87,6 +87,11 @@ tags:
       rebuildable by nobody. Markdown is stored raw and rendered on read.
   - name: search
     description: Full-text search across notes and transcripts. Not a list.
+  - name: discussions
+    description: |
+      Threads, with the Scribe as a participant. Ordered by a server-assigned
+      sequence, read markers server-side, and a thread that ends by resolving
+      into a note.
 
 paths:
   /healthz:
@@ -1282,6 +1287,362 @@ paths:
         "500": { $ref: "#/components/responses/InternalError" }
         "503": { $ref: "#/components/responses/WikiUnconfigured" }
 
+  # ── DISCUSSIONS ─────────────────────────────────────────────────────────────
+  # E6's store, reachable (CHRN-99), and where E6's exit is finally
+  # demonstrable: a human and an agent hold a threaded exchange over HTTP,
+  # unread is correct in both, and resolving a thread writes a link to the note
+  # it produced. Three things are the store's and only transcribed here:
+  #
+  #   ordering   `seq` is allocated under the thread's row lock and is the ONLY
+  #              order. A turn composed offline six hours ago lands at the end,
+  #              because where it belongs is where it arrived. Nothing here
+  #              sorts by a client timestamp.
+  #   unread     markers are server-side and monotonic; a client REPORTS the
+  #              position it has read through and never computes a count.
+  #   the loop   an agent turn may not be caused by an agent turn (CH091), and
+  #              a resolved thread takes no more turns (CH093). Both are the
+  #              store's; this surface is not a second place they live and it
+  #              does not bypass them.
+
+  /discussions:
+    get:
+      tags: [discussions]
+      summary: The threads filed against a page.
+      description: |
+        Resolved threads are INCLUDED — a resolved thread concluded, which is
+        the most interesting thing a thread can do, and hiding it is what
+        CHRN-46's third `Done when` forbids. Unfiled threads have no page and
+        are not listed here; a client reaches them by ref, or through the
+        unread badge. A page-independent list needs a store query this ticket
+        does not add.
+      operationId: listDiscussions
+      x-chronicle-policy: member
+      parameters:
+        - $ref: "#/components/parameters/PagePath"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: the threads, oldest number first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiscussionList"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: no page at that path, live or redirected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/ThreadsUnconfigured" }
+
+    post:
+      tags: [discussions]
+      summary: Open a thread with its first turn.
+      description: |
+        The thread and turn 1 are written together: a thread with no turns is
+        a state no reader should have to handle. The session's account authors
+        turn 1, and that is where "an agent cannot open a thread" is enforced —
+        by the store, which refuses an agent at seq 1 because no person's turn
+        precedes it (`409 agent_after_agent`).
+
+        Posting is reading: the opener's marker starts at their own turn.
+      operationId: openDiscussion
+      x-chronicle-policy: member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewDiscussionRequest"
+      responses:
+        "201":
+          description: the thread, as `getDiscussion` would return it
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Thread"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: the page path names no page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409": { $ref: "#/components/responses/TurnRefused" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/ThreadsUnconfigured" }
+
+  /discussions/unread:
+    get:
+      tags: [discussions]
+      summary: The badge — every thread this account has something unread in.
+      description: |
+        Threads with nothing unread are omitted rather than reported as 0, so
+        the length is the number wanting attention. Removed participants are
+        excluded: being taken off a thread is exactly a statement that it is
+        no longer yours to read. An agent gets an empty list — an agent has no
+        unread, by CHRN-45 ruling 4, because unread answers "what should I
+        look at" and an agent that scanned it would reply to everything.
+      operationId: listUnread
+      x-chronicle-policy: member
+      responses:
+        "200":
+          description: the threads with unread turns
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UnreadList"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/ThreadsUnconfigured" }
+
+  /discussions/{ref}:
+    get:
+      tags: [discussions]
+      summary: A thread, in order, with its participants and your unread count.
+      description: |
+        `turns` are in `seq` order and carry each author's kind AS IT WAS WHEN
+        THE TURN WAS WRITTEN — frozen on the row, so a later account edit
+        cannot rewrite who said what. `participants` are who is expected to
+        read, current kind and current marker, removed ones included because
+        their turns are still in the thread.
+
+        `unread` is the caller's: `max(seq) − last_read_seq`, computed by the
+        store. Absent when the caller is not a participant (reading is not
+        joining), and absent for an agent.
+      operationId: getDiscussion
+      x-chronicle-policy: member
+      parameters:
+        - $ref: "#/components/parameters/DiscussionRef"
+      responses:
+        "200":
+          description: the thread
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Thread"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/ThreadsUnconfigured" }
+
+  /discussions/{ref}/turns:
+    post:
+      tags: [discussions]
+      summary: Reply.
+      description: |
+        `seq` is assigned by the server under the thread's row lock; there is
+        no field for it and no field for the author's kind, which the store
+        derives from the account. `composed_at` is the client's claim about
+        when this was written — a phone that was offline — and is carried,
+        never sorted on.
+
+        An agent session may reply. What it may not do is reply to an agent:
+        CH091 requires the immediately preceding turn to be a person's, and
+        the refusal is the store's (`409 agent_after_agent`). A resolved
+        thread takes no more turns (`409 discussion_resolved`); continue by
+        opening a new thread that cites it.
+
+        Posting is reading: the author's marker moves to this turn.
+      operationId: appendTurn
+      x-chronicle-policy: member
+      parameters:
+        - $ref: "#/components/parameters/DiscussionRef"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewTurnRequest"
+      responses:
+        "201":
+          description: the turn, with its seq
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Turn"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/TurnRefused" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/ThreadsUnconfigured" }
+
+  /discussions/{ref}/read:
+    post:
+      tags: [discussions]
+      summary: Report how far you have read.
+      description: |
+        A POSITION, not "mark everything read": the client says which turn it
+        has read through, which is what makes the call idempotent and safe to
+        retry. The marker only moves forward — a stale report from a slow
+        device is a no-op, not an error — and is clamped to the thread's last
+        turn, so a client one off against a stale list cannot park itself in
+        the future and read 0 unread until the thread catches up.
+
+        Reading is not joining: a caller with no participant row is refused
+        (`403 not_a_participant`). An agent carries no marker at all
+        (`403 agent_has_no_marker`).
+      operationId: markRead
+      x-chronicle-policy: member
+      parameters:
+        - $ref: "#/components/parameters/DiscussionRef"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MarkReadRequest"
+      responses:
+        "204": { description: "recorded, or already past that point" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: |
+            not a participant of this thread, or an agent — which carries no
+            marker. The `code` says which.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404": { $ref: "#/components/responses/NotFound" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/ThreadsUnconfigured" }
+
+  /discussions/{ref}/resolve:
+    post:
+      tags: [discussions]
+      summary: Resolve a thread — into a new note, an existing one, or nothing.
+      description: |
+        A thread ends by producing something durable, and the link runs both
+        ways: the thread names the note, and the note names every thread that
+        concluded into it. `into` is REQUIRED and has no default, because
+        resolving without a note is allowed but must be a deliberate choice
+        rather than the path of least resistance.
+
+        - `new_note` writes the note and the link in one transaction.
+        - `existing_note` APPENDS a revision to a note that exists — the
+          ordinary case: "Resolved into PRINCIPLES §6" is a section of a
+          long-lived document.
+        - `nothing` records the conclusion with no note. It can be completed
+          later by resolving again with a note; the original resolver and
+          instant stand.
+
+        The resolver is the session's person — an agent cannot write what a
+        conversation concluded (`403 person_required`). A recorded resolution
+        is never rewritten: resolving into a DIFFERENT note answers
+        `409 resolution_fixed`.
+      operationId: resolveDiscussion
+      x-chronicle-policy: member
+      parameters:
+        - $ref: "#/components/parameters/DiscussionRef"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResolveDiscussionRequest"
+      responses:
+        "200":
+          description: the thread as resolved, and the note it produced with the link read from the note's end
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiscussionResolution"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/PersonRequired" }
+        "404":
+          description: no such thread, page or note
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: |
+            the resolution is already recorded and names a different note
+            (`resolution_fixed`), or the note named is deleted (`note_deleted`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/ThreadsUnconfigured" }
+
+  /discussions/{ref}/participants:
+    post:
+      tags: [discussions]
+      summary: Put an account on a thread — a person, or the Scribe.
+      description: |
+        Participation is who is EXPECTED TO READ, not who may write: nothing
+        requires a turn's author to be a participant, and posting adds a
+        person by itself. This is how an agent joins — an agent never posts
+        first, so it is never added by posting. Re-adding somebody removed
+        brings them back without reattributing the original invitation. The
+        actor must be a person.
+      operationId: addParticipant
+      x-chronicle-policy: member
+      parameters:
+        - $ref: "#/components/parameters/DiscussionRef"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ParticipantRequest"
+      responses:
+        "204": { description: "on the thread, or back on it" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/PersonRequired" }
+        "404":
+          description: no such thread, or no such account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/ThreadsUnconfigured" }
+
+  /discussions/{ref}/participants/{id}:
+    delete:
+      tags: [discussions]
+      summary: Take an account off a thread, without touching a word they said.
+      description: |
+        A state change, not a deletion: every turn carries its own author.
+        Idempotent — an account never on the thread, or already off it,
+        answers the same 204. A removed person may still post, and their
+        removal stands; only this operation's inverse puts them back.
+      operationId: removeParticipant
+      x-chronicle-policy: member
+      parameters:
+        - $ref: "#/components/parameters/DiscussionRef"
+        - $ref: "#/components/parameters/UserId"
+      responses:
+        "204": { description: "off the thread, or never on it" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/PersonRequired" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/ThreadsUnconfigured" }
+
 components:
   securitySchemes:
     # ONE credential, two ways of presenting it. `sessionToken` reads the
@@ -1322,6 +1683,13 @@ components:
         A note reference, parsed leniently — `CHR-0311`, `chr-311` and
         `CHR-00311` all name note 311 — because people quote these by hand.
         Rendered strictly everywhere in a payload, as `CHR-0311`.
+      schema:
+        type: string
+    DiscussionRef:
+      name: ref
+      in: path
+      required: true
+      description: A discussion reference, parsed leniently — `DSC-0007`, `dsc-7`, `DSC-00007` all name thread 7 — and rendered strictly as `DSC-0007`.
       schema:
         type: string
     Cursor:
@@ -1521,6 +1889,26 @@ components:
         person. `note_revisions_guard` (CH041) refuses the write in the store;
         this is that refusal, answered before the round trip where the kind is
         already known and by the store where it is not.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    TurnRefused:
+      description: |
+        the store refused the turn, and the `code` says why: `agent_after_agent`
+        — an agent turn must follow a person's, which also means an agent
+        cannot open a thread (CH091); `discussion_resolved` — a resolved thread
+        takes no more turns (CH093); `thread_busy` — another append holds the
+        thread's lock past its timeout, and a retry is the remedy.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ThreadsUnconfigured:
+      description: |
+        this router was assembled with no discussions store behind it. `serve`
+        always supplies one; declared because the handler answers it, driven
+        by the test that builds the router without one.
       content:
         application/json:
           schema:
@@ -2988,3 +3376,247 @@ components:
           type: number
           format: float
         created_at: { type: string, format: date-time }
+
+    # ── DISCUSSIONS ─────────────────────────────────────────────────────────
+    # E6's types transcribed (CHRN-99). A thread's content is its turns; the
+    # thread row carries no opener and no memo, because both are turn 1's.
+
+    Discussion:
+      type: object
+      required: [ref, title, created_at]
+      properties:
+        ref:
+          type: string
+          description: "`DSC-0007`. Permanent."
+        title: { type: string }
+        page:
+          type: string
+          description: The path of the page it is filed against, current as of this read. Absent for an unfiled thread — a thread is not addressed until it resolves.
+        created_at: { type: string, format: date-time }
+        resolved:
+          $ref: "#/components/schemas/ResolvedState"
+
+    ResolvedState:
+      type: object
+      description: What a thread concluded. Recorded once; only ever completed, never rewritten.
+      required: [at, by]
+      properties:
+        at: { type: string, format: date-time }
+        by:
+          type: string
+          format: uuid
+          description: The person who resolved it. Never an agent.
+        note:
+          type: string
+          description: "`CHR-0311` — the note it produced. Absent when the thread ended without one, and settable later by resolving again."
+
+    DiscussionList:
+      type: object
+      required: [page, items]
+      properties:
+        page:
+          $ref: "#/components/schemas/Page"
+        moved_from:
+          type: string
+          description: Present when the path asked for was a redirect.
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Discussion"
+        next_cursor:
+          type: string
+          description: Absent at the end.
+
+    Thread:
+      type: object
+      required: [discussion, turns, participants]
+      properties:
+        discussion:
+          $ref: "#/components/schemas/Discussion"
+        turns:
+          type: array
+          description: In `seq` order, which is the only order.
+          items:
+            $ref: "#/components/schemas/Turn"
+        participants:
+          type: array
+          description: Everybody ever on the thread, oldest first; removed ones carry their removal.
+          items:
+            $ref: "#/components/schemas/Participant"
+        unread:
+          type: integer
+          description: |
+            The caller's unread turns, computed by the store. Absent when the
+            caller is not a participant, and absent for an agent — an agent
+            has no unread.
+
+    Turn:
+      type: object
+      required: [id, seq, author_id, author_kind, body, html, references, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        seq:
+          type: integer
+          description: Server-assigned under the thread's row lock. 1 is the opening turn.
+        author_id: { type: string, format: uuid }
+        author_kind:
+          type: string
+          enum: [person, agent]
+          description: The author's kind WHEN THE TURN WAS WRITTEN, frozen on the row so a later account edit cannot rewrite who said what.
+        body:
+          type: string
+          description: Markdown, raw.
+        html:
+          type: string
+          description: The body rendered, references marked.
+        references:
+          type: array
+          description: The estate references the body names, as descriptors. Resolve with `POST /references/resolve`.
+          items:
+            $ref: "#/components/schemas/ReferenceDescriptor"
+          x-go-type-skip-optional-pointer: true
+        created_at:
+          type: string
+          format: date-time
+          description: Arrival, at the server.
+        composed_at:
+          type: string
+          format: date-time
+          description: The client's claim about when it was written. Advisory; never sorted on.
+        memo_id:
+          type: string
+          format: uuid
+          description: The memo this turn came from, when it came from one.
+
+    Participant:
+      type: object
+      required: [user_id, kind, display_name, added_at, added_by]
+      properties:
+        user_id: { type: string, format: uuid }
+        kind:
+          type: string
+          enum: [person, agent]
+          description: The account's CURRENT kind — membership is current state, unlike a turn's frozen author_kind.
+        display_name: { type: string }
+        added_at:
+          type: string
+          format: date-time
+          description: FIRST added. A re-add after a removal does not reattribute the original invitation.
+        added_by: { type: string, format: uuid }
+        removed_at: { type: string, format: date-time }
+        removed_by: { type: string, format: uuid }
+        last_read_seq:
+          type: integer
+          description: How far they have read. Absent means never read, which is not the same as 0 — and always absent for an agent.
+        last_read_at: { type: string, format: date-time }
+
+    UnreadList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          description: Only threads with something unread, so the length is the badge.
+          items:
+            $ref: "#/components/schemas/UnreadItem"
+
+    UnreadItem:
+      type: object
+      required: [ref, title, unread]
+      properties:
+        ref: { type: string }
+        title: { type: string }
+        unread:
+          type: integer
+          minimum: 1
+
+    NewDiscussionRequest:
+      type: object
+      required: [title, body]
+      properties:
+        title:
+          type: string
+          minLength: 1
+        page:
+          type: string
+          description: A page path to file the thread against. Optional; redirects are not followed.
+        body:
+          type: string
+          minLength: 1
+          description: The opening turn, markdown.
+        composed_at:
+          type: string
+          format: date-time
+
+    NewTurnRequest:
+      type: object
+      required: [body]
+      properties:
+        body:
+          type: string
+          minLength: 1
+        composed_at:
+          type: string
+          format: date-time
+          description: When the client says it was written. Carried on the turn; orders nothing.
+
+    MarkReadRequest:
+      type: object
+      required: [through_seq]
+      properties:
+        through_seq:
+          type: integer
+          minimum: 0
+          description: The highest `seq` the client has read. Clamped to the thread's last turn; never moves the marker backwards.
+
+    ResolveDiscussionRequest:
+      type: object
+      required: [into]
+      properties:
+        into:
+          type: string
+          enum: [new_note, existing_note, nothing]
+          description: Required, no default — resolving without a note is a deliberate choice.
+        page:
+          type: string
+          description: For `new_note`, the page path to file the note on. Redirects are not followed.
+        note_ref:
+          type: string
+          description: For `existing_note`, the note to append to — `CHR-0311`.
+        title:
+          type: string
+          description: For `new_note`, required. For `existing_note`, optional — omitted keeps the note's title.
+        body:
+          type: string
+          description: For `new_note` and `existing_note`, the text the thread concluded in. Markdown.
+
+    ParticipantRequest:
+      type: object
+      required: [user_id]
+      properties:
+        user_id: { type: string, format: uuid }
+
+    DiscussionResolution:
+      type: object
+      required: [discussion]
+      properties:
+        discussion:
+          $ref: "#/components/schemas/Discussion"
+        note:
+          $ref: "#/components/schemas/ResolvedNote"
+
+    ResolvedNote:
+      description: The note a thread produced, with the link read from the note's end.
+      allOf:
+        - $ref: "#/components/schemas/NoteSummary"
+        - type: object
+          required: [revision, resolved_from]
+          properties:
+            revision:
+              $ref: "#/components/schemas/RevisionMeta"
+            resolved_from:
+              type: array
+              description: Every thread that concluded into this note, this one included.
+              items:
+                $ref: "#/components/schemas/DiscussionSummary"
+              x-go-type-skip-optional-pointer: true

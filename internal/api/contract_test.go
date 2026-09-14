@@ -179,6 +179,16 @@ func TestAnonymousGetsTheSameAnswerFromEveryRoute(t *testing.T) {
 		{http.MethodGet, "/notes/CHR-0311/revisions", http.StatusUnauthorized},
 		{http.MethodPost, "/notes/CHR-0311/revisions", http.StatusUnauthorized},
 		{http.MethodGet, "/search", http.StatusUnauthorized},
+
+		{http.MethodGet, "/discussions", http.StatusUnauthorized},
+		{http.MethodPost, "/discussions", http.StatusUnauthorized},
+		{http.MethodGet, "/discussions/unread", http.StatusUnauthorized},
+		{http.MethodGet, "/discussions/DSC-0007", http.StatusUnauthorized},
+		{http.MethodPost, "/discussions/DSC-0007/turns", http.StatusUnauthorized},
+		{http.MethodPost, "/discussions/DSC-0007/read", http.StatusUnauthorized},
+		{http.MethodPost, "/discussions/DSC-0007/resolve", http.StatusUnauthorized},
+		{http.MethodPost, "/discussions/DSC-0007/participants", http.StatusUnauthorized},
+		{http.MethodDelete, "/discussions/DSC-0007/participants/" + someUUID, http.StatusUnauthorized},
 	}
 
 	for _, tc := range cases {
@@ -382,17 +392,18 @@ func TestDocumentedOperations(t *testing.T) {
 	sort.Strings(got)
 
 	want := []string{
-		"abandonUpload", "acceptTriage", "appendChunk", "appendRevision", "createNote",
-		"createPage", "createSelfInvite", "createSession", "createSessionFromAccess",
-		"createUser", "createUserInvite", "deleteSession", "deleteUser", "getHealthz",
-		"getMe", "getNote", "getReadyz", "getStorageReport", "getTranscriptionReport",
-		"getTriageBatch", "getTriageReport", "getUpload", "holdMemo", "listDeferred",
-		"listNoteRevisions", "listNotes", "listPages", "listSessions", "listUsers",
-		"openUpload", "releaseMemo", "resolveReferences", "revokeSession", "search",
-		"updateMe",
+		"abandonUpload", "acceptTriage", "addParticipant", "appendChunk", "appendRevision",
+		"appendTurn", "createNote", "createPage", "createSelfInvite", "createSession",
+		"createSessionFromAccess", "createUser", "createUserInvite", "deleteSession",
+		"deleteUser", "getDiscussion", "getHealthz", "getMe", "getNote", "getReadyz",
+		"getStorageReport", "getTranscriptionReport", "getTriageBatch", "getTriageReport",
+		"getUpload", "holdMemo", "listDeferred", "listDiscussions", "listNoteRevisions",
+		"listNotes", "listPages", "listSessions", "listUnread", "listUsers", "markRead",
+		"openDiscussion", "openUpload", "releaseMemo", "removeParticipant",
+		"resolveDiscussion", "resolveReferences", "revokeSession", "search", "updateMe",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Errorf("operations = %v, want %v.\nAll 35 routes are in the document now; a change here is a change to the surface.", got, want)
+		t.Errorf("operations = %v, want %v.\nAll 44 routes are in the document now; a change here is a change to the surface.", got, want)
 	}
 }
 
@@ -461,6 +472,16 @@ func TestACredentialedCallerIsNotRefusedByTheWrappers(t *testing.T) {
 		{http.MethodGet, "/notes/CHR-0311/revisions", member, "member-token"},
 		{http.MethodPost, "/notes/CHR-0311/revisions", member, "member-token"},
 		{http.MethodGet, "/search", owner, "owner-token"},
+
+		{http.MethodGet, "/discussions", member, "member-token"},
+		{http.MethodPost, "/discussions", member, "member-token"},
+		{http.MethodGet, "/discussions/unread", member, "member-token"},
+		{http.MethodGet, "/discussions/DSC-0007", member, "member-token"},
+		{http.MethodPost, "/discussions/DSC-0007/turns", member, "member-token"},
+		{http.MethodPost, "/discussions/DSC-0007/read", member, "member-token"},
+		{http.MethodPost, "/discussions/DSC-0007/resolve", member, "member-token"},
+		{http.MethodPost, "/discussions/DSC-0007/participants", member, "member-token"},
+		{http.MethodDelete, "/discussions/DSC-0007/participants/" + someUUID, member, "member-token"},
 	}
 
 	for _, route := range routes {
@@ -624,6 +645,7 @@ func TestEveryOperationDeclaresWhatItsSharedCodeCanAnswer(t *testing.T) {
 		"pages":         "wikiUnavailable",
 		"notes":         "wikiUnavailable",
 		"search":        "wikiUnavailable",
+		"discussions":   "threadsUnavailable",
 	}
 	rules := []rule{
 		{
@@ -792,6 +814,11 @@ func TestEveryParameterBindingOperationRefusesAMalformedOne(t *testing.T) {
 		{"listNoteRevisions", http.MethodGet, "/notes/CHR-0311/revisions?limit=not-a-number", "owner-token", nil},
 		{"search", http.MethodGet, "/search?q=pruner&limit=not-a-number", "owner-token", nil},
 		{"search", http.MethodGet, "/search", "owner-token", nil},
+
+		// Discussions (CHRN-99): the page list's binders and the one {id}.
+		{"listDiscussions", http.MethodGet, "/discussions?page=estate&limit=not-a-number", "owner-token", nil},
+		{"listDiscussions", http.MethodGet, "/discussions", "owner-token", nil},
+		{"removeParticipant", http.MethodDelete, "/discussions/DSC-0007/participants/not-a-uuid", "owner-token", nil},
 	}
 
 	for _, tc := range cases {
@@ -964,6 +991,23 @@ func TestEveryResolutionFieldReachesTheDocument(t *testing.T) {
 		{"SearchHit", store.SearchHit{}, map[string]string{
 			"Kind": "kind", "NoteID": "-", "Number": "ref", "Title": "title", "PageID": "-",
 			"MemoID": "memo_id", "Model": "model", "Snippet": "snippet", "Rank": "rank", "CreatedAt": "created_at",
+		}, nil},
+
+		// CHRN-99's transcriptions of E6. The three resolution columns fold
+		// into one `resolved` object; a turn's html and references are
+		// computed from its body at read time.
+		{"Discussion", store.Discussion{}, map[string]string{
+			"ID": "-", "Number": "ref", "PageID": "page", "Title": "title", "CreatedAt": "created_at",
+			"ResolvedAt": "resolved", "ResolvedBy": "resolved", "ResolvedNoteID": "resolved",
+		}, nil},
+		{"Turn", store.DiscussionTurn{}, map[string]string{
+			"ID": "id", "DiscussionID": "-", "Seq": "seq", "AuthorID": "author_id", "AuthorKind": "author_kind",
+			"Body": "body", "CreatedAt": "created_at", "ComposedAt": "composed_at", "MemoID": "memo_id",
+		}, []string{"html", "references"}},
+		{"Participant", store.DiscussionParticipant{}, map[string]string{
+			"DiscussionID": "-", "UserID": "user_id", "Kind": "kind", "DisplayName": "display_name",
+			"AddedAt": "added_at", "AddedBy": "added_by", "RemovedAt": "removed_at", "RemovedBy": "removed_by",
+			"LastReadSeq": "last_read_seq", "LastReadAt": "last_read_at",
 		}, nil},
 	}
 
