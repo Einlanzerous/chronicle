@@ -97,6 +97,24 @@ func (e OverrideVerb) Valid() bool {
 	}
 }
 
+// Defines values for ParticipantKind.
+const (
+	ParticipantKindAgent  ParticipantKind = "agent"
+	ParticipantKindPerson ParticipantKind = "person"
+)
+
+// Valid indicates whether the value is a known member of the ParticipantKind enum.
+func (e ParticipantKind) Valid() bool {
+	switch e {
+	case ParticipantKindAgent:
+		return true
+	case ParticipantKindPerson:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ProposalDestination.
 const (
 	DISCARD    ProposalDestination = "DISCARD"
@@ -229,6 +247,27 @@ func (e ResolutionState) Valid() bool {
 	}
 }
 
+// Defines values for ResolveDiscussionRequestInto.
+const (
+	ExistingNote ResolveDiscussionRequestInto = "existing_note"
+	NewNote      ResolveDiscussionRequestInto = "new_note"
+	Nothing      ResolveDiscussionRequestInto = "nothing"
+)
+
+// Valid indicates whether the value is a known member of the ResolveDiscussionRequestInto enum.
+func (e ResolveDiscussionRequestInto) Valid() bool {
+	switch e {
+	case ExistingNote:
+		return true
+	case NewNote:
+		return true
+	case Nothing:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for RevisionVerb.
 const (
 	RevisionVerbAppend    RevisionVerb = "append"
@@ -289,6 +328,24 @@ func (e SearchHitKind) Valid() bool {
 	case SearchHitKindNote:
 		return true
 	case SearchHitKindTranscript:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TurnAuthorKind.
+const (
+	TurnAuthorKindAgent  TurnAuthorKind = "agent"
+	TurnAuthorKindPerson TurnAuthorKind = "person"
+)
+
+// Valid indicates whether the value is a known member of the TurnAuthorKind enum.
+func (e TurnAuthorKind) Valid() bool {
+	switch e {
+	case TurnAuthorKindAgent:
+		return true
+	case TurnAuthorKindPerson:
 		return true
 	default:
 		return false
@@ -450,6 +507,41 @@ type DeviceSession struct {
 	LastSeenAt  *time.Time         `json:"last_seen_at"`
 }
 
+// Discussion defines model for Discussion.
+type Discussion struct {
+	CreatedAt time.Time `json:"created_at"`
+
+	// Page The path of the page it is filed against, current as of this read. Absent for an unfiled thread — a thread is not addressed until it resolves.
+	Page *string `json:"page,omitempty"`
+
+	// Ref `DSC-0007`. Permanent.
+	Ref string `json:"ref"`
+
+	// Resolved What a thread concluded. Recorded once; only ever completed, never rewritten.
+	Resolved *ResolvedState `json:"resolved,omitempty"`
+	Title    string         `json:"title"`
+}
+
+// DiscussionList defines model for DiscussionList.
+type DiscussionList struct {
+	Items []Discussion `json:"items"`
+
+	// MovedFrom Present when the path asked for was a redirect.
+	MovedFrom *string `json:"moved_from,omitempty"`
+
+	// NextCursor Absent at the end.
+	NextCursor *string `json:"next_cursor,omitempty"`
+	Page       Page    `json:"page"`
+}
+
+// DiscussionResolution defines model for DiscussionResolution.
+type DiscussionResolution struct {
+	Discussion Discussion `json:"discussion"`
+
+	// Note The note a thread produced, with the link read from the note's end.
+	Note *ResolvedNote `json:"note,omitempty"`
+}
+
 // DiscussionSummary A thread, as a note's provenance names it. CHRN-99 carries the full thread.
 type DiscussionSummary struct {
 	// Ref `DSC-0007`.
@@ -575,6 +667,12 @@ type LinkState struct {
 	TicketUrl *string    `json:"ticket_url,omitempty"`
 }
 
+// MarkReadRequest defines model for MarkReadRequest.
+type MarkReadRequest struct {
+	// ThroughSeq The highest `seq` the client has read. Clamped to the thread's last turn; never moves the marker backwards.
+	ThroughSeq int `json:"through_seq"`
+}
+
 // Member An account with what the owner needs to administer it. `last_seen_at`
 // null and `invite_expires_at` set is an invite never redeemed.
 type Member struct {
@@ -629,6 +727,17 @@ type Mismatch struct {
 	Ref string `json:"ref"`
 }
 
+// NewDiscussionRequest defines model for NewDiscussionRequest.
+type NewDiscussionRequest struct {
+	// Body The opening turn, markdown.
+	Body       string     `json:"body"`
+	ComposedAt *time.Time `json:"composed_at,omitempty"`
+
+	// Page A page path to file the thread against. Optional; redirects are not followed.
+	Page  *string `json:"page,omitempty"`
+	Title string  `json:"title"`
+}
+
 // NewNoteRequest defines model for NewNoteRequest.
 type NewNoteRequest struct {
 	// Body Markdown, stored raw.
@@ -645,6 +754,14 @@ type NewPageRequest struct {
 	// must already exist; the last is the new slug — lowercase
 	// alphanumeric words joined by single hyphens.
 	Path string `json:"path"`
+}
+
+// NewTurnRequest defines model for NewTurnRequest.
+type NewTurnRequest struct {
+	Body string `json:"body"`
+
+	// ComposedAt When the client says it was written. Carried on the turn; orders nothing.
+	ComposedAt *time.Time `json:"composed_at,omitempty"`
 }
 
 // NewUserRequest defines model for NewUserRequest.
@@ -805,6 +922,32 @@ type PartialTranscript struct {
 	// Model Runner-qualified, e.g. `whisper.cpp/small.en`.
 	Model         string    `json:"model"`
 	TranscribedAt time.Time `json:"transcribed_at"`
+}
+
+// Participant defines model for Participant.
+type Participant struct {
+	// AddedAt FIRST added. A re-add after a removal does not reattribute the original invitation.
+	AddedAt     time.Time          `json:"added_at"`
+	AddedBy     openapi_types.UUID `json:"added_by"`
+	DisplayName string             `json:"display_name"`
+
+	// Kind The account's CURRENT kind — membership is current state, unlike a turn's frozen author_kind.
+	Kind       ParticipantKind `json:"kind"`
+	LastReadAt *time.Time      `json:"last_read_at,omitempty"`
+
+	// LastReadSeq How far they have read. Absent means never read, which is not the same as 0 — and always absent for an agent.
+	LastReadSeq *int                `json:"last_read_seq,omitempty"`
+	RemovedAt   *time.Time          `json:"removed_at,omitempty"`
+	RemovedBy   *openapi_types.UUID `json:"removed_by,omitempty"`
+	UserId      openapi_types.UUID  `json:"user_id"`
+}
+
+// ParticipantKind The account's CURRENT kind — membership is current state, unlike a turn's frozen author_kind.
+type ParticipantKind string
+
+// ParticipantRequest defines model for ParticipantRequest.
+type ParticipantRequest struct {
+	UserId openapi_types.UUID `json:"user_id"`
 }
 
 // Proposal What the Scribe proposed. **Derived, disposable, and never authored
@@ -1071,6 +1214,27 @@ type ResolutionUpstream struct {
 	Url *string `json:"url,omitempty"`
 }
 
+// ResolveDiscussionRequest defines model for ResolveDiscussionRequest.
+type ResolveDiscussionRequest struct {
+	// Body For `new_note` and `existing_note`, the text the thread concluded in. Markdown.
+	Body *string `json:"body,omitempty"`
+
+	// Into Required, no default — resolving without a note is a deliberate choice.
+	Into ResolveDiscussionRequestInto `json:"into"`
+
+	// NoteRef For `existing_note`, the note to append to — `CHR-0311`.
+	NoteRef *string `json:"note_ref,omitempty"`
+
+	// Page For `new_note`, the page path to file the note on. Redirects are not followed.
+	Page *string `json:"page,omitempty"`
+
+	// Title For `new_note`, required. For `existing_note`, optional — omitted keeps the note's title.
+	Title *string `json:"title,omitempty"`
+}
+
+// ResolveDiscussionRequestInto Required, no default — resolving without a note is a deliberate choice.
+type ResolveDiscussionRequestInto string
+
 // ResolveRequest defines model for ResolveRequest.
 type ResolveRequest struct {
 	// References At most 50 — CHRN-51's cap, which counts attempts per render. The
@@ -1084,6 +1248,36 @@ type ResolveRequest struct {
 type ResolveResponse struct {
 	// Resolutions One per descriptor, in request order, each carrying its `token`.
 	Resolutions []Resolution `json:"resolutions"`
+}
+
+// ResolvedNote The note a thread produced, with the link read from the note's end.
+type ResolvedNote struct {
+	CreatedAt time.Time `json:"created_at"`
+
+	// Page The path of the page it is filed on, current as of this read.
+	Page string `json:"page"`
+
+	// Ref `CHR-0311`. Permanent: the number is minted once and never reused.
+	Ref string `json:"ref"`
+
+	// ResolvedFrom Every thread that concluded into this note, this one included.
+	ResolvedFrom []DiscussionSummary `json:"resolved_from"`
+
+	// Revision Which revision, by whom, and how it came to be — without its text.
+	Revision  RevisionMeta `json:"revision"`
+	Title     string       `json:"title"`
+	UpdatedAt time.Time    `json:"updated_at"`
+}
+
+// ResolvedState What a thread concluded. Recorded once; only ever completed, never rewritten.
+type ResolvedState struct {
+	At time.Time `json:"at"`
+
+	// By The person who resolved it. Never an agent.
+	By openapi_types.UUID `json:"by"`
+
+	// Note `CHR-0311` — the note it produced. Absent when the thread ended without one, and settable later by resolving again.
+	Note *string `json:"note,omitempty"`
 }
 
 // Revision A revision with its text — history is what was written, raw.
@@ -1251,6 +1445,22 @@ type StorageReport struct {
 	Window WindowReport `json:"window"`
 }
 
+// Thread defines model for Thread.
+type Thread struct {
+	Discussion Discussion `json:"discussion"`
+
+	// Participants Everybody ever on the thread, oldest first; removed ones carry their removal.
+	Participants []Participant `json:"participants"`
+
+	// Turns In `seq` order, which is the only order.
+	Turns []Turn `json:"turns"`
+
+	// Unread The caller's unread turns, computed by the store. Absent when the
+	// caller is not a participant, and absent for an agent — an agent
+	// has no unread.
+	Unread *int `json:"unread,omitempty"`
+}
+
 // TranscriptionReport defines model for TranscriptionReport.
 type TranscriptionReport struct {
 	// Enabled Whether a transcription pump is configured at all. Without it, an
@@ -1358,6 +1568,52 @@ type TriageResults struct {
 	Results []TriageResult `json:"results"`
 }
 
+// Turn defines model for Turn.
+type Turn struct {
+	AuthorId openapi_types.UUID `json:"author_id"`
+
+	// AuthorKind The author's kind WHEN THE TURN WAS WRITTEN, frozen on the row so a later account edit cannot rewrite who said what.
+	AuthorKind TurnAuthorKind `json:"author_kind"`
+
+	// Body Markdown, raw.
+	Body string `json:"body"`
+
+	// ComposedAt The client's claim about when it was written. Advisory; never sorted on.
+	ComposedAt *time.Time `json:"composed_at,omitempty"`
+
+	// CreatedAt Arrival, at the server.
+	CreatedAt time.Time `json:"created_at"`
+
+	// Html The body rendered, references marked.
+	Html string             `json:"html"`
+	Id   openapi_types.UUID `json:"id"`
+
+	// MemoId The memo this turn came from, when it came from one.
+	MemoId *openapi_types.UUID `json:"memo_id,omitempty"`
+
+	// References The estate references the body names, as descriptors. Resolve with `POST /references/resolve`.
+	References []ReferenceDescriptor `json:"references"`
+
+	// Seq Server-assigned under the thread's row lock. 1 is the opening turn.
+	Seq int `json:"seq"`
+}
+
+// TurnAuthorKind The author's kind WHEN THE TURN WAS WRITTEN, frozen on the row so a later account edit cannot rewrite who said what.
+type TurnAuthorKind string
+
+// UnreadItem defines model for UnreadItem.
+type UnreadItem struct {
+	Ref    string `json:"ref"`
+	Title  string `json:"title"`
+	Unread int    `json:"unread"`
+}
+
+// UnreadList defines model for UnreadList.
+type UnreadList struct {
+	// Items Only threads with something unread, so the length is the badge.
+	Items []UnreadItem `json:"items"`
+}
+
 // UpdateMeRequest defines model for UpdateMeRequest.
 type UpdateMeRequest struct {
 	DisplayName string `json:"display_name"`
@@ -1430,6 +1686,9 @@ type WindowReport struct {
 // Cursor defines model for Cursor.
 type Cursor = string
 
+// DiscussionRef defines model for DiscussionRef.
+type DiscussionRef = string
+
 // Limit defines model for Limit.
 type Limit = int
 
@@ -1475,6 +1734,9 @@ type RateLimited = Error
 // ReferencesUnconfigured defines model for ReferencesUnconfigured.
 type ReferencesUnconfigured = Error
 
+// ThreadsUnconfigured defines model for ThreadsUnconfigured.
+type ThreadsUnconfigured = Error
+
 // TooLarge defines model for TooLarge.
 type TooLarge = Error
 
@@ -1489,6 +1751,9 @@ type TransferCut = UploadState
 
 // TriageUnconfigured defines model for TriageUnconfigured.
 type TriageUnconfigured = Error
+
+// TurnRefused defines model for TurnRefused.
+type TurnRefused = Error
 
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = Error
@@ -1509,6 +1774,24 @@ type UploadsUnconfigured = Error
 
 // WikiUnconfigured defines model for WikiUnconfigured.
 type WikiUnconfigured = Error
+
+// ListDiscussionsParams defines parameters for ListDiscussions.
+type ListDiscussionsParams struct {
+	// Page A page path, `estate/conventions/naming`. A redirect left by a move is followed.
+	Page PagePath `form:"page" json:"page"`
+
+	// Limit How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch
+	// caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and
+	// the note and revision lists cap at 200 and say so by answering a
+	// `next_cursor` for the rest. A client asking for more than the cap gets
+	// the cap.
+	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor Opaque; the `next_cursor` of the previous page. Absent means the
+	// start. Never an offset: every list here is over an append-only table,
+	// and an offset silently repeats and skips rows as new ones land.
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
 
 // AppendChunkParams defines parameters for AppendChunk.
 type AppendChunkParams struct {
@@ -1596,6 +1879,21 @@ type UpdateMeJSONRequestBody = UpdateMeRequest
 
 // CreateSessionJSONRequestBody defines body for CreateSession for application/json ContentType.
 type CreateSessionJSONRequestBody = SignInRequest
+
+// OpenDiscussionJSONRequestBody defines body for OpenDiscussion for application/json ContentType.
+type OpenDiscussionJSONRequestBody = NewDiscussionRequest
+
+// AddParticipantJSONRequestBody defines body for AddParticipant for application/json ContentType.
+type AddParticipantJSONRequestBody = ParticipantRequest
+
+// MarkReadJSONRequestBody defines body for MarkRead for application/json ContentType.
+type MarkReadJSONRequestBody = MarkReadRequest
+
+// ResolveDiscussionJSONRequestBody defines body for ResolveDiscussion for application/json ContentType.
+type ResolveDiscussionJSONRequestBody = ResolveDiscussionRequest
+
+// AppendTurnJSONRequestBody defines body for AppendTurn for application/json ContentType.
+type AppendTurnJSONRequestBody = NewTurnRequest
 
 // OpenUploadJSONRequestBody defines body for OpenUpload for application/json ContentType.
 type OpenUploadJSONRequestBody = OpenUploadRequest
@@ -1730,6 +2028,33 @@ type ServerInterface interface {
 	// CreateSessionFromAccess Exchange a verified Cloudflare Access identity for a session.
 	// (POST /auth/sso/cloudflare)
 	CreateSessionFromAccess(w http.ResponseWriter, r *http.Request)
+	// ListDiscussions The threads filed against a page.
+	// (GET /discussions)
+	ListDiscussions(w http.ResponseWriter, r *http.Request, params ListDiscussionsParams)
+	// OpenDiscussion Open a thread with its first turn.
+	// (POST /discussions)
+	OpenDiscussion(w http.ResponseWriter, r *http.Request)
+	// ListUnread The badge — every thread this account has something unread in.
+	// (GET /discussions/unread)
+	ListUnread(w http.ResponseWriter, r *http.Request)
+	// GetDiscussion A thread, in order, with its participants and your unread count.
+	// (GET /discussions/{ref})
+	GetDiscussion(w http.ResponseWriter, r *http.Request, ref DiscussionRef)
+	// AddParticipant Put an account on a thread — a person, or the Scribe.
+	// (POST /discussions/{ref}/participants)
+	AddParticipant(w http.ResponseWriter, r *http.Request, ref DiscussionRef)
+	// RemoveParticipant Take an account off a thread, without touching a word they said.
+	// (DELETE /discussions/{ref}/participants/{id})
+	RemoveParticipant(w http.ResponseWriter, r *http.Request, ref DiscussionRef, id UserId)
+	// MarkRead Report how far you have read.
+	// (POST /discussions/{ref}/read)
+	MarkRead(w http.ResponseWriter, r *http.Request, ref DiscussionRef)
+	// ResolveDiscussion Resolve a thread — into a new note, an existing one, or nothing.
+	// (POST /discussions/{ref}/resolve)
+	ResolveDiscussion(w http.ResponseWriter, r *http.Request, ref DiscussionRef)
+	// AppendTurn Reply.
+	// (POST /discussions/{ref}/turns)
+	AppendTurn(w http.ResponseWriter, r *http.Request, ref DiscussionRef)
 	// GetHealthz Liveness. No dependencies, no credential.
 	// (GET /healthz)
 	GetHealthz(w http.ResponseWriter, r *http.Request)
@@ -2038,6 +2363,258 @@ func (siw *ServerInterfaceWrapper) CreateSessionFromAccess(w http.ResponseWriter
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateSessionFromAccess(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListDiscussions operation middleware
+func (siw *ServerInterfaceWrapper) ListDiscussions(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListDiscussionsParams
+
+	// ------------- Required query parameter "page" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "page", r.URL.Query(), &params.Page, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "page"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "page", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "cursor", r.URL.Query(), &params.Cursor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "cursor"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListDiscussions(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// OpenDiscussion operation middleware
+func (siw *ServerInterfaceWrapper) OpenDiscussion(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.OpenDiscussion(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListUnread operation middleware
+func (siw *ServerInterfaceWrapper) ListUnread(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListUnread(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetDiscussion operation middleware
+func (siw *ServerInterfaceWrapper) GetDiscussion(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "ref" -------------
+	var ref DiscussionRef
+
+	err = runtime.BindStyledParameterWithOptions("simple", "ref", r.PathValue("ref"), &ref, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "ref", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetDiscussion(w, r, ref)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AddParticipant operation middleware
+func (siw *ServerInterfaceWrapper) AddParticipant(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "ref" -------------
+	var ref DiscussionRef
+
+	err = runtime.BindStyledParameterWithOptions("simple", "ref", r.PathValue("ref"), &ref, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "ref", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AddParticipant(w, r, ref)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RemoveParticipant operation middleware
+func (siw *ServerInterfaceWrapper) RemoveParticipant(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "ref" -------------
+	var ref DiscussionRef
+
+	err = runtime.BindStyledParameterWithOptions("simple", "ref", r.PathValue("ref"), &ref, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "ref", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "id" -------------
+	var id UserId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RemoveParticipant(w, r, ref, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// MarkRead operation middleware
+func (siw *ServerInterfaceWrapper) MarkRead(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "ref" -------------
+	var ref DiscussionRef
+
+	err = runtime.BindStyledParameterWithOptions("simple", "ref", r.PathValue("ref"), &ref, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "ref", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.MarkRead(w, r, ref)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ResolveDiscussion operation middleware
+func (siw *ServerInterfaceWrapper) ResolveDiscussion(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "ref" -------------
+	var ref DiscussionRef
+
+	err = runtime.BindStyledParameterWithOptions("simple", "ref", r.PathValue("ref"), &ref, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "ref", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ResolveDiscussion(w, r, ref)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AppendTurn operation middleware
+func (siw *ServerInterfaceWrapper) AppendTurn(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "ref" -------------
+	var ref DiscussionRef
+
+	err = runtime.BindStyledParameterWithOptions("simple", "ref", r.PathValue("ref"), &ref, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "ref", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AppendTurn(w, r, ref)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2750,6 +3327,15 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/notes/{ref}/revisions", wrapper.ListNoteRevisions)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/notes/{ref}/revisions", wrapper.AppendRevision)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/search", wrapper.Search)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/discussions", wrapper.ListDiscussions)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/discussions", wrapper.OpenDiscussion)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/discussions/unread", wrapper.ListUnread)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/discussions/{ref}", wrapper.GetDiscussion)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/discussions/{ref}/turns", wrapper.AppendTurn)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/discussions/{ref}/read", wrapper.MarkRead)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/discussions/{ref}/resolve", wrapper.ResolveDiscussion)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/discussions/{ref}/participants", wrapper.AddParticipant)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/discussions/{ref}/participants/{id}", wrapper.RemoveParticipant)
 
 	return m
 }

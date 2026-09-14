@@ -201,6 +201,17 @@ func (f *fakeWiki) NoteByNumber(_ context.Context, number int64) (store.Note, er
 	return n, nil
 }
 
+func (f *fakeWiki) NoteByID(_ context.Context, id uuid.UUID) (store.Note, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, n := range f.notes {
+		if n.ID == id {
+			return n, nil
+		}
+	}
+	return store.Note{}, store.ErrNotFound
+}
+
 func (f *fakeWiki) CurrentRevision(_ context.Context, noteID uuid.UUID) (store.NoteRevision, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

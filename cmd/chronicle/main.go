@@ -613,6 +613,7 @@ func runServe(args []string) error {
 	// note handler renders against the live key set — which is what makes the
 	// key set's poller finally have a reader.
 	deps.Wiki = st
+	deps.Threads = st
 	deps.Keys = keys
 	// Chronicle's own CHR- and DSC- references resolve against tier 2
 	// directly, on the main pool: they are notes and discussions, not derived

@@ -74,6 +74,7 @@ type Wiki interface {
 	CreateNote(ctx context.Context, in store.NewNote) (store.Note, store.NoteRevision, error)
 	AppendRevision(ctx context.Context, noteID uuid.UUID, in store.NewRevision) (store.NoteRevision, error)
 	NoteByNumber(ctx context.Context, number int64) (store.Note, error)
+	NoteByID(ctx context.Context, id uuid.UUID) (store.Note, error)
 	CurrentRevision(ctx context.Context, noteID uuid.UUID) (store.NoteRevision, error)
 	NoteRevisions(ctx context.Context, noteID uuid.UUID) ([]store.NoteRevision, error)
 	NotesOnPage(ctx context.Context, pageID uuid.UUID) ([]store.Note, error)
@@ -592,36 +593,46 @@ func (a *api) noteWriteError(w http.ResponseWriter, r *http.Request, what string
 	}
 }
 
-// noteView builds the payload for one note: the current text rendered, the
-// references its text names as descriptors, and the threads that concluded
-// into it.
+// render turns one authored body into what a payload carries: the HTML, and
+// the references the text names as descriptors.
 //
-// THIS IS THE SCAN, AND SO THIS IS THE MISS FEED'S ONE CALLER. Render and Scan
-// share the grammar; UnknownKeys are the well-shaped keys the live project set
-// rejected, and they go to Keys.NoteMisses with nothing else — not the body,
-// not a token's surrounding prose. A nil key set (no tracker configured) has
-// nothing to report to, and every ticket-shaped token was already prose.
+// THIS IS THE SCAN, AND SO THIS IS THE MISS FEED'S ONE CALL SITE. Render and
+// Scan share the grammar; UnknownKeys are the well-shaped keys the live
+// project set rejected, and they go to Keys.NoteMisses with nothing else — not
+// the body, not a token's surrounding prose. A nil key set (no tracker
+// configured) has nothing to report to, and every ticket-shaped token was
+// already prose. Notes and discussion turns both come through here, which is
+// what keeps "one caller" a fact about the code rather than a discipline.
+func (a *api) render(body string) (string, []wire.ReferenceDescriptor, error) {
+	html, err := a.renderer.Render([]byte(body))
+	if err != nil {
+		return "", nil, fmt.Errorf("render: %w", err)
+	}
+	scan := a.renderer.Scan([]byte(body))
+	if a.keys != nil {
+		a.keys.NoteMisses(scan.UnknownKeys)
+	}
+	refs := make([]wire.ReferenceDescriptor, 0, len(scan.References))
+	for _, ref := range scan.References {
+		refs = append(refs, toDescriptor(ref))
+	}
+	return string(html), refs, nil
+}
+
+// noteView builds the payload for one note: the current text rendered, the
+// references its text names, and the threads that concluded into it.
 func (a *api) noteView(ctx context.Context, n store.Note, rev store.NoteRevision) (wire.Note, error) {
 	path, err := a.wiki.PagePath(ctx, n.PageID)
 	if err != nil {
 		return wire.Note{}, fmt.Errorf("page path: %w", err)
 	}
-	html, err := a.renderer.Render([]byte(rev.Body))
+	html, refs, err := a.render(rev.Body)
 	if err != nil {
-		return wire.Note{}, fmt.Errorf("render: %w", err)
-	}
-	scan := a.renderer.Scan([]byte(rev.Body))
-	if a.keys != nil {
-		a.keys.NoteMisses(scan.UnknownKeys)
+		return wire.Note{}, err
 	}
 	threads, err := a.wiki.DiscussionsResolvedInto(ctx, n.ID)
 	if err != nil {
 		return wire.Note{}, fmt.Errorf("resolved from: %w", err)
-	}
-
-	refs := make([]wire.ReferenceDescriptor, 0, len(scan.References))
-	for _, ref := range scan.References {
-		refs = append(refs, toDescriptor(ref))
 	}
 	return wire.Note{
 		Ref:          n.Ref(),
@@ -630,7 +641,7 @@ func (a *api) noteView(ctx context.Context, n store.Note, rev store.NoteRevision
 		CreatedAt:    n.CreatedAt,
 		UpdatedAt:    n.UpdatedAt,
 		Body:         rev.Body,
-		Html:         string(html),
+		Html:         html,
 		References:   refs,
 		Revision:     toRevisionMeta(rev),
 		ResolvedFrom: toDiscussionSummaries(threads),

@@ -76,6 +76,17 @@ const (
 	codePersonRequired   = "person_required"
 	codeSlugTaken        = "slug_taken"
 
+	// Discussions (CHRN-99). The three 409s on a turn are the store's rules
+	// on the wire; the two 403s on a marker are CHRN-45's rulings 8 and 4.
+	codeThreadsUnconfigured = "threads_unconfigured"
+	codeAgentAfterAgent     = "agent_after_agent"
+	codeDiscussionResolved  = "discussion_resolved"
+	codeThreadBusy          = "thread_busy"
+	codeNotAParticipant     = "not_a_participant"
+	codeAgentHasNoMarker    = "agent_has_no_marker"
+	codeResolutionFixed     = "resolution_fixed"
+	codeNoteDeleted         = "note_deleted"
+
 	codeAudioUnconfigured         = "audio_unconfigured"
 	codeTranscriptionUnconfigured = "transcription_unconfigured"
 	codeAccountsUnconfigured      = "accounts_unconfigured"
