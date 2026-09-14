@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Einlanzerous/chronicle/internal/api/wire"
 	"github.com/Einlanzerous/chronicle/internal/audio"
 	"github.com/Einlanzerous/chronicle/internal/store"
 	"github.com/Einlanzerous/chronicle/internal/upload"
@@ -111,8 +112,17 @@ type Deps struct {
 }
 
 // api holds what the handlers share.
+//
+// It implements wire.ServerInterface, which is the compile-time half of
+// CHRN-97's drift guard: an operation added to openapi.yaml with no method here
+// fails `go build`, and a method whose operation is deleted fails it too.
+var _ wire.ServerInterface = (*api)(nil)
+
 type api struct {
 	accounts      Accounts
+	db            Pinger
+	version       string
+	commit        string
 	logger        *slog.Logger
 	cfAccess      *CFAccessVerifier
 	mobileBaseURL string
@@ -132,6 +142,12 @@ type api struct {
 
 // NewRouter builds the HTTP handler.
 //
+// Routes arrive two ways while CHRN-97 is in flight: the ones openapi.yaml
+// describes are registered BY THE GENERATOR onto a policyRouter, and the rest
+// are hand-registered on the same mux below, exactly as they were. Every route
+// moves to the first form; a route that is in the document is never also in the
+// second list, because the mux would refuse the duplicate pattern at boot.
+//
 // The two probes answer different questions and must not be collapsed:
 //
 //	/healthz — is this process alive? No dependencies. If it answers, the
@@ -142,13 +158,18 @@ type api struct {
 //	           not kill it.
 //
 // They are also the only two routes reachable without a credential, with the
-// two sign-in endpoints. Everything else requires a session; there is no
-// unauthenticated read surface. /healthz staying dependency-free is load
-// bearing beyond liveness: CHRN-59's QR onboarding probes it to check a server
-// address before committing to it, which happens before any credential exists.
+// two sign-in endpoints — which is now a property policy.go states and a test
+// proves against the document, rather than one this comment asserts. Everything
+// else requires a session; there is no unauthenticated read surface. /healthz
+// staying dependency-free is load bearing beyond liveness: CHRN-59's QR
+// onboarding probes it to check a server address before committing to it, which
+// happens before any credential exists.
 func NewRouter(d Deps) http.Handler {
 	a := &api{
 		accounts:      d.Accounts,
+		db:            d.DB,
+		version:       d.Version,
+		commit:        d.Commit,
 		logger:        d.Logger,
 		cfAccess:      d.CFAccess,
 		mobileBaseURL: d.MobileBaseURL,
@@ -168,28 +189,21 @@ func NewRouter(d Deps) http.Handler {
 
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		body := map[string]string{"status": "ok", "version": d.Version}
-		if d.Commit != "" {
-			body["commit"] = d.Commit
-		}
-		writeJSON(w, http.StatusOK, body)
-	})
-
-	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-		defer cancel()
-		if d.DB != nil {
-			if err := d.DB.Ping(ctx); err != nil {
-				d.Logger.Warn("readiness probe failed", "check", "database", "error", err)
-				writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-					"status": "unready",
-					"check":  "database",
-				})
-				return
-			}
-		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+	// EVERY ROUTE IN openapi.yaml, REGISTERED BY THE GENERATOR (CHRN-97).
+	//
+	// Nobody writes these registrations, which is what makes the route set
+	// unable to drift from the document. They land on a policyRouter rather
+	// than on the mux directly, so each one is wrapped with the credential
+	// policy.go declares for it -- and a route the document has and policy.go
+	// does not is a panic here, at construction, rather than an open endpoint.
+	//
+	// ErrorHandlerFunc is supplied because its DEFAULT is
+	// `http.Error(w, err.Error(), 400)`: text/plain, and leakier than the
+	// handlers it would be answering for. See bindError.
+	routed := newPolicyRouter(mux, a)
+	wire.HandlerWithOptions(a, wire.StdHTTPServerOptions{
+		BaseRouter:       routed,
+		ErrorHandlerFunc: bindError(d.Logger),
 	})
 
 	if d.Accounts == nil {
@@ -236,10 +250,6 @@ func NewRouter(d Deps) http.Handler {
 	mux.HandleFunc("PATCH /memos/uploads/{id}", a.requireUser(a.handleUploadAppend))
 	mux.HandleFunc("DELETE /memos/uploads/{id}", a.requireUser(a.handleUploadAbandon))
 
-	// What the corpus costs, and whether the disk agrees with the database
-	// (CHRN-23). A read: it reports orphans, it never deletes one.
-	mux.HandleFunc("GET /admin/storage", a.requireOwner(a.handleAdminStorage))
-
 	// TRIAGE (CHRN-33) — the primary surface, and the one place derived state
 	// becomes authored state.
 	//
@@ -261,20 +271,51 @@ func NewRouter(d Deps) http.Handler {
 	// not finish landing. Owner only, because it spans every author's corpus.
 	mux.HandleFunc("GET /admin/triage", a.requireOwner(a.handleAdminTriage))
 
-	// How transcription is going, and which memos are stuck (CHRN-27). Also a
-	// read -- the retry is `chronicle retranscribe`, on the host, because
-	// re-running transcription costs GPU time on a device three services share
-	// and that is not an unmetered HTTP verb until CHRN-26 has leased it.
-	mux.HandleFunc("GET /admin/transcription", a.requireOwner(a.handleAdminTranscription))
+	// Not registered here and not missing: the two probes, GET /admin/storage
+	// and GET /admin/transcription are in openapi.yaml, so the generator
+	// registered them above and policy.go declared their credential. The
+	// routes still hand-written below this line are the ones CHRN-97's second
+	// half moves.
 
 	return requestLogger(d.Logger, mux)
+}
+
+// GetHealthz answers the liveness probe. No dependencies, by design: a database
+// that is down is not a reason to restart the binary, and CHRN-59's QR
+// onboarding probes this before any credential exists.
+func (a *api) GetHealthz(w http.ResponseWriter, r *http.Request) {
+	body := wire.Health{Status: wire.Ok, Version: a.version}
+	if a.commit != "" {
+		body.Commit = &a.commit
+	}
+	writeJSON(w, http.StatusOK, body)
+}
+
+// GetReadyz answers the readiness probe. Pings the database, because a load
+// balancer takes an unready instance out of rotation rather than killing it --
+// which is the question liveness does not answer.
+func (a *api) GetReadyz(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if a.db != nil {
+		if err := a.db.Ping(ctx); err != nil {
+			a.logger.Warn("readiness probe failed", "check", "database", "error", err)
+			check := "database"
+			writeJSON(w, http.StatusServiceUnavailable, wire.Readiness{
+				Status: wire.Unready,
+				Check:  &check,
+			})
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, wire.Readiness{Status: wire.Ready})
 }
 
 // serverError logs the cause and answers with a generic message. The detail
 // belongs in the log, not in a response body that may cross the WAN.
 func (a *api) serverError(w http.ResponseWriter, r *http.Request, what string, err error) {
 	a.logger.ErrorContext(r.Context(), "request failed", "op", what, "error", err)
-	http.Error(w, "internal error", http.StatusInternalServerError)
+	writeError(w, http.StatusInternalServerError, codeInternal, "internal error")
 }
 
 // statusRecorder captures the status code for the access log.

@@ -197,7 +197,8 @@ func (a *api) requireUser(next http.HandlerFunc) http.HandlerFunc {
 		u, err := a.accounts.UserByToken(r.Context(), sessionToken(r))
 		if errors.Is(err, store.ErrNotFound) {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="chronicle"`)
-			http.Error(w, "missing or invalid session token", http.StatusUnauthorized)
+			writeError(w, http.StatusUnauthorized, codeUnauthorized,
+				"missing or invalid session token")
 			return
 		}
 		if err != nil {
@@ -214,7 +215,7 @@ func (a *api) requireUser(next http.HandlerFunc) http.HandlerFunc {
 func (a *api) requireOwner(next http.HandlerFunc) http.HandlerFunc {
 	return a.requireUser(func(w http.ResponseWriter, r *http.Request) {
 		if !userFrom(r.Context()).IsAdmin() {
-			http.Error(w, "owner only", http.StatusForbidden)
+			writeError(w, http.StatusForbidden, codeOwnerOnly, "owner only")
 			return
 		}
 		next(w, r)

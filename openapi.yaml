@@ -1,0 +1,552 @@
+# Chronicle's HTTP contract — CHRN-97.
+#
+# THIS FILE IS THE SOURCE. `internal/api/wire` is generated from it by
+# scripts/gen-api.sh, and CI fails when the two disagree. Three clients build
+# against it — E8's web client, E9's Android capture, E10's MCP — which is the
+# entire reason the contract is a spec rather than a Go package.
+#
+# The decision behind every shape here is the approved plan on CHRN-97
+# (revision 2, eight rulings). Read it before changing anything. The four that
+# cost the most to get wrong:
+#
+#   ruling 1  generation runs toward the SERVER: models + std-http-server, so a
+#             path with no handler is a compile error and a handler with no path
+#             cannot be registered.
+#   ruling 2  every shipped route joins this document. A route that is not here
+#             does not exist.
+#   ruling 3  a reference RESOLVES ELSEWHERE. A note payload carries reference
+#             descriptors and never upstream state, which is what lets a note
+#             carry an honest ETag.
+#   ruling 6  no /v1 prefix. Two path-keyed Traefik rules in construct-server
+#             key on these addresses, and one of them —
+#             `chronicle-public-admin` — is what keeps /admin off the WAN host.
+#             Moving a path here is an edge change there.
+#
+# 3.0.3 rather than 3.1, for CHRN-25's reason: oapi-codegen's 3.1 support is
+# partial, and a spec the generator half-understands is a generated client that
+# silently omits a field.
+openapi: 3.0.3
+
+info:
+  title: Chronicle
+  version: "1.0.0"
+  description: |
+    Voice-note ingestion into a notes and discussion wiki. A memo is captured,
+    transcribed on the shared ASR service, routed by the Scribe into a note, a
+    ticket or a discussion, and lands in a corpus that links out to Switchyard
+    and Amber rather than absorbing them.
+
+    **Two tiers, and they do not share a store.** Tier 1 is the estate's account
+    of what exists — generated, regenerable, never hand-edited. Tier 2 is what a
+    person said or wrote — memos, transcripts, notes, discussions — and none of
+    it can be rebuilt. They are reached by different code paths through
+    different database roles.
+
+    **References are linked, never copied.** A ticket or an Amber item resolves
+    at render time and is never written into Chronicle's tables. Resolution
+    therefore has its own endpoint: a note payload carries the references its
+    text names and nothing an upstream said about them.
+
+servers:
+  - url: http://chronicle:4009
+    description: construct_net, container-to-container
+  - url: https://chronicle.zerogravity.industries
+    description: the Access-gated host
+
+# Every operation needs a session unless it says otherwise. The two forms are
+# the same credential: `sessionToken` reads the bearer header first and falls
+# back to the cookie, so a client may present either.
+security:
+  - sessionBearer: []
+  - sessionCookie: []
+
+tags:
+  - name: meta
+    description: Liveness and readiness. The only routes with no credential.
+  - name: auth
+    description: Sessions, invites and the account behind them.
+  - name: accounts
+    description: Account administration. Owner only, and never an agent.
+  - name: uploads
+    description: Resumable memo ingest.
+  - name: triage
+    description: Where derived state becomes authored state.
+  - name: storage
+    description: What the corpus costs, and whether the disk agrees with the database.
+  - name: transcription
+    description: How transcription is going, and which memos are stuck.
+
+paths:
+  /healthz:
+    get:
+      tags: [meta]
+      summary: Liveness. No dependencies, no credential.
+      description: |
+        Answers if the process is running. Deliberately free of dependencies: a
+        database that is down is not a reason to restart the binary.
+
+        Load-bearing beyond liveness — CHRN-59's QR onboarding probes this to
+        check a server address before any credential exists, which is also why
+        it keeps an unprefixed path.
+      operationId: getHealthz
+      security: []
+      x-chronicle-policy: public
+      responses:
+        "200":
+          description: alive
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+
+  /readyz:
+    get:
+      tags: [meta]
+      summary: Readiness. Pings the database.
+      description: |
+        Answers whether this process can serve traffic. A load balancer takes an
+        unready instance out of rotation; it does not kill it, which is why this
+        is a different question from liveness and a different route.
+      operationId: getReadyz
+      security: []
+      x-chronicle-policy: public
+      responses:
+        "200":
+          description: ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+        "503":
+          description: not ready — a named check failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+
+  /admin/storage:
+    get:
+      tags: [storage]
+      summary: What the corpus costs, and whether the disk agrees with the database.
+      description: |
+        CHRN-23's *"a number the service reports rather than one someone runs du
+        for"*.
+
+        **A read.** It reports orphans; it never deletes one and never hands the
+        pruner a list. Orphans are reported so a person can decide, which is a
+        different thing from a job acting on them.
+
+        Counts are exact. The `*_sample` lists are bounded, so a corpus-wide
+        problem produces a readable answer rather than a megabyte of JSON.
+      operationId: getStorageReport
+      x-chronicle-policy: owner
+      responses:
+        "200":
+          description: the report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageReport"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          description: |
+            no audio store is configured. Distinct from an empty report on
+            purpose: "no audio configured" and "no audio yet" are different
+            facts and must not render the same.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /admin/transcription:
+    get:
+      tags: [transcription]
+      summary: How transcription is going, and which memos are stuck.
+      description: |
+        The half of CHRN-27's `Done when` a test cannot answer: *"a transcription
+        failure leaves the memo in a state a human can see and retry."* A failure
+        nobody can see is one nobody retries.
+
+        **A read.** The retry is `chronicle retranscribe`, on the host, because
+        re-running transcription costs GPU time on a device three services share
+        and that is not an unmetered HTTP verb until CHRN-26 has leased it.
+      operationId: getTranscriptionReport
+      x-chronicle-policy: owner
+      responses:
+        "200":
+          description: the report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriptionReport"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          description: no database is configured, so there is no corpus to report on.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  securitySchemes:
+    # ONE credential, two ways of presenting it. `sessionToken` reads the
+    # Authorization header first and falls back to the cookie, so an operation
+    # accepting one accepts the other and the document says so with two
+    # alternative requirements rather than by picking a favourite.
+    sessionBearer:
+      type: http
+      scheme: bearer
+      description: A session token minted by POST /auth/session or a redeemed invite.
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: chronicle_session
+      description: |
+        The same token, set as an HttpOnly cookie by the sign-in routes. What
+        the web client uses; an XSS cannot read it.
+
+  responses:
+    Unauthorized:
+      description: no session, or one this deployment does not know
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: a valid session, on an account that may not do this
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InternalError:
+      description: |
+        something failed that the caller cannot act on. The detail is in the
+        log and deliberately not in this body, which may cross the WAN.
+
+        **Every credentialed operation declares this, and the reason is not
+        that every handler has a bug.** `requireUser` resolves the session
+        against the database, so a dropped connection answers here on ANY route
+        behind a credential — the shared wrapper's 500, not the handler's. A
+        document that omitted it would leave three generated clients with no
+        branch for the answer they get when Postgres blinks.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    # THE ERROR SHAPE, ONCE. Two required fields, matching what the ASR service
+    # already publishes (asr/openapi.yaml) so the estate has one error envelope
+    # rather than one per service.
+    #
+    # `code` is the stable machine token and is what a client branches on.
+    # `message` is the sentence a person reads and may change without notice.
+    # Nothing else: a details bag is where a handler leaks the shape of the id
+    # space one field at a time.
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: A stable machine token. Clients branch on this, never on `message`.
+          example: owner_only
+        message:
+          type: string
+          description: One sentence, for a person. Not stable across releases.
+
+    Health:
+      type: object
+      required: [status, version]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        version:
+          type: string
+        commit:
+          type: string
+          description: Absent on a build that was not stamped with one.
+
+    Readiness:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ready, unready]
+        check:
+          type: string
+          description: |
+            Which dependency failed. Present only on `unready`, and naming the
+            check rather than the error: the detail belongs in the log, not in a
+            body that may cross the WAN.
+          example: database
+
+    StorageReport:
+      type: object
+      required: [root, disk, corpus, window, reconciliation]
+      properties:
+        root:
+          type: string
+          description: The audio store's root on disk.
+        disk:
+          $ref: "#/components/schemas/DiskReport"
+        corpus:
+          $ref: "#/components/schemas/CorpusReport"
+        window:
+          $ref: "#/components/schemas/WindowReport"
+        reconciliation:
+          $ref: "#/components/schemas/ReconciliationReport"
+
+    DiskReport:
+      type: object
+      required:
+        [files, bytes, strays, stray_bytes, staging, staging_bytes,
+         volume_known, volume_total_bytes, volume_free_bytes]
+      properties:
+        files:
+          type: integer
+        bytes:
+          type: integer
+          format: int64
+        strays:
+          type: integer
+          description: Files under the root that this layout did not write.
+        stray_bytes:
+          type: integer
+          format: int64
+        stray_sample:
+          type: array
+          description: |
+            A sample of the stray paths. Strays are never counted as corpus and
+            never offered to the pruner.
+          items:
+            type: string
+          x-go-type-skip-optional-pointer: true
+        staging:
+          type: integer
+          description: |
+            Uploads in flight (CHRN-20) — files this service wrote and
+            understands, which are not recordings yet and may never become any.
+            Reported apart from both corpus and strays: counted as corpus it
+            would inflate what the memos cost, and counted as strays every phone
+            mid-upload would read as a file nobody can name.
+        staging_bytes:
+          type: integer
+          format: int64
+        volume_known:
+          type: boolean
+          description: |
+            Whether the volume figures below were measurable. It is what
+            separates "not measured" from "measured as zero" — a full volume has
+            `volume_free_bytes: 0`, which is exactly when the figure matters
+            most, so neither number is ever omitted.
+        volume_total_bytes:
+          type: integer
+          format: int64
+        volume_free_bytes:
+          type: integer
+          format: int64
+
+    CorpusReport:
+      type: object
+      required:
+        [memos, audio_present, audio_pruned, recorded_bytes, ever_bytes,
+         oldest_capture, newest_capture]
+      properties:
+        memos:
+          type: integer
+          format: int64
+        audio_present:
+          type: integer
+          format: int64
+        audio_pruned:
+          type: integer
+          format: int64
+        recorded_bytes:
+          type: integer
+          format: int64
+        ever_bytes:
+          type: integer
+          format: int64
+        oldest_capture:
+          type: string
+          format: date-time
+          nullable: true
+          description: Null on an empty corpus. Always present, so absent never means empty.
+        newest_capture:
+          type: string
+          format: date-time
+          nullable: true
+
+    WindowReport:
+      type: object
+      required: [days, memos, bytes, projected_bytes, pct_of_projected]
+      properties:
+        days:
+          type: integer
+        memos:
+          type: integer
+          format: int64
+        bytes:
+          type: integer
+          format: int64
+        projected_bytes:
+          type: integer
+          format: int64
+          description: What the sizing in docs/benchmarks projected for this window.
+        pct_of_projected:
+          type: number
+          format: double
+
+    ReconciliationReport:
+      type: object
+      required:
+        [orphans, orphan_bytes, missing, missing_bytes, mismatched]
+      properties:
+        orphans:
+          type: integer
+          description: Audio on disk that no memo claims.
+        orphan_bytes:
+          type: integer
+          format: int64
+        orphan_sample:
+          type: array
+          items:
+            type: string
+          x-go-type-skip-optional-pointer: true
+        missing:
+          type: integer
+          description: |
+            **The direction that matters.** A memo says its audio is present and
+            the file is not there. Non-zero here is the unrecoverable loss
+            CLAUDE.md names as the worst thing this system can do, and it leaves
+            a log line whether or not anybody reads this response.
+        missing_bytes:
+          type: integer
+          format: int64
+        missing_sample:
+          type: array
+          items:
+            type: string
+          x-go-type-skip-optional-pointer: true
+        mismatched:
+          type: integer
+        mismatched_sample:
+          type: array
+          description: |
+            Carries both sizes. Without them a 5-against-4096 truncation and a
+            4097-against-4096 rounding read identically, and those are not the
+            same finding.
+          items:
+            $ref: "#/components/schemas/Mismatch"
+          x-go-type-skip-optional-pointer: true
+
+    Mismatch:
+      type: object
+      required: [ref, on_disk_bytes, recorded_bytes]
+      properties:
+        ref:
+          type: string
+          description: "`<author-id>/<content-hash>`."
+        on_disk_bytes:
+          type: integer
+          format: int64
+        recorded_bytes:
+          type: integer
+          format: int64
+
+    TranscriptionReport:
+      type: object
+      required: [states, pending, held, partial, enabled]
+      properties:
+        states:
+          type: object
+          description: |
+            Every memo counted by state, not only the interesting ones. A report
+            naming only `held` could not tell "nothing is wrong" from "nothing
+            is happening", and a pump that has silently stopped looks exactly
+            like a corpus with no failures.
+          additionalProperties:
+            type: integer
+            format: int64
+        pending:
+          type: integer
+          format: int64
+          description: |
+            Captured, queued and transcribing together. One number, because "how
+            far behind is it" is the question being asked.
+        held:
+          type: integer
+          format: int64
+        held_sample:
+          type: array
+          items:
+            $ref: "#/components/schemas/HeldMemo"
+          x-go-type-skip-optional-pointer: true
+        partial:
+          type: integer
+          format: int64
+          description: |
+            Memos whose only transcript is incomplete. Reported because they are
+            otherwise INVISIBLE: a partial memo is `transcribed`, so nothing
+            sweeps it; it is not `held`, so `chronicle retranscribe` will not
+            release it; and its audio correctly does not prune. Every one of
+            those is right, and together they make a partial memo read as a
+            healthy one.
+        partial_sample:
+          type: array
+          items:
+            $ref: "#/components/schemas/PartialTranscript"
+          x-go-type-skip-optional-pointer: true
+        enabled:
+          type: boolean
+          description: |
+            Whether a transcription pump is configured at all. Without it, an
+            operator reading `pending: 812` cannot tell a backlog from a service
+            that was never pointed at an ASR endpoint — and those want
+            completely different remedies.
+
+    HeldMemo:
+      type: object
+      required: [id, author_id, captured_at, reason, retry]
+      properties:
+        id:
+          type: string
+          format: uuid
+        author_id:
+          type: string
+          format: uuid
+        captured_at:
+          type: string
+          format: date-time
+        reason:
+          type: string
+        retry:
+          type: string
+          description: The exact command that releases this memo.
+
+    PartialTranscript:
+      type: object
+      required: [memo_id, model, transcribed_at]
+      properties:
+        memo_id:
+          type: string
+          format: uuid
+        model:
+          type: string
+          description: Runner-qualified, e.g. `whisper.cpp/small.en`.
+        transcribed_at:
+          type: string
+          format: date-time

@@ -1,0 +1,650 @@
+package api
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/Einlanzerous/chronicle/internal/api/apitest"
+	"github.com/Einlanzerous/chronicle/internal/api/wire"
+	"github.com/Einlanzerous/chronicle/internal/store"
+)
+
+// CHRN-97's guards, tested where they can actually fail.
+//
+// Four of the five are structural and need no test to hold -- the byte-compare
+// in verify.sh, the ServerInterface assertion in router.go, the generated
+// registration, the construction-time panic. What they need is a test that
+// proves the STRUCTURE is still wired up: that the panic can fire, that the
+// table and the document cannot disagree, and that the responses are the ones
+// the document describes.
+
+// The document declares the credential in x-chronicle-policy, and policy.go
+// declares it in Go. This is the test that makes them one fact instead of two.
+//
+// It fails in both directions on purpose. A document operation missing from the
+// table is a route that would panic at boot -- better to learn it here. A table
+// entry with no operation is a route the generator will never register, so the
+// wrap it names is dead code that reads like a live credential.
+func TestPolicyTableMatchesTheDocument(t *testing.T) {
+	documented := map[string]policy{}
+
+	for path, item := range apitest.Doc(t).Paths.Map() {
+		for method, op := range item.Operations() {
+			pattern := method + " " + path
+
+			raw, ok := op.Extensions["x-chronicle-policy"]
+			if !ok {
+				t.Errorf("%s (%s) declares no x-chronicle-policy in openapi.yaml", pattern, op.OperationID)
+				continue
+			}
+			name, ok := raw.(string)
+			if !ok {
+				t.Errorf("%s: x-chronicle-policy is %T, want a string", pattern, raw)
+				continue
+			}
+			documented[pattern] = policy(name)
+
+			switch got, ok := routePolicy[pattern]; {
+			case !ok:
+				t.Errorf("%s is in openapi.yaml but not in routePolicy — it would panic at construction", pattern)
+			case got != policy(name):
+				t.Errorf("%s: openapi.yaml says %q, routePolicy says %q", pattern, name, got)
+			}
+		}
+	}
+
+	for pattern := range routePolicy {
+		if _, ok := documented[pattern]; !ok {
+			t.Errorf("%s is in routePolicy but in no operation in openapi.yaml", pattern)
+		}
+	}
+}
+
+// The document says who may call an operation twice over: `security: []` means
+// no credential at all, and x-chronicle-policy says which credential otherwise.
+// They have to agree, or the document contradicts itself and the generated
+// clients believe the half this package does not read.
+func TestSecurityAndPolicyAgreeOnWhatIsPublic(t *testing.T) {
+	for path, item := range apitest.Doc(t).Paths.Map() {
+		for method, op := range item.Operations() {
+			pattern := method + " " + path
+
+			// A nil Security inherits the document's top-level requirement; an
+			// empty one overrides it to "no credential".
+			public := op.Security != nil && len(*op.Security) == 0
+			pol, _ := op.Extensions["x-chronicle-policy"].(string)
+
+			// signin is credential-free too, and deliberately a different
+			// policy: it is rate-limited because it MINTS a credential.
+			credentialFree := pol == string(policyPublic) || pol == string(policySignIn)
+
+			if public != credentialFree {
+				t.Errorf("%s: security declares public=%v but x-chronicle-policy is %q",
+					pattern, public, pol)
+			}
+		}
+	}
+}
+
+// A route the document grows without a declared credential must stop the
+// binary, not default to something. This is that panic, fired on purpose.
+//
+// Tested through the shim rather than by mutating the document, because the
+// failure is a property of the shim: it is what happens on the next operation
+// anybody adds.
+func TestAnUndeclaredRoutePanicsAtConstruction(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("registering a route with no policy did not panic; " +
+				"an undeclared route would reach production with no credential")
+		}
+		if msg, _ := r.(string); !strings.Contains(msg, "routePolicy") {
+			t.Errorf("panic did not name routePolicy, so nobody will know what to fix: %v", r)
+		}
+	}()
+
+	routed := newPolicyRouter(http.NewServeMux(), &api{})
+	routed.HandleFunc("GET /a-route-nobody-declared", func(http.ResponseWriter, *http.Request) {})
+}
+
+// Every route this API serves, and what an anonymous caller gets from it.
+//
+// THE EXPECTATIONS ARE WRITTEN OUT, NOT DERIVED. Deriving them from routePolicy
+// would make this test agree with the table by construction and prove nothing;
+// these are the statuses the surface answered before CHRN-97 moved any of it,
+// enumerated route by route. The plan's inventory table is this list.
+//
+// It covers the routes the generator now registers AND the ones still
+// hand-registered, which is the point: the second half of this ticket moves
+// them, and this is what says the move changed nothing.
+func TestAnonymousGetsTheSameAnswerFromEveryRoute(t *testing.T) {
+	h := testRouter(newFakeAccounts())
+
+	// 401: a session is required. 429 is not reachable anonymously here
+	// (the sign-in limiter allows a burst), so the two sign-in routes answer
+	// on their own merits and are listed with what they actually return.
+	cases := []struct {
+		method, path string
+		want         int
+	}{
+		{http.MethodGet, "/healthz", http.StatusOK},
+		{http.MethodGet, "/readyz", http.StatusOK},
+
+		{http.MethodDelete, "/auth/session", http.StatusUnauthorized},
+		{http.MethodGet, "/auth/me", http.StatusUnauthorized},
+		{http.MethodPatch, "/auth/me", http.StatusUnauthorized},
+		{http.MethodPost, "/auth/invite", http.StatusUnauthorized},
+		{http.MethodGet, "/auth/sessions", http.StatusUnauthorized},
+		{http.MethodDelete, "/auth/sessions/" + someUUID, http.StatusUnauthorized},
+
+		{http.MethodPost, "/admin/users", http.StatusUnauthorized},
+		{http.MethodGet, "/admin/users", http.StatusUnauthorized},
+		{http.MethodPost, "/admin/users/" + someUUID + "/invite", http.StatusUnauthorized},
+		{http.MethodDelete, "/admin/users/" + someUUID, http.StatusUnauthorized},
+		{http.MethodGet, "/admin/storage", http.StatusUnauthorized},
+		{http.MethodGet, "/admin/triage", http.StatusUnauthorized},
+		{http.MethodGet, "/admin/transcription", http.StatusUnauthorized},
+
+		{http.MethodPost, "/memos/uploads", http.StatusUnauthorized},
+		{http.MethodGet, "/memos/uploads/" + someUUID, http.StatusUnauthorized},
+		{http.MethodPatch, "/memos/uploads/" + someUUID, http.StatusUnauthorized},
+		{http.MethodDelete, "/memos/uploads/" + someUUID, http.StatusUnauthorized},
+
+		{http.MethodGet, "/triage/batch", http.StatusUnauthorized},
+		{http.MethodPost, "/triage/accept", http.StatusUnauthorized},
+		{http.MethodPost, "/triage/hold", http.StatusUnauthorized},
+		{http.MethodPost, "/triage/release", http.StatusUnauthorized},
+		{http.MethodGet, "/triage/deferred", http.StatusUnauthorized},
+	}
+
+	for _, tc := range cases {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+		if rec.Code != tc.want {
+			t.Errorf("%s %s = %d, want %d", tc.method, tc.path, rec.Code, tc.want)
+		}
+	}
+
+	// The two sign-in routes are credential-free by design, and the only two
+	// that are besides the probes.
+	//
+	// The claim is NOT "they do not answer 401" -- a sign-in with no invite
+	// legitimately does, and that is the handler doing its job. The claim is
+	// that the request REACHED the handler: requireUser stamps
+	// WWW-Authenticate on its refusal and the sign-in handlers never do, so an
+	// empty header is the observable that separates "your credential was
+	// rejected" from "you needed a credential to try".
+	for _, path := range []string{"/auth/session", "/auth/sso/cloudflare"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, jsonReq(http.MethodPost, path, `{}`))
+		if got := rec.Header().Get("WWW-Authenticate"); got != "" {
+			t.Errorf("POST %s was refused by the credential wrapper (WWW-Authenticate: %q): "+
+				"signing in now requires a session", path, got)
+		}
+	}
+
+	// And the route set is closed. A path nobody declared is a 404, which is
+	// what says the generated registration added no surface of its own.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/notes/CHR-0311", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET /notes/CHR-0311 = %d, want 404 — that route belongs to CHRN-98", rec.Code)
+	}
+}
+
+// The owner-only routes answer 403 to an ordinary member, not 200 and not 404.
+func TestAMemberIsRefusedTheOwnerRoutes(t *testing.T) {
+	f := newFakeAccounts()
+	member := person("member@example.com", false)
+	f.sessions["member-token"] = member
+	h := testRouter(f)
+
+	owned := []struct{ method, path string }{
+		{http.MethodPost, "/admin/users"},
+		{http.MethodGet, "/admin/users"},
+		{http.MethodPost, "/admin/users/" + someUUID + "/invite"},
+		{http.MethodDelete, "/admin/users/" + someUUID},
+		{http.MethodGet, "/admin/storage"},
+		{http.MethodGet, "/admin/triage"},
+		{http.MethodGet, "/admin/transcription"},
+	}
+
+	for _, route := range owned {
+		rec := httptest.NewRecorder()
+		r := httptest.NewRequest(route.method, route.path, nil)
+		r.Header.Set("Authorization", "Bearer member-token")
+		h.ServeHTTP(rec, r)
+
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s %s as a member = %d, want 403", route.method, route.path, rec.Code)
+		}
+	}
+}
+
+// The refusals the shared wrappers produce are responses like any other, and
+// the document describes them. Conform is what says so.
+func TestRefusalsConformToTheDocument(t *testing.T) {
+	f := newFakeAccounts()
+	f.sessions["member-token"] = person("member@example.com", false)
+	h := testRouter(f)
+
+	for _, tc := range []struct {
+		name, operationID, token string
+		want                     int
+	}{
+		{"anonymous", "getStorageReport", "", http.StatusUnauthorized},
+		{"member", "getStorageReport", "member-token", http.StatusForbidden},
+		{"anonymous", "getTranscriptionReport", "", http.StatusUnauthorized},
+		{"member", "getTranscriptionReport", "member-token", http.StatusForbidden},
+	} {
+		t.Run(tc.operationID+"/"+tc.name, func(t *testing.T) {
+			path := "/admin/storage"
+			if tc.operationID == "getTranscriptionReport" {
+				path = "/admin/transcription"
+			}
+			rec := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodGet, path, nil)
+			if tc.token != "" {
+				r.Header.Set("Authorization", "Bearer "+tc.token)
+			}
+			h.ServeHTTP(rec, r)
+
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d, want %d", rec.Code, tc.want)
+			}
+			apitest.Conform(t, tc.operationID, rec)
+
+			var body wire.Error
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("body is not the documented envelope: %v", err)
+			}
+			if body.Code == "" {
+				t.Error("the envelope carries no code, so a client has nothing to branch on")
+			}
+		})
+	}
+}
+
+// The probes conform too, including the unready branch -- which is the one a
+// deploy actually reads.
+func TestProbesConformToTheDocument(t *testing.T) {
+	h := testRouter(newFakeAccounts())
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	apitest.Conform(t, "getHealthz", rec)
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	apitest.Conform(t, "getReadyz", rec)
+
+	// Unready: the probe answers 503 naming the check, and that shape is
+	// declared. A deploy that cannot tell ready from unready is worse than one
+	// with no probe.
+	down := NewRouter(Deps{
+		DB:       fakePinger{err: errors.New("db is down")},
+		Accounts: newFakeAccounts(),
+		Logger:   discardLogger(),
+		Version:  "test",
+	})
+	rec = httptest.NewRecorder()
+	down.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readyz with a dead database = %d, want 503", rec.Code)
+	}
+	apitest.Conform(t, "getReadyz", rec)
+}
+
+// bindError is the generated wrapper's error handler, and the reason it is
+// supplied at all: its default answers text/plain with the parser's own words.
+//
+// Nothing in this half of the ticket binds a parameter -- the four migrated
+// operations take none -- so this exercises it directly. The second half brings
+// the {id} routes, and Conform covers a malformed one per operation there.
+func TestBindErrorAnswersTheDocumentedEnvelopeAndLeaksNothing(t *testing.T) {
+	handle := bindError(discardLogger())
+
+	leaky := &wire.InvalidParamFormatError{
+		ParamName: "id",
+		Err:       errors.New("invalid UUID length: 5"),
+	}
+
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"malformed", leaky},
+		{"missing", &wire.RequiredParamError{ParamName: "id"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			handle(rec, httptest.NewRequest(http.MethodGet, "/admin/storage", nil), tc.err)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", rec.Code)
+			}
+			if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+				t.Fatalf("Content-Type = %q, want application/json — the default answers text/plain", ct)
+			}
+
+			var body wire.Error
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("body is not the documented envelope: %v", err)
+			}
+			if body.Code != codeInvalidParameter {
+				t.Errorf("code = %q, want %q", body.Code, codeInvalidParameter)
+			}
+
+			// The regression this replaces: pathUUID answers a flat message
+			// "rather than leaking the shape of the id space through a lookup",
+			// while the generated text says "invalid UUID length: 5".
+			if strings.Contains(body.Message, "UUID") || strings.Contains(body.Message, "length") {
+				t.Errorf("message %q relays the parser's own words", body.Message)
+			}
+		})
+	}
+}
+
+// Not a guard so much as a readable record: what the document currently
+// describes. A route joining it without a policy fails the test above; this one
+// makes the set itself visible in a diff.
+func TestDocumentedOperations(t *testing.T) {
+	var got []string
+	for name := range apitest.Operations(t) {
+		got = append(got, name)
+	}
+	sort.Strings(got)
+
+	want := []string{"getHealthz", "getReadyz", "getStorageReport", "getTranscriptionReport"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("operations = %v, want %v.\nIf this is the second half of CHRN-97 landing routes, update the list.", got, want)
+	}
+}
+
+const someUUID = "6f1b2c3d-4e5f-4a7b-8c9d-0e1f2a3b4c5d"
+
+// The other two directions of criterion 6's matrix.
+//
+// The anonymous row is the one above, written out status by status. These two
+// cannot be: a credentialed caller's status depends on the handler and on what
+// the deployment has configured -- 200, 400, 415, 503 are all correct answers
+// here -- so the claim is narrower and is the one that matters for a
+// credential migration: THE WRAPPER LET IT THROUGH. A 401 or a 403 from the
+// shared wrappers is identifiable by its code, so the assertion is precise
+// rather than a status range.
+//
+// It is what PR 2 leans on. Moving 22 routes onto the generated registration
+// must not change who gets past the wrapper, and "anonymous still gets 401" is
+// only half of that.
+func TestACredentialedCallerIsNotRefusedByTheWrappers(t *testing.T) {
+	f := newFakeAccounts()
+	member := f.signIn(person("member@example.com", false), "member-token")
+	owner := f.signIn(person("owner@example.com", true), "owner-token")
+	h := testRouter(f)
+
+	// Every route, with the credential that should reach its handler. The
+	// owner-only seven are checked with the owner; the rest with a plain
+	// member, since a member reaching them is the wider claim.
+	routes := []struct {
+		method, path string
+		as           store.User
+		token        string
+	}{
+		{http.MethodDelete, "/auth/session", member, "member-token"},
+		{http.MethodGet, "/auth/me", member, "member-token"},
+		{http.MethodPatch, "/auth/me", member, "member-token"},
+		{http.MethodPost, "/auth/invite", member, "member-token"},
+		{http.MethodGet, "/auth/sessions", member, "member-token"},
+		{http.MethodDelete, "/auth/sessions/" + someUUID, member, "member-token"},
+
+		{http.MethodPost, "/admin/users", owner, "owner-token"},
+		{http.MethodGet, "/admin/users", owner, "owner-token"},
+		{http.MethodPost, "/admin/users/" + someUUID + "/invite", owner, "owner-token"},
+		{http.MethodDelete, "/admin/users/" + someUUID, owner, "owner-token"},
+		{http.MethodGet, "/admin/storage", owner, "owner-token"},
+		{http.MethodGet, "/admin/triage", owner, "owner-token"},
+		{http.MethodGet, "/admin/transcription", owner, "owner-token"},
+
+		{http.MethodPost, "/memos/uploads", member, "member-token"},
+		{http.MethodGet, "/memos/uploads/" + someUUID, member, "member-token"},
+		{http.MethodPatch, "/memos/uploads/" + someUUID, member, "member-token"},
+		{http.MethodDelete, "/memos/uploads/" + someUUID, member, "member-token"},
+
+		{http.MethodGet, "/triage/batch", member, "member-token"},
+		{http.MethodPost, "/triage/accept", member, "member-token"},
+		{http.MethodPost, "/triage/hold", member, "member-token"},
+		{http.MethodPost, "/triage/release", member, "member-token"},
+		{http.MethodGet, "/triage/deferred", member, "member-token"},
+	}
+
+	for _, route := range routes {
+		// RE-ESTABLISHED EACH TIME, because one of these routes revokes the
+		// credential it was called with: DELETE /auth/session is a sign-out,
+		// and it deletes the token from the fake exactly as it deletes the
+		// session from the store. Without this the first row would
+		// unauthenticate every row after it and the test would read as
+		// fourteen broken wrappers -- which is what it did.
+		f.sessions[route.token] = route.as
+
+		rec := httptest.NewRecorder()
+		r := jsonReq(route.method, route.path, `{}`)
+		r.Header.Set("Authorization", "Bearer "+route.token)
+		h.ServeHTTP(rec, r)
+
+		if rec.Code != http.StatusUnauthorized && rec.Code != http.StatusForbidden {
+			continue
+		}
+		// A 401/403 here is only a failure if the WRAPPER produced it. A
+		// handler may legitimately refuse -- removing the owner account is
+		// 403 by design -- so the code is what separates the two.
+		var body wire.Error
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		if body.Code == codeUnauthorized || body.Code == codeOwnerOnly {
+			t.Errorf("%s %s as %s = %d %s: the credential wrapper refused a caller that should reach the handler",
+				route.method, route.path, route.as.Email, rec.Code, body.Code)
+		}
+	}
+
+	// And the owner reaches the member routes too -- the owner is an account,
+	// not a separate kind of caller.
+	f.sessions["owner-token"] = owner
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/auth/me", nil)
+	r.Header.Set("Authorization", "Bearer owner-token")
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Errorf("GET /auth/me as the owner = %d, want 200", rec.Code)
+	}
+}
+
+// Every generated route went through the policy path, and with which wrap.
+//
+// This is what policyRouter.seen is FOR, and the assertion the map alone cannot
+// make: routePolicy containing an entry says nothing about whether the
+// registration consulted it. Run the generated registration against a shim of
+// this test's own and read back what it recorded.
+func TestEveryGeneratedRouteIsRegisteredThroughThePolicyPath(t *testing.T) {
+	routed := newPolicyRouter(http.NewServeMux(), &api{accounts: newFakeAccounts()})
+	wire.HandlerWithOptions(&api{}, wire.StdHTTPServerOptions{
+		BaseRouter:       routed,
+		ErrorHandlerFunc: bindError(discardLogger()),
+	})
+
+	want := map[string]policy{
+		"GET /healthz":             policyPublic,
+		"GET /readyz":              policyPublic,
+		"GET /admin/storage":       policyOwner,
+		"GET /admin/transcription": policyOwner,
+	}
+
+	if len(routed.seen) != len(want) {
+		t.Fatalf("registered %d routes through the policy path, want %d: %v",
+			len(routed.seen), len(want), routed.seen)
+	}
+	for pattern, pol := range want {
+		got, ok := routed.seen[pattern]
+		if !ok {
+			t.Errorf("%s was not registered through the policy path", pattern)
+			continue
+		}
+		if got != pol {
+			t.Errorf("%s registered as %q, want %q", pattern, got, pol)
+		}
+	}
+}
+
+// Every operation declares the responses its SHARED CODE can produce, not only
+// the ones its own handler writes on purpose.
+//
+// ============================================================================
+// THIS IS THE PART OF strict-server THAT HAD TO BE REPLACED BY HAND.
+// ============================================================================
+//
+// Ruling 1 declined `strict-server`, whose stated cost was that "every status
+// any handler can answer must be enumerated per operation before the code
+// compiles". The plan traded that for `apitest.Conform` at test time -- and
+// Conform can only judge a response some test actually drove. Nothing in this
+// package drove a 500, so both migrated operations shipped able to answer one
+// and declaring none, which is a client generated against a document with no
+// branch for the answer it gets when Postgres blinks.
+//
+// So the enumeration is a rule over the document instead of a property of the
+// Go types. It is checkable without running a handler, which is what makes it
+// carry to every operation the epic adds rather than only the ones somebody
+// remembered to test.
+//
+// ============================================================================
+// THE RULES FOLLOW REACHABILITY OF THE SHARED CODE, NOT THE POLICY NAME.
+// ============================================================================
+//
+// The first version of this test gated the 500 on `member || owner`, and a
+// review found the hole before PR 2 could fall into it: both sign-in handlers
+// call `serverError` DIRECTLY -- session.go:273 on a failed invite redemption,
+// and :335/:364/:374 in the Cloudflare Access path -- so `signin` can answer
+// 500 without ever reaching `requireUser`. A rule keyed on the policy name
+// would have passed the first sign-in operation with no 500 declared, on the
+// route apierr.go itself calls "the surface a client meets first".
+//
+// Keyed on reachability instead, the same table also covers what the shared
+// JSON decoder answers on any body-taking route -- which is what stops PR 2
+// rediscovering this 22 operations at a time.
+func TestEveryOperationDeclaresWhatItsSharedCodeCanAnswer(t *testing.T) {
+	// Each rule names the shared function that produces the status, because
+	// that is why the obligation belongs to the document rather than to
+	// whoever writes the next handler.
+	type rule struct {
+		code    int
+		applies func(pol string, params int, hasBody bool) bool
+		why     string
+	}
+	credentialed := func(pol string) bool {
+		return pol == string(policyMember) || pol == string(policyOwner)
+	}
+	rules := []rule{
+		{
+			code:    http.StatusInternalServerError,
+			applies: func(pol string, _ int, _ bool) bool { return pol != string(policyPublic) },
+			why: "serverError is reachable on every route but the two probes: requireUser answers " +
+				"it when the session lookup fails, and the sign-in handlers call it directly",
+		},
+		{
+			code:    http.StatusUnauthorized,
+			applies: func(pol string, _ int, _ bool) bool { return credentialed(pol) },
+			why:     "requireUser answers it",
+		},
+		{
+			code:    http.StatusForbidden,
+			applies: func(pol string, _ int, _ bool) bool { return pol == string(policyOwner) },
+			why:     "requireOwner answers it",
+		},
+		{
+			code:    http.StatusTooManyRequests,
+			applies: func(pol string, _ int, _ bool) bool { return pol == string(policySignIn) },
+			why:     "limitSignIn answers it",
+		},
+		{
+			code: http.StatusBadRequest,
+			applies: func(_ string, params int, hasBody bool) bool {
+				return params > 0 || hasBody
+			},
+			why: "the generated wrapper answers it through bindError when a parameter does not " +
+				"bind, pathUUID when a {id} is not a UUID, and decodeJSONLimit on a body that " +
+				"is not JSON or a field that is too long",
+		},
+		{
+			code:    http.StatusUnsupportedMediaType,
+			applies: func(_ string, _ int, hasBody bool) bool { return hasBody },
+			why: "decodeJSONLimit refuses a body that is not application/json -- which is what " +
+				"closes login CSRF, so no body-taking route is exempt",
+		},
+		{
+			code:    http.StatusRequestEntityTooLarge,
+			applies: func(_ string, _ int, hasBody bool) bool { return hasBody },
+			why:     "decodeJSONLimit caps every body, and MaxBytesReader answers it",
+		},
+	}
+
+	for path, item := range apitest.Doc(t).Paths.Map() {
+		for method, op := range item.Operations() {
+			pattern := method + " " + path
+			pol, _ := op.Extensions["x-chronicle-policy"].(string)
+			params := len(op.Parameters) + len(item.Parameters)
+			hasBody := op.RequestBody != nil
+
+			declares := func(code int) bool {
+				if op.Responses == nil {
+					return false
+				}
+				ref := op.Responses.Status(code)
+				return ref != nil && ref.Value != nil
+			}
+
+			for _, r := range rules {
+				if r.applies(pol, params, hasBody) && !declares(r.code) {
+					t.Errorf("%s declares no %d: %s", pattern, r.code, r.why)
+				}
+			}
+
+			// A `default` response would satisfy every rule above while
+			// telling a client nothing, and it would turn Conform into a
+			// catch-all that accepts any status this API ever answers. If one
+			// is ever wanted it should be argued, not arrived at.
+			if op.Responses != nil {
+				if d := op.Responses.Default(); d != nil && d.Value != nil {
+					t.Errorf("%s declares a `default` response: it satisfies every rule here "+
+						"while describing nothing, and it makes apitest.Conform accept any status", pattern)
+				}
+			}
+		}
+	}
+}
+
+// And the 500 is not only declared, it is driven -- so Conform judges the real
+// response rather than a schema nobody has produced.
+func TestAFailingStoreAnswersTheDocumented500(t *testing.T) {
+	h := transcriptionRouter(t, &fakeTranscription{statesErr: errors.New("connection reset by peer")}, true)
+
+	rec := getTranscription(t, h, "chr_owner")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500: %s", rec.Code, rec.Body.String())
+	}
+	apitest.Conform(t, "getTranscriptionReport", rec)
+
+	var body wire.Error
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body is not the documented envelope: %v", err)
+	}
+	if body.Code != codeInternal {
+		t.Errorf("code = %q, want %q", body.Code, codeInternal)
+	}
+	// The cause belongs in the log, not in a body that may cross the WAN.
+	if strings.Contains(body.Message, "connection reset") {
+		t.Errorf("message %q relays the underlying error", body.Message)
+	}
+}
