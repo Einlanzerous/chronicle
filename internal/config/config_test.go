@@ -514,3 +514,41 @@ func TestAmberCredentialsAreBothOrNeither(t *testing.T) {
 		}
 	})
 }
+
+// CHRN-100: the tier-1 corpus mount. Absolute or nothing, like the audio
+// root. Unset is accepted HERE — Load has no opinion about which subcommand
+// is running — and refused by serve, which is where the refusal has a
+// remedy to name.
+func TestLoadTier1WikiDir(t *testing.T) {
+	withOwner(t)
+	t.Setenv("CHRONICLE_DATABASE_URL", "postgres://x/y")
+
+	t.Run("absolute", func(t *testing.T) {
+		t.Setenv("CHRONICLE_TIER1_WIKI_DIR", "/tier1/wiki")
+		c, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if c.Tier1WikiDir != "/tier1/wiki" {
+			t.Errorf("Tier1WikiDir = %q", c.Tier1WikiDir)
+		}
+	})
+
+	t.Run("relative is refused", func(t *testing.T) {
+		t.Setenv("CHRONICLE_TIER1_WIKI_DIR", "wiki/docs")
+		if _, err := Load(); err == nil {
+			t.Error("Load accepted a relative tier-1 wiki root")
+		}
+	})
+
+	t.Run("unset loads and serve refuses", func(t *testing.T) {
+		t.Setenv("CHRONICLE_TIER1_WIKI_DIR", "")
+		c, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if c.Tier1WikiDir != "" {
+			t.Errorf("Tier1WikiDir = %q, want empty", c.Tier1WikiDir)
+		}
+	})
+}

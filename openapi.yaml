@@ -92,6 +92,14 @@ tags:
       Threads, with the Scribe as a participant. Ordered by a server-assigned
       sequence, read markers server-side, and a thread that ends by resolving
       into a note.
+  - name: tier1
+    description: |
+      The estate's account of what exists — SERV-101's generated wiki, read
+      from a read-only mount of the markdown corpus its generator emits.
+      Tier 1: regenerated on every deploy, hand-edited by nobody, and served
+      here so a client can render it beside tier 2 without mistaking one for
+      the other. Every payload carries `generated`. Nothing here touches
+      either database pool, and nothing here can be written.
 
 paths:
   /healthz:
@@ -1647,6 +1655,75 @@ paths:
         "500": { $ref: "#/components/responses/InternalError" }
         "503": { $ref: "#/components/responses/ThreadsUnconfigured" }
 
+  # ---------------------------------------------------------------------------
+  # TIER 1 (CHRN-100): the generated estate wiki, from a read-only mount.
+  #
+  # The content is SERV-101's markdown corpus, which lives in no database:
+  # construct-server generates it on every deploy, and SERV-189 publishes it
+  # to the deploy root and bind-mounts it here at CHRONICLE_TIER1_WIKI_DIR.
+  # These two operations read files. The kernel enforces read-only, and every
+  # payload carries the `Generated` marking so the client epic's `READ ONLY`
+  # pane has an unambiguous thing to key on.
+  #
+  # A page is addressed by the corpus's own path — `services/chronicle` — as a
+  # QUERY parameter rather than a path one, for the reason `GET /notes` takes
+  # `page` that way: the address has slashes in it.
+  # ---------------------------------------------------------------------------
+
+  /tier1/pages:
+    get:
+      tags: [tier1]
+      summary: Every page of the generated estate wiki.
+      description: |
+        The whole corpus, sorted by path, each page with its title. Not
+        paginated: the corpus is bounded by the estate's size, not by what
+        people write, and a client rendering a tree wants all of it.
+
+        Empty is a legitimate answer on a host the wiki has not yet been
+        generated on. `generated.ref` and `generated.generated_at` are absent
+        then, and on any corpus the generator wrote without a `build.json`.
+      operationId: listTier1Pages
+      x-chronicle-policy: member
+      responses:
+        "200":
+          description: the corpus
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tier1PageList"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/Tier1Unconfigured" }
+
+  /tier1/page:
+    get:
+      tags: [tier1]
+      summary: One page of the generated estate wiki, rendered.
+      description: |
+        `body` is the page's markdown with the generator's front matter
+        removed; `html` is that body rendered by the same renderer notes use,
+        so the two tiers look alike on the page and differ in their marking.
+
+        A path the corpus could not hold — `..`, a leading slash, a
+        dot-prefixed segment — is refused with `400` before touching disk.
+        A path it merely does not have is `404`.
+      operationId: getTier1Page
+      x-chronicle-policy: member
+      parameters:
+        - $ref: "#/components/parameters/Tier1PagePath"
+      responses:
+        "200":
+          description: the page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tier1Page"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/Tier1Unconfigured" }
+
 components:
   securitySchemes:
     # ONE credential, two ways of presenting it. `sessionToken` reads the
@@ -1711,6 +1788,17 @@ components:
       in: query
       required: true
       description: A page path, `estate/conventions/naming`. A redirect left by a move is followed.
+      schema:
+        type: string
+        minLength: 1
+    Tier1PagePath:
+      name: path
+      in: query
+      required: true
+      description: |
+        A page of the generated corpus, by the path its generator wrote it at
+        and without the `.md` — `services/chronicle`, `versions`. Relative,
+        slash-separated, and no segment may be empty or start with a dot.
       schema:
         type: string
         minLength: 1
@@ -1923,6 +2011,16 @@ components:
         supplies one, so no deployment reaches this; declared because the
         handler answers it, and driven by the test that builds the router
         without one.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Tier1Unconfigured:
+      description: |
+        this router was assembled with no tier-1 corpus behind it. `serve`
+        refuses to boot without CHRONICLE_TIER1_WIKI_DIR, so no deployment
+        reaches this; declared because the handler answers it, and driven by
+        the test that builds the router without one.
       content:
         application/json:
           schema:
@@ -2623,8 +2721,10 @@ components:
         What the Scribe proposed. **Derived, disposable, and never authored
         state** — it becomes tier 2 only when a person confirms it, which is the
         whole of CHRN-32's contract.
-      required: [destination, confidence, reason, nearest_page]
+      required: [destination, confidence, reason, nearest_page, generated]
       properties:
+        generated:
+          $ref: "#/components/schemas/Generated"
         destination:
           type: string
           enum: [NOTE, TICKET, DISCUSSION, DISCARD]
@@ -3205,6 +3305,95 @@ components:
               items:
                 $ref: "#/components/schemas/DiscussionSummary"
               x-go-type-skip-optional-pointer: true
+
+    Generated:
+      type: object
+      description: |
+        **The tier-1 marking.** Present and required on every payload of the
+        `tier1` group and on the Scribe's `Proposal` — the generated *content*
+        a client might render beside a note — under its own key, so a client
+        that ignores it still cannot mistake the shape for a `Note`. It says
+        who regenerates the content and carries the line the tier-1 pane
+        renders.
+
+        Two other payloads are built from tier-1 tables and deliberately do
+        not carry it: the transcription report (`tier1.memo_jobs`) and the
+        deferred list (`tier1.triage_holds`). Those are operational state
+        about memos, not content anyone renders as a page; the marking is for
+        the pane, not for every row the tier-1 role can reach.
+
+        `tier` and `regenerable` are literals, not flags: there is no value a
+        client could read as "this one is authored".
+      required: [tier, source, regenerable, notice]
+      properties:
+        tier:
+          type: integer
+          enum: [1]
+          x-enum-varnames: [GeneratedTierOne]
+        source:
+          type: string
+          enum: [serv, chronicle]
+          description: |
+            Who regenerates it. `serv` is construct-server's wiki generator;
+            `chronicle` is Chronicle deriving from its own corpus — the
+            Scribe's proposals.
+        ref:
+          type: string
+          description: |
+            The build that generated it — a construct-server commit for
+            `serv`. Absent when the source stamps nothing.
+        generated_at:
+          type: string
+          format: date-time
+          description: Absent when the source stamps nothing. Never invented.
+        regenerable:
+          type: boolean
+          enum: [true]
+          x-enum-varnames: [GeneratedRegenerableTrue]
+        notice:
+          type: string
+          description: |
+            The line the tier-1 pane renders — *"Regenerated from SERV.
+            Separate store — nothing here can overwrite tier 2."* for `serv`,
+            and its Chronicle counterpart for `chronicle`.
+
+    Tier1PageSummary:
+      type: object
+      required: [path, title]
+      properties:
+        path:
+          type: string
+          description: The corpus's own address for the page, without the `.md`.
+        title:
+          type: string
+          description: From the generator's front matter, else the first heading, else the last path segment.
+
+    Tier1PageList:
+      type: object
+      required: [items, generated]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Tier1PageSummary"
+          x-go-type-skip-optional-pointer: true
+        generated:
+          $ref: "#/components/schemas/Generated"
+
+    Tier1Page:
+      allOf:
+        - $ref: "#/components/schemas/Tier1PageSummary"
+        - type: object
+          required: [body, html, generated]
+          properties:
+            body:
+              type: string
+              description: The page's markdown, front matter removed.
+            html:
+              type: string
+              description: The body rendered, safe to embed.
+            generated:
+              $ref: "#/components/schemas/Generated"
 
     NoteTombstone:
       type: object

@@ -14,6 +14,7 @@ import (
 
 	"github.com/Einlanzerous/chronicle/internal/api/wire"
 	"github.com/Einlanzerous/chronicle/internal/audio"
+	"github.com/Einlanzerous/chronicle/internal/estatewiki"
 	"github.com/Einlanzerous/chronicle/internal/markdown"
 	"github.com/Einlanzerous/chronicle/internal/resolve"
 	"github.com/Einlanzerous/chronicle/internal/store"
@@ -135,6 +136,11 @@ type Deps struct {
 	// assembled without one, and the nine routes then answer 503.
 	Threads Threads
 
+	// EstateWiki is the tier-1 corpus mount (CHRN-100): SERV-101's generated
+	// wiki, read from files. serve refuses to boot without one; nil only on a
+	// router assembled without it, and the two /tier1 routes then answer 503.
+	EstateWiki *estatewiki.Corpus
+
 	// Keys is the live Switchyard project key set — the renderer's predicate
 	// for which KEY-N tokens are references, and the miss feed's destination.
 	// Nil when no tracker is configured: the renderer then runs the pure path
@@ -183,6 +189,7 @@ type api struct {
 	now           func() time.Time
 	wiki          Wiki
 	threads       Threads
+	estate        *estatewiki.Corpus
 	keys          *resolve.Keys
 	renderer      *markdown.Renderer
 }
@@ -237,6 +244,7 @@ func NewRouter(d Deps) http.Handler {
 		now:           d.Now,
 		wiki:          d.Wiki,
 		threads:       d.Threads,
+		estate:        d.EstateWiki,
 		keys:          d.Keys,
 	}
 	if a.now == nil {

@@ -76,6 +76,13 @@ func toProposal(p *scribe.Proposal) *wire.Proposal {
 		return nil
 	}
 	out := wire.Proposal{
+		// THE TIER-1 MARKING (CHRN-100). A proposal is a derived row on the
+		// tier-1 pool, and was the one tier-1 payload on the wire before the
+		// estate wiki joined it — unmarked. Stamped here, on the way out,
+		// because it is a fact about the store and not a field of the
+		// Scribe's.
+		Generated: generatedByChronicle(),
+
 		Destination: wire.ProposalDestination(p.Destination),
 		Confidence:  p.Confidence,
 		Reason:      p.Reason,
