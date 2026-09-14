@@ -563,6 +563,34 @@ func TestEveryOperationDeclaresWhatItsSharedCodeCanAnswer(t *testing.T) {
 	credentialed := func(pol string) bool {
 		return pol == string(policyMember) || pol == string(policyOwner)
 	}
+
+	// A GROUP'S OWN SHARED REFUSAL PATH, which the rules below could not see.
+	//
+	// The table keys on what the WRAPPERS answer — requireUser, requireOwner,
+	// limitSignIn, bindError, decodeJSONLimit — and every one of those is
+	// reachable from a policy or from the operation's own shape. A group can
+	// also have a refusal of its own that no rule above knows about: an
+	// availability guard the whole group passes through, answering 503 when
+	// this deployment has not configured the thing behind it.
+	//
+	// That gap is not hypothetical and it is not mine to have found. The
+	// reviewer named it on CHRN-97 after PR 2, from the fact that `uploadError`
+	// — shared across four operations — is in none of these rules, which is how
+	// getUpload shipped declaring neither the 422 nor the 409 that
+	// Status→finalise can answer. It warned that the triage group converts
+	// against the same rule and has its own shared path, "so the gap applies
+	// there before it is written rather than after".
+	//
+	// It did not bite: the triage operations all declare their 503. But they do
+	// so because somebody remembered, which is the state this whole table
+	// exists to replace — so the guard is keyed on the TAG, and the next group
+	// to arrive cannot forget.
+	groupGuard := map[string]string{
+		"triage":        "triageUnavailable",
+		"uploads":       "uploadsReady",
+		"storage":       "the nil audio store check",
+		"transcription": "the nil transcription store check",
+	}
 	rules := []rule{
 		{
 			code:    http.StatusInternalServerError,
@@ -625,6 +653,19 @@ func TestEveryOperationDeclaresWhatItsSharedCodeCanAnswer(t *testing.T) {
 			for _, r := range rules {
 				if r.applies(pol, params, hasBody) && !declares(r.code) {
 					t.Errorf("%s declares no %d: %s", pattern, r.code, r.why)
+				}
+			}
+
+			// The group's own guard, if it has one.
+			for _, tag := range op.Tags {
+				fn, ok := groupGuard[tag]
+				if !ok {
+					continue
+				}
+				if op.Responses == nil || op.Responses.Status(http.StatusServiceUnavailable) == nil {
+					t.Errorf("%s is tagged %q and declares no 503: %s answers one for every "+
+						"operation in that group when the deployment has not configured it",
+						pattern, tag, fn)
 				}
 			}
 
