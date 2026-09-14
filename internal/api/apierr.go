@@ -76,6 +76,10 @@ const (
 	codePersonRequired   = "person_required"
 	codeSlugTaken        = "slug_taken"
 
+	// The estate wiki (CHRN-100): this router was assembled with no tier-1
+	// corpus behind it. serve always supplies one or refuses to boot.
+	codeTier1Unconfigured = "tier1_unconfigured"
+
 	// Discussions (CHRN-99). The three 409s on a turn are the store's rules
 	// on the wire; the two 403s on a marker are CHRN-45's rulings 8 and 4.
 	codeThreadsUnconfigured = "threads_unconfigured"

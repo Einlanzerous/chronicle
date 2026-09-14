@@ -173,6 +173,9 @@ func TestAnonymousGetsTheSameAnswerFromEveryRoute(t *testing.T) {
 
 		{http.MethodGet, "/pages", http.StatusUnauthorized},
 		{http.MethodPost, "/pages", http.StatusUnauthorized},
+
+		{http.MethodGet, "/tier1/pages", http.StatusUnauthorized},
+		{http.MethodGet, "/tier1/page?path=index", http.StatusUnauthorized},
 		{http.MethodGet, "/notes", http.StatusUnauthorized},
 		{http.MethodPost, "/notes", http.StatusUnauthorized},
 		{http.MethodGet, "/notes/CHR-0311", http.StatusUnauthorized},
@@ -396,14 +399,15 @@ func TestDocumentedOperations(t *testing.T) {
 		"appendTurn", "createNote", "createPage", "createSelfInvite", "createSession",
 		"createSessionFromAccess", "createUser", "createUserInvite", "deleteSession",
 		"deleteUser", "getDiscussion", "getHealthz", "getMe", "getNote", "getReadyz",
-		"getStorageReport", "getTranscriptionReport", "getTriageBatch", "getTriageReport",
-		"getUpload", "holdMemo", "listDeferred", "listDiscussions", "listNoteRevisions",
-		"listNotes", "listPages", "listSessions", "listUnread", "listUsers", "markRead",
-		"openDiscussion", "openUpload", "releaseMemo", "removeParticipant",
-		"resolveDiscussion", "resolveReferences", "revokeSession", "search", "updateMe",
+		"getStorageReport", "getTier1Page", "getTranscriptionReport", "getTriageBatch",
+		"getTriageReport", "getUpload", "holdMemo", "listDeferred", "listDiscussions",
+		"listNoteRevisions", "listNotes", "listPages", "listSessions", "listTier1Pages",
+		"listUnread", "listUsers", "markRead", "openDiscussion", "openUpload", "releaseMemo",
+		"removeParticipant", "resolveDiscussion", "resolveReferences", "revokeSession",
+		"search", "updateMe",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Errorf("operations = %v, want %v.\nAll 44 routes are in the document now; a change here is a change to the surface.", got, want)
+		t.Errorf("operations = %v, want %v.\nAll 46 routes are in the document now; a change here is a change to the surface.", got, want)
 	}
 }
 
@@ -646,6 +650,7 @@ func TestEveryOperationDeclaresWhatItsSharedCodeCanAnswer(t *testing.T) {
 		"notes":         "wikiUnavailable",
 		"search":        "wikiUnavailable",
 		"discussions":   "threadsUnavailable",
+		"tier1":         "tier1Unavailable",
 	}
 	rules := []rule{
 		{
@@ -884,6 +889,16 @@ func TestEveryTriageFieldReachesTheDocument(t *testing.T) {
 	// The domain types that WERE the wire before this epic, each beside the
 	// schema that now describes it. A type here is a promise that the document
 	// covers it; adding a field to one of them and not to openapi.yaml fails.
+	//
+	// ONE PROPERTY IS THE PROJECTION'S AND NOT THE DOMAIN'S. A proposal's
+	// `generated` is the tier-1 marking (CHRN-100): stamped by toProposal on
+	// the way out, because it is a fact about which store the row lives in
+	// and not a field the Scribe emits or the tier-1 store keeps. It is
+	// named here so the third direction of the check still holds for
+	// everything else — a property nothing sets is still a failure.
+	wireOnly := map[string]map[string]bool{
+		"Proposal": {"generated": true},
+	}
 	cases := []struct {
 		schema string
 		value  any
@@ -924,6 +939,9 @@ func TestEveryTriageFieldReachesTheDocument(t *testing.T) {
 				}
 			}
 			for name := range ref.Value.Properties {
+				if wireOnly[tc.schema][name] {
+					continue
+				}
 				if !onTheType[name] {
 					t.Errorf("%s declares %q, which no domain field can set — "+
 						"every response will omit it, and a generated client gets a field that is always absent",

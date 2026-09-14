@@ -161,6 +161,14 @@ var routePolicy = map[string]policy{
 	"POST /discussions/{ref}/resolve":             policyMember,
 	"POST /discussions/{ref}/participants":        policyMember,
 	"DELETE /discussions/{ref}/participants/{id}": policyMember,
+
+	// TIER 1 (CHRN-100): the generated estate wiki, read from a mount. Member
+	// and not owner: the pane sits beside every account's notes, and a read
+	// of generated content is the least sensitive read this service has.
+	// Nothing under this tag writes, so there is no policy stricter than
+	// "signed in" to express.
+	"GET /tier1/pages": policyMember,
+	"GET /tier1/page":  policyMember,
 }
 
 // policyRouter is the ServeMux the generated registration writes into.

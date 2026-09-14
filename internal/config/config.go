@@ -126,6 +126,17 @@ type Config struct {
 	// directory it has no use for would be a worse default than a warning.
 	AudioDir string
 
+	// Tier1WikiDir is the read-only mount of SERV-101's generated estate wiki
+	// — the markdown corpus construct-server's generator emits, published to
+	// the deploy root and bind-mounted here by SERV-189 (CHRN-100). Tier 1's
+	// other half: not the derived rows the tier-1 pool holds, but the
+	// estate's account of what exists, read from files and never from a
+	// table. Absolute, and REQUIRED BY serve: an unset or missing directory
+	// is refused at boot rather than served as an empty tier 1, on CHRN-52
+	// ruling 1's reasoning — a boundary that quietly serves nothing is not
+	// distinguishable from one that works, and the fix is one compose line.
+	Tier1WikiDir string
+
 	// InboxDir is the Copyparty-fed directory the watcher reads (CHRN-19),
 	// with one subdirectory per account. Absolute, and empty means no watcher
 	// runs at all — the Copyparty seam is one of two ingest paths and the
@@ -352,6 +363,11 @@ func Load() (Config, error) {
 	c.AudioDir = strings.TrimSpace(os.Getenv("CHRONICLE_AUDIO_DIR"))
 	if c.AudioDir != "" && !filepath.IsAbs(c.AudioDir) {
 		return c, fmt.Errorf("config: CHRONICLE_AUDIO_DIR %q must be an absolute path", c.AudioDir)
+	}
+
+	c.Tier1WikiDir = strings.TrimSpace(os.Getenv("CHRONICLE_TIER1_WIKI_DIR"))
+	if c.Tier1WikiDir != "" && !filepath.IsAbs(c.Tier1WikiDir) {
+		return c, fmt.Errorf("config: CHRONICLE_TIER1_WIKI_DIR %q must be an absolute path", c.Tier1WikiDir)
 	}
 
 	c.InboxDir = strings.TrimSpace(os.Getenv("CHRONICLE_INBOX_DIR"))

@@ -16,6 +16,54 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for GeneratedRegenerable.
+const (
+	GeneratedRegenerableTrue GeneratedRegenerable = true
+)
+
+// Valid indicates whether the value is a known member of the GeneratedRegenerable enum.
+func (e GeneratedRegenerable) Valid() bool {
+	switch e {
+	case GeneratedRegenerableTrue:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GeneratedSource.
+const (
+	GeneratedSourceChronicle GeneratedSource = "chronicle"
+	GeneratedSourceServ      GeneratedSource = "serv"
+)
+
+// Valid indicates whether the value is a known member of the GeneratedSource enum.
+func (e GeneratedSource) Valid() bool {
+	switch e {
+	case GeneratedSourceChronicle:
+		return true
+	case GeneratedSourceServ:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GeneratedTier.
+const (
+	GeneratedTierOne GeneratedTier = 1
+)
+
+// Valid indicates whether the value is a known member of the GeneratedTier enum.
+func (e GeneratedTier) Valid() bool {
+	switch e {
+	case GeneratedTierOne:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for HealthStatus.
 const (
 	Ok HealthStatus = "ok"
@@ -183,19 +231,19 @@ func (e ReadinessStatus) Valid() bool {
 
 // Defines values for ReferenceDescriptorSystem.
 const (
-	Amber      ReferenceDescriptorSystem = "amber"
-	Chronicle  ReferenceDescriptorSystem = "chronicle"
-	Switchyard ReferenceDescriptorSystem = "switchyard"
+	ReferenceDescriptorSystemAmber      ReferenceDescriptorSystem = "amber"
+	ReferenceDescriptorSystemChronicle  ReferenceDescriptorSystem = "chronicle"
+	ReferenceDescriptorSystemSwitchyard ReferenceDescriptorSystem = "switchyard"
 )
 
 // Valid indicates whether the value is a known member of the ReferenceDescriptorSystem enum.
 func (e ReferenceDescriptorSystem) Valid() bool {
 	switch e {
-	case Amber:
+	case ReferenceDescriptorSystemAmber:
 		return true
-	case Chronicle:
+	case ReferenceDescriptorSystemChronicle:
 		return true
-	case Switchyard:
+	case ReferenceDescriptorSystemSwitchyard:
 		return true
 	default:
 		return false
@@ -591,6 +639,45 @@ type Error struct {
 	Message string `json:"message"`
 }
 
+// Generated **The tier-1 marking.** Present and required on every payload that is
+// generated rather than authored, under its own key, so a client that
+// ignores it still cannot mistake the shape for a `Note`. It says who
+// regenerates the content and carries the line the tier-1 pane renders.
+//
+// `tier` and `regenerable` are literals, not flags: there is no value a
+// client could read as "this one is authored".
+type Generated struct {
+	// GeneratedAt Absent when the source stamps nothing. Never invented.
+	GeneratedAt *time.Time `json:"generated_at,omitempty"`
+
+	// Notice The line the tier-1 pane renders — *"Regenerated from SERV.
+	// Separate store — nothing here can overwrite tier 2."* for `serv`,
+	// and its Chronicle counterpart for `chronicle`.
+	Notice string `json:"notice"`
+
+	// Ref The build that generated it — a construct-server commit for
+	// `serv`. Absent when the source stamps nothing.
+	Ref         *string              `json:"ref,omitempty"`
+	Regenerable GeneratedRegenerable `json:"regenerable"`
+
+	// Source Who regenerates it. `serv` is construct-server's wiki generator;
+	// `chronicle` is Chronicle deriving from its own corpus — the
+	// Scribe's proposals.
+	Source GeneratedSource `json:"source"`
+	Tier   GeneratedTier   `json:"tier"`
+}
+
+// GeneratedRegenerable defines model for Generated.Regenerable.
+type GeneratedRegenerable bool
+
+// GeneratedSource Who regenerates it. `serv` is construct-server's wiki generator;
+// `chronicle` is Chronicle deriving from its own corpus — the
+// Scribe's proposals.
+type GeneratedSource string
+
+// GeneratedTier defines model for Generated.Tier.
+type GeneratedTier int
+
 // Health defines model for Health.
 type Health struct {
 	// Commit Absent on a build that was not stamped with one.
@@ -962,6 +1049,15 @@ type Proposal struct {
 	Confidence  float64             `json:"confidence"`
 	Description *string             `json:"description,omitempty"`
 	Destination ProposalDestination `json:"destination"`
+
+	// Generated **The tier-1 marking.** Present and required on every payload that is
+	// generated rather than authored, under its own key, so a client that
+	// ignores it still cannot mistake the shape for a `Note`. It says who
+	// regenerates the content and carries the line the tier-1 pane renders.
+	//
+	// `tier` and `regenerable` are literals, not flags: there is no value a
+	// client could read as "this one is authored".
+	Generated Generated `json:"generated"`
 
 	// NearestPage The closest existing page, when the proposal is a note. Always
 	// present as a field so "no nearby page" is `null` rather than absent,
@@ -1461,6 +1557,52 @@ type Thread struct {
 	Unread *int `json:"unread,omitempty"`
 }
 
+// Tier1Page defines model for Tier1Page.
+type Tier1Page struct {
+	// Body The page's markdown, front matter removed.
+	Body string `json:"body"`
+
+	// Generated **The tier-1 marking.** Present and required on every payload that is
+	// generated rather than authored, under its own key, so a client that
+	// ignores it still cannot mistake the shape for a `Note`. It says who
+	// regenerates the content and carries the line the tier-1 pane renders.
+	//
+	// `tier` and `regenerable` are literals, not flags: there is no value a
+	// client could read as "this one is authored".
+	Generated Generated `json:"generated"`
+
+	// Html The body rendered, safe to embed.
+	Html string `json:"html"`
+
+	// Path The corpus's own address for the page, without the `.md`.
+	Path string `json:"path"`
+
+	// Title From the generator's front matter, else the first heading, else the last path segment.
+	Title string `json:"title"`
+}
+
+// Tier1PageList defines model for Tier1PageList.
+type Tier1PageList struct {
+	// Generated **The tier-1 marking.** Present and required on every payload that is
+	// generated rather than authored, under its own key, so a client that
+	// ignores it still cannot mistake the shape for a `Note`. It says who
+	// regenerates the content and carries the line the tier-1 pane renders.
+	//
+	// `tier` and `regenerable` are literals, not flags: there is no value a
+	// client could read as "this one is authored".
+	Generated Generated          `json:"generated"`
+	Items     []Tier1PageSummary `json:"items"`
+}
+
+// Tier1PageSummary defines model for Tier1PageSummary.
+type Tier1PageSummary struct {
+	// Path The corpus's own address for the page, without the `.md`.
+	Path string `json:"path"`
+
+	// Title From the generator's front matter, else the first heading, else the last path segment.
+	Title string `json:"title"`
+}
+
 // TranscriptionReport defines model for TranscriptionReport.
 type TranscriptionReport struct {
 	// Enabled Whether a transcription pump is configured at all. Without it, an
@@ -1701,6 +1843,9 @@ type PagePath = string
 // SessionId defines model for SessionId.
 type SessionId = openapi_types.UUID
 
+// Tier1PagePath defines model for Tier1PagePath.
+type Tier1PagePath = string
+
 // UploadId defines model for UploadId.
 type UploadId = openapi_types.UUID
 
@@ -1736,6 +1881,9 @@ type ReferencesUnconfigured = Error
 
 // ThreadsUnconfigured defines model for ThreadsUnconfigured.
 type ThreadsUnconfigured = Error
+
+// Tier1Unconfigured defines model for Tier1Unconfigured.
+type Tier1Unconfigured = Error
 
 // TooLarge defines model for TooLarge.
 type TooLarge = Error
@@ -1849,6 +1997,14 @@ type SearchParams struct {
 	// `next_cursor` for the rest. A client asking for more than the cap gets
 	// the cap.
 	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// GetTier1PageParams defines parameters for GetTier1Page.
+type GetTier1PageParams struct {
+	// Path A page of the generated corpus, by the path its generator wrote it at
+	// and without the `.md` — `services/chronicle`, `versions`. Relative,
+	// slash-separated, and no segment may be empty or start with a dot.
+	Path Tier1PagePath `form:"path" json:"path"`
 }
 
 // GetTriageBatchParams defines parameters for GetTriageBatch.
@@ -2100,6 +2256,12 @@ type ServerInterface interface {
 	// Search Full-text search across notes and transcripts.
 	// (GET /search)
 	Search(w http.ResponseWriter, r *http.Request, params SearchParams)
+	// GetTier1Page One page of the generated estate wiki, rendered.
+	// (GET /tier1/page)
+	GetTier1Page(w http.ResponseWriter, r *http.Request, params GetTier1PageParams)
+	// ListTier1Pages Every page of the generated estate wiki.
+	// (GET /tier1/pages)
+	ListTier1Pages(w http.ResponseWriter, r *http.Request)
 	// AcceptTriage Confirm a batch of decisions.
 	// (POST /triage/accept)
 	AcceptTriage(w http.ResponseWriter, r *http.Request)
@@ -3064,6 +3226,53 @@ func (siw *ServerInterfaceWrapper) Search(w http.ResponseWriter, r *http.Request
 	handler.ServeHTTP(w, r)
 }
 
+// GetTier1Page operation middleware
+func (siw *ServerInterfaceWrapper) GetTier1Page(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetTier1PageParams
+
+	// ------------- Required query parameter "path" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "path", r.URL.Query(), &params.Path, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "path"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "path", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetTier1Page(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListTier1Pages operation middleware
+func (siw *ServerInterfaceWrapper) ListTier1Pages(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListTier1Pages(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // AcceptTriage operation middleware
 func (siw *ServerInterfaceWrapper) AcceptTriage(w http.ResponseWriter, r *http.Request) {
 
@@ -3336,6 +3545,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/discussions/{ref}/resolve", wrapper.ResolveDiscussion)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/discussions/{ref}/participants", wrapper.AddParticipant)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/discussions/{ref}/participants/{id}", wrapper.RemoveParticipant)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/tier1/pages", wrapper.ListTier1Pages)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/tier1/page", wrapper.GetTier1Page)
 
 	return m
 }

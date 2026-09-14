@@ -26,6 +26,7 @@ import (
 	"github.com/Einlanzerous/chronicle/internal/asrclient"
 	"github.com/Einlanzerous/chronicle/internal/audio"
 	"github.com/Einlanzerous/chronicle/internal/config"
+	"github.com/Einlanzerous/chronicle/internal/estatewiki"
 	"github.com/Einlanzerous/chronicle/internal/invite"
 	"github.com/Einlanzerous/chronicle/internal/markdown"
 	"github.com/Einlanzerous/chronicle/internal/resolve"
@@ -182,6 +183,24 @@ func openTier1Pool(ctx context.Context, cfg config.Config, logger *slog.Logger, 
 	return pool, tier1, nil
 }
 
+// openEstateWiki opens the tier-1 corpus mount, refusing to serve without
+// one. Unset is refused as well as missing: CHRONICLE_TIER1_WIKI_DIR has no
+// fallback, for CHRN-52 ruling 1's reason — a deployment that forgot the
+// mount should fail with one clear line, not serve a tier 1 with nothing in
+// it. An EMPTY directory is accepted: on a host the wiki generator has not
+// yet run on, "no pages" is the truth.
+func openEstateWiki(cfg config.Config) (*estatewiki.Corpus, error) {
+	if cfg.Tier1WikiDir == "" {
+		return nil, fmt.Errorf("CHRONICLE_TIER1_WIKI_DIR is unset: the tier-1 estate wiki has no mount " +
+			"(SERV-189 bind-mounts construct-server's wiki/docs read-only); not serving without it")
+	}
+	corpus, err := estatewiki.New(cfg.Tier1WikiDir)
+	if err != nil {
+		return nil, fmt.Errorf("CHRONICLE_TIER1_WIKI_DIR: %w", err)
+	}
+	return corpus, nil
+}
+
 // refuseIfTier1Widened runs the audit on the main pool and refuses on any
 // finding (CHRN-52 ruling 2).
 func refuseIfTier1Widened(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger) error {
@@ -311,6 +330,17 @@ func runServe(args []string) error {
 		return err
 	}
 
+	// THE ESTATE WIKI (CHRN-100): tier 1's other half, read from files. The
+	// same refusal shape as the pool above and for the same reason — a tier-1
+	// pane quietly served empty from a typo'd mount is indistinguishable from
+	// one that works on a host the wiki has not reached yet, and the fix on
+	// the deploy side is one compose line (SERV-189).
+	estate, err := openEstateWiki(cfg)
+	if err != nil {
+		return err
+	}
+	logger.Info("estate wiki mounted", "root", estate.Root())
+
 	// The owner row is seeded by migration 0002 with a placeholder identity;
 	// this is where CHRONICLE_OWNER_EMAIL / _NAME actually land, and where the
 	// first human gets a way in.
@@ -380,6 +410,7 @@ func runServe(args []string) error {
 		ProxySecret:   cfg.ProxySecret,
 		Transcription: st,
 	}
+	deps.EstateWiki = estate
 	if cfg.AudioDir != "" {
 		audioStore, err := audio.New(cfg.AudioDir)
 		if err != nil {
