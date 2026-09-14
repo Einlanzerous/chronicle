@@ -670,3 +670,48 @@ func uploadID(u wire.UploadState) string {
 	}
 	return *u.UploadId
 }
+
+// A reused idempotency key is a 409, and it is the OTHER 409 — the one that
+// says mint a new key rather than resume from here.
+//
+// Driven rather than declared, which is the whole reason this test exists. The
+// document gave that status one shape (an UploadState carrying Upload-Offset)
+// while two of uploadError's four branches answer an Error envelope with no
+// offset, and nothing caught it: uploadRig.openUpload fatals on anything but
+// 200/201, so no test could reach a key conflict, and Conform only judges a
+// response some test drove.
+//
+// A client generated from the old document would have read this body as an
+// UploadState and seen `offset: 0` on a refusal meaning the key can NEVER work
+// — indistinguishable from a live session holding nothing.
+func TestAReusedKeyWithDifferentContentIsTheOther409(t *testing.T) {
+	r := newUploadRig(t)
+	first := audioBytes(1200)
+	second := audioBytes(900)
+
+	r.openUpload(t, "key-reused-with-different-content", first)
+
+	// Same key, a different declaration. The store refuses, because the key is
+	// the promise that one capture produces one memo.
+	body := fmt.Sprintf(`{"idempotency_key":%q,"content_hash":%q,"byte_size":%d}`,
+		"key-reused-with-different-content", digestOf(second), len(second))
+	rec := r.do(jsonReq(http.MethodPost, "/memos/uploads", body))
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+	apitest.Conform(t, "openUpload", rec)
+
+	var got wire.Error
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("body is not the error envelope: %v", err)
+	}
+	if got.Code != codeKeyReused {
+		t.Errorf("code = %q, want %q", got.Code, codeKeyReused)
+	}
+	// The absence is the point: there is no session to resume, so there is no
+	// offset to send. A client must not read one out of this answer.
+	if h := rec.Header().Get(UploadOffsetHeader); h != "" {
+		t.Errorf("%s = %q on a key-reuse refusal; there is nothing to resume", UploadOffsetHeader, h)
+	}
+}

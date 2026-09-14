@@ -770,15 +770,46 @@ components:
             $ref: "#/components/schemas/Error"
     UploadConflict:
       description: |
-        a disagreement the client can act on: a reused idempotency key, or an
-        offset mismatch. **Carries `Upload-Offset`**, which is where to resume
-        from — so the body is an upload state rather than an error envelope.
+        A disagreement the client can act on. **Two shapes, because there are
+        two different answers**, and conflating them is how a client ends up
+        retrying something that can never work:
+
+        - **Resume.** An offset mismatch, or staging lost — the session is
+          alive and these are instructions for continuing it. The body is an
+          `UploadState` and `Upload-Offset` says where to send from.
+        - **Mint a new key.** A reused `idempotency_key` presented with a
+          different declaration. There is no session to describe and nothing to
+          resume; the body is an `Error` with code `idempotency_key_reused` and
+          there is no `Upload-Offset`.
+
+        **Tell them apart by which field is present** — `status` on the first,
+        `code` on the second. They are disjoint, and a client that reads the
+        second as the first sees `offset: 0` on a refusal meaning *this key can
+        never work again*, which reads exactly like a live session holding
+        nothing.
+
+        3.0.3 cannot give one status two response objects, so this is a `oneOf`
+        rather than two entries. Giving key reuse a status of its own was the
+        alternative and was refused: 409 is the correct code for both — a
+        conflict with the current state of the resource — and moving one of
+        them to a less accurate status to make the document simpler would be
+        the document lying for its own convenience.
       headers:
-        Upload-Offset: { $ref: "#/components/headers/UploadOffset" }
+        Upload-Offset:
+          description: |
+            Where to resume from. Present on the resume shape and ABSENT on the
+            key-reuse one, which is why this is not required here while the
+            same header is required on the 200, 201 and 408.
+          required: false
+          schema:
+            type: integer
+            format: int64
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/UploadState"
+            oneOf:
+              - $ref: "#/components/schemas/UploadState"
+              - $ref: "#/components/schemas/Error"
     TransferCut:
       description: |
         the connection dropped mid-chunk. **Not a fault**: it is the ordinary
@@ -1316,8 +1347,12 @@ components:
       type: object
       description: |
         Where an upload got to. The same shape answers the successful cases and
-        the two that carry a resume instruction (409, 408), so a client has one
-        thing to parse.
+        every answer that carries a RESUME INSTRUCTION — the 408, and the half
+        of the 409 that means "continue from here" — so a client has one thing
+        to parse for everything it can act on by sending more bytes.
+
+        The other half of that 409 is an `Error`: a reused key has no session to
+        describe. See the `UploadConflict` response.
       required: [status, byte_size, offset, duplicate]
       properties:
         status:

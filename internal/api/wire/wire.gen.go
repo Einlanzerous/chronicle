@@ -6,6 +6,7 @@
 package wire
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -441,8 +442,12 @@ type UpdateMeRequest struct {
 }
 
 // UploadState Where an upload got to. The same shape answers the successful cases and
-// the two that carry a resume instruction (409, 408), so a client has one
-// thing to parse.
+// every answer that carries a RESUME INSTRUCTION — the 408, and the half
+// of the 409 that means "continue from here" — so a client has one thing
+// to parse for everything it can act on by sending more bytes.
+//
+// The other half of that 409 is an `Error`: a reused key has no session to
+// describe. See the `UploadConflict` response.
 type UploadState struct {
 	ByteSize int64 `json:"byte_size"`
 
@@ -528,8 +533,12 @@ type RateLimited = Error
 type TooLarge = Error
 
 // TransferCut Where an upload got to. The same shape answers the successful cases and
-// the two that carry a resume instruction (409, 408), so a client has one
-// thing to parse.
+// every answer that carries a RESUME INSTRUCTION — the 408, and the half
+// of the 409 that means "continue from here" — so a client has one thing
+// to parse for everything it can act on by sending more bytes.
+//
+// The other half of that 409 is an `Error`: a reused key has no session to
+// describe. See the `UploadConflict` response.
 type TransferCut = UploadState
 
 // Unauthorized defines model for Unauthorized.
@@ -541,10 +550,10 @@ type Unprocessable = Error
 // UnsupportedMediaType defines model for UnsupportedMediaType.
 type UnsupportedMediaType = Error
 
-// UploadConflict Where an upload got to. The same shape answers the successful cases and
-// the two that carry a resume instruction (409, 408), so a client has one
-// thing to parse.
-type UploadConflict = UploadState
+// UploadConflict defines model for UploadConflict.
+type UploadConflict struct {
+	union json.RawMessage
+}
 
 // UploadsUnconfigured defines model for UploadsUnconfigured.
 type UploadsUnconfigured = Error
@@ -566,6 +575,68 @@ type CreateSessionJSONRequestBody = SignInRequest
 
 // OpenUploadJSONRequestBody defines body for OpenUpload for application/json ContentType.
 type OpenUploadJSONRequestBody = OpenUploadRequest
+
+// AsUploadState returns the union data inside the UploadConflict as a UploadState
+func (t UploadConflict) AsUploadState() (UploadState, error) {
+	var body UploadState
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromUploadState overwrites any union data inside the UploadConflict as the provided UploadState
+func (t *UploadConflict) FromUploadState(v UploadState) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeUploadState performs a merge with any union data inside the UploadConflict, using the provided UploadState
+func (t *UploadConflict) MergeUploadState(v UploadState) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsError returns the union data inside the UploadConflict as a Error
+func (t UploadConflict) AsError() (Error, error) {
+	var body Error
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromError overwrites any union data inside the UploadConflict as the provided Error
+func (t *UploadConflict) FromError(v Error) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeError performs a merge with any union data inside the UploadConflict, using the provided Error
+func (t *UploadConflict) MergeError(v Error) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t UploadConflict) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *UploadConflict) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
