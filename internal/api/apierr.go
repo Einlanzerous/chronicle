@@ -34,6 +34,31 @@ const (
 	// and not 404 on the house rule this codebase states in four places: "not
 	// configured here" and "wrong URL" are different facts and a client should
 	// be able to tell them apart.
+
+	// The codes the shared decoder and the credential surface answer with.
+	// They are a client's branch points, so they are stable even when the
+	// sentence beside them is not.
+	codeUnsupportedMedia = "unsupported_media_type"
+	codeBodyTooLarge     = "body_too_large"
+	codeInvalidBody      = "invalid_body"
+	codeFieldTooLong     = "field_too_long"
+	codeInvalidInvite    = "invalid_invite"
+	codeMissingField     = "missing_field"
+	codeEmailTaken       = "email_taken"
+	codeNotFound         = "not_found"
+	codeOwnerImmutable   = "owner_immutable"
+	codeAuthorHasMemos   = "author_has_memos"
+
+	// Uploads. Every one is a client-visible answer with a specific remedy —
+	// a phone deciding whether to resend, wait, or give up needs to tell "we
+	// disagree about the offset" from "those were the wrong bytes".
+	codeUploadsUnconfigured = "uploads_unconfigured"
+	codeLengthRequired      = "length_required"
+	codeKeyReused           = "idempotency_key_reused"
+	codeTooManyOpen         = "too_many_open_uploads"
+	codeHashMismatch        = "content_hash_mismatch"
+	codeOversend            = "oversend"
+
 	codeAudioUnconfigured         = "audio_unconfigured"
 	codeTranscriptionUnconfigured = "transcription_unconfigured"
 	codeAccountsUnconfigured      = "accounts_unconfigured"

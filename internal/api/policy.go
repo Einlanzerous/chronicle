@@ -69,6 +69,39 @@ var routePolicy = map[string]policy{
 	"GET /healthz": policyPublic,
 	"GET /readyz":  policyPublic,
 
+	// The two unauthenticated endpoints that MINT a credential. Limiting only
+	// one of them just moves the target: /auth/sso/cloudflare drives a JWKS
+	// fetch and a database write per call.
+	"POST /auth/session":        policySignIn,
+	"POST /auth/sso/cloudflare": policySignIn,
+
+	"DELETE /auth/session":       policyMember,
+	"GET /auth/me":               policyMember,
+	"PATCH /auth/me":             policyMember,
+	"POST /auth/invite":          policyMember,
+	"GET /auth/sessions":         policyMember,
+	"DELETE /auth/sessions/{id}": policyMember,
+
+	// Account administration. Owner only, and never an agent.
+	"POST /admin/users":             policyOwner,
+	"GET /admin/users":              policyOwner,
+	"POST /admin/users/{id}/invite": policyOwner,
+	"DELETE /admin/users/{id}":      policyOwner,
+
+	// Memo ingest (CHRN-20). requireUser and not requireOwner: every account
+	// records its own memos, and the author comes from the session rather than
+	//anything the request carries.
+	//
+	// Deliberately NOT policySignIn. That bucket exists for unauthenticated
+	// endpoints that mint a credential; a 20-per-minute cap on a chunked upload
+	// would throttle ingest and nothing else. What bounds this surface instead
+	// is the per-account cap on open sessions and the declared-size limit, both
+	// in internal/upload.
+	"POST /memos/uploads":        policyMember,
+	"GET /memos/uploads/{id}":    policyMember,
+	"PATCH /memos/uploads/{id}":  policyMember,
+	"DELETE /memos/uploads/{id}": policyMember,
+
 	"GET /admin/storage":       policyOwner,
 	"GET /admin/transcription": policyOwner,
 }

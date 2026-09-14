@@ -19,6 +19,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Einlanzerous/chronicle/internal/api/apitest"
+	"github.com/Einlanzerous/chronicle/internal/api/wire"
 	"github.com/Einlanzerous/chronicle/internal/audio"
 	"github.com/Einlanzerous/chronicle/internal/store"
 	"github.com/Einlanzerous/chronicle/internal/upload"
@@ -231,7 +233,7 @@ func (r *uploadRig) do(req *http.Request) *httptest.ResponseRecorder {
 	return rec
 }
 
-func (r *uploadRig) openUpload(t *testing.T, key string, content []byte) uploadResponse {
+func (r *uploadRig) openUpload(t *testing.T, key string, content []byte) wire.UploadState {
 	t.Helper()
 	body := fmt.Sprintf(`{"idempotency_key":%q,"content_hash":%q,"byte_size":%d,"original_filename":"memo.opus"}`,
 		key, digestOf(content), len(content))
@@ -239,7 +241,7 @@ func (r *uploadRig) openUpload(t *testing.T, key string, content []byte) uploadR
 	if rec.Code != http.StatusCreated && rec.Code != http.StatusOK {
 		t.Fatalf("open: status %d, body %s", rec.Code, rec.Body.String())
 	}
-	return decodeUpload(t, rec)
+	return decodeUpload(t, "openUpload", rec)
 }
 
 func (r *uploadRig) appendChunk(id string, offset int, chunk []byte) *httptest.ResponseRecorder {
@@ -250,9 +252,15 @@ func (r *uploadRig) appendChunk(id string, offset int, chunk []byte) *httptest.R
 	return r.do(req)
 }
 
-func decodeUpload(t *testing.T, rec *httptest.ResponseRecorder) uploadResponse {
+// decodeUpload also CONFORMS. Every upload answer goes through here, so putting
+// the check at the seam covers the 200s, the 201, the 409 and the 408 without
+// each test having to remember — which is the point of a shared helper for a
+// guard nobody should be able to opt out of.
+func decodeUpload(t *testing.T, operationID string, rec *httptest.ResponseRecorder) wire.UploadState {
 	t.Helper()
-	var got uploadResponse
+	apitest.Conform(t, operationID, rec)
+
+	var got wire.UploadState
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode %q: %v", rec.Body.String(), err)
 	}
@@ -289,27 +297,27 @@ func TestAnUploadCanBeSentInPiecesAndBecomesOneMemo(t *testing.T) {
 	if open.Status != "incomplete" || open.Offset != 0 {
 		t.Fatalf("open: %+v", open)
 	}
-	if open.UploadID == "" {
+	if uploadID(open) == "" {
 		t.Fatal("open returned no upload_id")
 	}
 	if open.ExpiresAt == nil {
 		t.Fatal("open returned no expires_at; a client cannot tell how long it has")
 	}
 
-	rec := r.appendChunk(open.UploadID, 0, content[:1200])
+	rec := r.appendChunk(uploadID(open), 0, content[:1200])
 	if rec.Code != http.StatusOK {
 		t.Fatalf("first chunk: %d %s", rec.Code, rec.Body.String())
 	}
-	mid := decodeUpload(t, rec)
+	mid := decodeUpload(t, "appendChunk", rec)
 	if mid.Status != "incomplete" || mid.Offset != 1200 {
 		t.Fatalf("after the first chunk: %+v", mid)
 	}
 
-	rec = r.appendChunk(open.UploadID, 1200, content[1200:])
+	rec = r.appendChunk(uploadID(open), 1200, content[1200:])
 	if rec.Code != http.StatusOK {
 		t.Fatalf("final chunk: %d %s", rec.Code, rec.Body.String())
 	}
-	done := decodeUpload(t, rec)
+	done := decodeUpload(t, "appendChunk", rec)
 	if done.Status != "complete" {
 		t.Fatalf("the last chunk did not complete the upload: %+v", done)
 	}
@@ -336,7 +344,7 @@ func TestReDeliveryAnswersWithoutASession(t *testing.T) {
 	content := audioBytes(800)
 
 	open := r.openUpload(t, testKey, content)
-	if rec := r.appendChunk(open.UploadID, 0, content); rec.Code != http.StatusOK {
+	if rec := r.appendChunk(uploadID(open), 0, content); rec.Code != http.StatusOK {
 		t.Fatalf("upload: %d %s", rec.Code, rec.Body.String())
 	}
 
@@ -346,15 +354,15 @@ func TestReDeliveryAnswersWithoutASession(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("re-delivery: status %d, want 200 (201 would mean a session was opened)", rec.Code)
 	}
-	got := decodeUpload(t, rec)
+	got := decodeUpload(t, "openUpload", rec)
 	if got.Status != "complete" {
 		t.Fatalf("re-delivery: %+v", got)
 	}
 	if !got.Duplicate {
 		t.Fatal("a re-delivery is not flagged as a duplicate")
 	}
-	if got.UploadID != "" {
-		t.Fatalf("a session was opened for bytes already held: %s", got.UploadID)
+	if uploadID(got) != "" {
+		t.Fatalf("a session was opened for bytes already held: %s", uploadID(got))
 	}
 	if n := len(r.ingest.memos); n != 1 {
 		t.Fatalf("%d memos, want 1", n)
@@ -369,11 +377,11 @@ func TestOffsetConflictAnswers409CarryingTheServersOffset(t *testing.T) {
 	content := audioBytes(2000)
 
 	open := r.openUpload(t, testKey, content)
-	if rec := r.appendChunk(open.UploadID, 0, content[:700]); rec.Code != http.StatusOK {
+	if rec := r.appendChunk(uploadID(open), 0, content[:700]); rec.Code != http.StatusOK {
 		t.Fatalf("first chunk: %d", rec.Code)
 	}
 
-	rec := r.appendChunk(open.UploadID, 0, content[:700])
+	rec := r.appendChunk(uploadID(open), 0, content[:700])
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status %d, want 409", rec.Code)
 	}
@@ -381,7 +389,7 @@ func TestOffsetConflictAnswers409CarryingTheServersOffset(t *testing.T) {
 		t.Fatalf("%s = %q on the conflict, want \"700\" — without it the client cannot resume",
 			UploadOffsetHeader, got)
 	}
-	if got := decodeUpload(t, rec); got.Offset != 700 {
+	if got := decodeUpload(t, "appendChunk", rec); got.Offset != 700 {
 		t.Fatalf("conflict body reports offset %d, want 700", got.Offset)
 	}
 }
@@ -393,7 +401,7 @@ func TestAnOversizedChunkIsRefusedFromContentLength(t *testing.T) {
 	content := audioBytes(1000)
 
 	open := r.openUpload(t, testKey, content)
-	rec := r.appendChunk(open.UploadID, 0, audioBytes(1400))
+	rec := r.appendChunk(uploadID(open), 0, audioBytes(1400))
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status %d, want 422", rec.Code)
 	}
@@ -405,7 +413,7 @@ func TestAppendRequiresOctetStreamAndALength(t *testing.T) {
 	open := r.openUpload(t, testKey, content)
 
 	t.Run("wrong content type", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPatch, "/memos/uploads/"+open.UploadID, bytes.NewReader(content))
+		req := httptest.NewRequest(http.MethodPatch, "/memos/uploads/"+uploadID(open), bytes.NewReader(content))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set(UploadOffsetHeader, "0")
 		if rec := r.do(req); rec.Code != http.StatusUnsupportedMediaType {
@@ -416,7 +424,7 @@ func TestAppendRequiresOctetStreamAndALength(t *testing.T) {
 	// A chunked body has no length, so an oversized chunk could not be refused
 	// before it was read.
 	t.Run("chunked body", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPatch, "/memos/uploads/"+open.UploadID, bytes.NewReader(content))
+		req := httptest.NewRequest(http.MethodPatch, "/memos/uploads/"+uploadID(open), bytes.NewReader(content))
 		req.Header.Set("Content-Type", "application/octet-stream")
 		req.Header.Set(UploadOffsetHeader, "0")
 		req.ContentLength = -1
@@ -426,7 +434,7 @@ func TestAppendRequiresOctetStreamAndALength(t *testing.T) {
 	})
 
 	t.Run("missing offset header", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPatch, "/memos/uploads/"+open.UploadID, bytes.NewReader(content))
+		req := httptest.NewRequest(http.MethodPatch, "/memos/uploads/"+uploadID(open), bytes.NewReader(content))
 		req.Header.Set("Content-Type", "application/octet-stream")
 		req.ContentLength = int64(len(content))
 		if rec := r.do(req); rec.Code != http.StatusBadRequest {
@@ -476,7 +484,7 @@ func TestAnotherAccountsUploadIsNotFound(t *testing.T) {
 	r.token = "chr_session_other"
 
 	for _, method := range []string{http.MethodGet, http.MethodDelete} {
-		rec := r.do(httptest.NewRequest(method, "/memos/uploads/"+open.UploadID, nil))
+		rec := r.do(httptest.NewRequest(method, "/memos/uploads/"+uploadID(open), nil))
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("%s: status %d, want 404 (403 would confirm the session exists)", method, rec.Code)
 		}
@@ -513,15 +521,15 @@ func TestAbandonReleasesTheSession(t *testing.T) {
 	r := newUploadRig(t)
 	content := audioBytes(600)
 	open := r.openUpload(t, testKey, content)
-	if rec := r.appendChunk(open.UploadID, 0, content[:200]); rec.Code != http.StatusOK {
+	if rec := r.appendChunk(uploadID(open), 0, content[:200]); rec.Code != http.StatusOK {
 		t.Fatalf("chunk: %d", rec.Code)
 	}
 
-	rec := r.do(httptest.NewRequest(http.MethodDelete, "/memos/uploads/"+open.UploadID, nil))
+	rec := r.do(httptest.NewRequest(http.MethodDelete, "/memos/uploads/"+uploadID(open), nil))
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("abandon: status %d, want 204", rec.Code)
 	}
-	rec = r.do(httptest.NewRequest(http.MethodGet, "/memos/uploads/"+open.UploadID, nil))
+	rec = r.do(httptest.NewRequest(http.MethodGet, "/memos/uploads/"+uploadID(open), nil))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("after abandon: status %d, want 404", rec.Code)
 	}
@@ -533,15 +541,15 @@ func TestStatusReportsWhereToResume(t *testing.T) {
 	r := newUploadRig(t)
 	content := audioBytes(1500)
 	open := r.openUpload(t, testKey, content)
-	if rec := r.appendChunk(open.UploadID, 0, content[:640]); rec.Code != http.StatusOK {
+	if rec := r.appendChunk(uploadID(open), 0, content[:640]); rec.Code != http.StatusOK {
 		t.Fatalf("chunk: %d", rec.Code)
 	}
 
-	rec := r.do(httptest.NewRequest(http.MethodGet, "/memos/uploads/"+open.UploadID, nil))
+	rec := r.do(httptest.NewRequest(http.MethodGet, "/memos/uploads/"+uploadID(open), nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: %d", rec.Code)
 	}
-	got := decodeUpload(t, rec)
+	got := decodeUpload(t, "openUpload", rec)
 	if got.Offset != 640 || got.ByteSize != 1500 {
 		t.Fatalf("status reports offset %d of %d, want 640 of 1500", got.Offset, got.ByteSize)
 	}
@@ -562,7 +570,7 @@ func TestACutTransferIsNotReportedAsAServerError(t *testing.T) {
 
 	// A body that yields 600 bytes and then dies, declaring 1200.
 	body := io.MultiReader(bytes.NewReader(content[:600]), failingReader{})
-	req := httptest.NewRequest(http.MethodPatch, "/memos/uploads/"+open.UploadID, body)
+	req := httptest.NewRequest(http.MethodPatch, "/memos/uploads/"+uploadID(open), body)
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.Header.Set(UploadOffsetHeader, "0")
 	req.ContentLength = 1200
@@ -580,7 +588,7 @@ func TestACutTransferIsNotReportedAsAServerError(t *testing.T) {
 	}
 
 	// And it really did keep them: the next request resumes rather than restarts.
-	if rec := r.appendChunk(open.UploadID, 600, content[600:]); rec.Code != http.StatusOK {
+	if rec := r.appendChunk(uploadID(open), 600, content[600:]); rec.Code != http.StatusOK {
 		t.Fatalf("resume after a cut: %d %s", rec.Code, rec.Body.String())
 	}
 }
@@ -601,19 +609,19 @@ func TestACompletedUploadReportsTheMetadataItJustRecorded(t *testing.T) {
 	content := opusBytes(3)
 
 	open := r.openUpload(t, testKey, content)
-	rec := r.appendChunk(open.UploadID, 0, content)
+	rec := r.appendChunk(uploadID(open), 0, content)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("upload: %d %s", rec.Code, rec.Body.String())
 	}
-	done := decodeUpload(t, rec)
+	done := decodeUpload(t, "appendChunk", rec)
 	if done.Memo == nil {
 		t.Fatal("no memo on a completed upload")
 	}
-	if done.Memo.DurationMS == nil {
+	if done.Memo.DurationMs == nil {
 		t.Fatal("duration_ms is null on the response for a memo that was just described")
 	}
-	if *done.Memo.DurationMS != 3000 {
-		t.Fatalf("duration_ms %d, want 3000", *done.Memo.DurationMS)
+	if *done.Memo.DurationMs != 3000 {
+		t.Fatalf("duration_ms %d, want 3000", *done.Memo.DurationMs)
 	}
 	if done.Memo.Codec == nil || *done.Memo.Codec != "opus" {
 		t.Fatalf("codec %v, want opus", done.Memo.Codec)
@@ -652,4 +660,13 @@ func opusBytes(seconds int) []byte {
 	b := page(0, 0, head)
 	b = append(b, page(0, 1, []byte("OpusTags\x00\x00\x00\x00\x00\x00\x00\x00"))...)
 	return append(b, page(int64(seconds)*48000+preSkip, 2, make([]byte, 64))...)
+}
+
+// uploadID reads the optional upload id. It is a pointer on the wire because a
+// completed upload has no session left to name, and the document says so.
+func uploadID(u wire.UploadState) string {
+	if u.UploadId == nil {
+		return ""
+	}
+	return *u.UploadId
 }

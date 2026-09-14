@@ -7,10 +7,8 @@ import (
 	"mime"
 	"net/http"
 	"strings"
-	"time"
 
-	"github.com/google/uuid"
-
+	"github.com/Einlanzerous/chronicle/internal/api/wire"
 	"github.com/Einlanzerous/chronicle/internal/invite"
 	"github.com/Einlanzerous/chronicle/internal/store"
 )
@@ -162,7 +160,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 func decodeJSONLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64) bool {
 	ct := r.Header.Get("Content-Type")
 	if mediaType, _, err := mime.ParseMediaType(ct); err != nil || mediaType != "application/json" {
-		http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
+		writeError(w, http.StatusUnsupportedMediaType, codeUnsupportedMedia, "Content-Type must be application/json")
 		return false
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, limit)
@@ -171,10 +169,10 @@ func decodeJSONLimit(w http.ResponseWriter, r *http.Request, dst any, limit int6
 	if err := dec.Decode(dst); err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
-			http.Error(w, "request body is too large", http.StatusRequestEntityTooLarge)
+			writeError(w, http.StatusRequestEntityTooLarge, codeBodyTooLarge, "request body is too large")
 			return false
 		}
-		http.Error(w, "invalid body", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, codeInvalidBody, "invalid body")
 		return false
 	}
 	return true
@@ -184,7 +182,7 @@ func decodeJSONLimit(w http.ResponseWriter, r *http.Request, dst any, limit int6
 // column.
 func checkLen(w http.ResponseWriter, field, value string, max int) bool {
 	if len(value) > max {
-		http.Error(w, field+" is too long", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, codeFieldTooLong, field+" is too long")
 		return false
 	}
 	return true
@@ -222,26 +220,15 @@ func (a *api) requireOwner(next http.HandlerFunc) http.HandlerFunc {
 	})
 }
 
-// userJSON is the wire shape of an account. It deliberately carries no token
-// material: a credential is returned exactly once, by the call that mints it.
-type userJSON struct {
-	ID          uuid.UUID `json:"id"`
-	Email       string    `json:"email"`
-	DisplayName string    `json:"display_name"`
-	Kind        string    `json:"kind"`
-	IsOwner     bool      `json:"is_owner"`
+// toUser renders an account for the wire. The SHAPE is wire.User, generated
+// from openapi.yaml; this is only the mapping. It deliberately carries no token
+// material — a credential is returned exactly once, by the call that mints it,
+// and the document says so where three clients can read it.
+func toUser(u store.User) wire.User {
+	return wire.User{Id: u.ID, Email: u.Email, DisplayName: u.DisplayName, Kind: u.Kind, IsOwner: u.IsOwner}
 }
 
-func toUserJSON(u store.User) userJSON {
-	return userJSON{ID: u.ID, Email: u.Email, DisplayName: u.DisplayName, Kind: u.Kind, IsOwner: u.IsOwner}
-}
-
-type sessionResponse struct {
-	User         userJSON `json:"user"`
-	SessionToken string   `json:"session_token"`
-}
-
-// handleAuthSession redeems a single-use invite for a long-lived session bound
+// CreateSession redeems a single-use invite for a long-lived session bound
 // to this device. This is how the app and MCP sign in.
 //
 //	Body: {"token": "chr_...", "device_label": "Pixel 8"}
@@ -251,7 +238,7 @@ type sessionResponse struct {
 // sends it as Authorization: Bearer. A spent, expired or unknown invite is 401
 // with an identical body — indistinguishable on purpose, so probing cannot tell
 // a used invite from one that never existed.
-func (a *api) handleAuthSession(w http.ResponseWriter, r *http.Request) {
+func (a *api) CreateSession(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Token       string `json:"token"`
 		DeviceLabel string `json:"device_label"`
@@ -266,7 +253,7 @@ func (a *api) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 
 	u, session, err := a.accounts.RedeemInvite(r.Context(), strings.TrimSpace(req.Token), req.DeviceLabel)
 	if errors.Is(err, store.ErrNotFound) {
-		http.Error(w, "invalid or already-used invite", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, codeInvalidInvite, "invalid or already-used invite")
 		return
 	}
 	if err != nil {
@@ -275,23 +262,31 @@ func (a *api) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.setSessionCookie(w, session)
-	writeJSON(w, http.StatusOK, sessionResponse{toUserJSON(u), session})
+	writeJSON(w, http.StatusOK, wire.Session{User: toUser(u), SessionToken: session})
 }
 
 // ssoErrorBody is the wire shape of a Cloudflare SSO refusal. A client switches
 // on Error: sso_disabled → fall back to the invite flow silently;
 // sso_no_account → show the named email so the person knows what to ask for.
-type ssoErrorBody struct {
-	Error   string `json:"error"`
-	Message string `json:"message"`
-	Email   string `json:"email,omitempty"`
-}
-
+// writeSSOError answers the Access path's refusal.
+//
+// The field is `code`, not `error`: the handler's own vocabulary has always
+// called it a code, and the shared envelope calls it that too — two names for
+// one concept in one document is the drift this contract exists to remove.
+// There are no clients to break, which is the same arithmetic ruling 2 rests on.
+//
+// The shape carries one field the shared envelope does not — the EMAIL the
+// assertion named. Without it a person facing an SSO wall cannot tell which
+// identity was rejected, and that is the whole question they have.
 func writeSSOError(w http.ResponseWriter, status int, code, message, email string) {
-	writeJSON(w, status, ssoErrorBody{Error: code, Message: message, Email: email})
+	body := wire.SsoError{Code: code, Message: message}
+	if email != "" {
+		body.Email = &email
+	}
+	writeJSON(w, status, body)
 }
 
-// handleAuthCFAccess exchanges a verified Cloudflare Access identity for a
+// CreateSessionFromAccess exchanges a verified Cloudflare Access identity for a
 // Chronicle session. The browser calls it on load: the tunnel injects a
 // Cf-Access-Jwt-Assertion header, cfaccess.go verifies it, and a verified email
 // matched to an account mints the same kind of session the invite path does.
@@ -304,7 +299,7 @@ func writeSSOError(w http.ResponseWriter, status int, code, message, email strin
 //	401 unauthorized   — the JWT failed verification
 //	403 sso_no_account — verified email, no matching account
 //	200                — {"user": {...}, "session_token": "..."} plus the cookie
-func (a *api) handleAuthCFAccess(w http.ResponseWriter, r *http.Request) {
+func (a *api) CreateSessionFromAccess(w http.ResponseWriter, r *http.Request) {
 	if a.cfAccess == nil {
 		writeSSOError(w, http.StatusUnauthorized, "sso_disabled",
 			"Cloudflare Access SSO is not configured on this server", "")
@@ -358,7 +353,7 @@ func (a *api) completeCFAccessSignIn(w http.ResponseWriter, r *http.Request, u s
 		switch held, err := a.accounts.UserByToken(r.Context(), existing); {
 		case err == nil && held.ID == u.ID:
 			a.setSessionCookie(w, existing) // refresh the cookie's attributes
-			writeJSON(w, http.StatusOK, sessionResponse{toUserJSON(held), existing})
+			writeJSON(w, http.StatusOK, wire.Session{User: toUser(held), SessionToken: existing})
 			return
 		case err != nil && !errors.Is(err, store.ErrNotFound):
 			a.serverError(w, r, "cf access: resolve existing session", err)
@@ -376,12 +371,12 @@ func (a *api) completeCFAccessSignIn(w http.ResponseWriter, r *http.Request, u s
 	}
 
 	a.setSessionCookie(w, session)
-	writeJSON(w, http.StatusOK, sessionResponse{toUserJSON(u), session})
+	writeJSON(w, http.StatusOK, wire.Session{User: toUser(u), SessionToken: session})
 }
 
-// handleAuthSignOut revokes the credential this request carried, so this device
+// DeleteSession revokes the credential this request carried, so this device
 // stops working while the account's other devices are untouched.
-func (a *api) handleAuthSignOut(w http.ResponseWriter, r *http.Request) {
+func (a *api) DeleteSession(w http.ResponseWriter, r *http.Request) {
 	if token := sessionToken(r); token != "" {
 		if err := a.accounts.RevokeToken(r.Context(), token); err != nil {
 			a.serverError(w, r, "revoke session", err)
@@ -392,13 +387,13 @@ func (a *api) handleAuthSignOut(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleAuthMe returns the signed-in account.
-func (a *api) handleAuthMe(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, toUserJSON(userFrom(r.Context())))
+// GetMe returns the signed-in account.
+func (a *api) GetMe(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, toUser(userFrom(r.Context())))
 }
 
-// handleAuthUpdateMe renames the signed-in account.
-func (a *api) handleAuthUpdateMe(w http.ResponseWriter, r *http.Request) {
+// UpdateMe renames the signed-in account.
+func (a *api) UpdateMe(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		DisplayName string `json:"display_name"`
 	}
@@ -407,7 +402,7 @@ func (a *api) handleAuthUpdateMe(w http.ResponseWriter, r *http.Request) {
 	}
 	name := strings.TrimSpace(req.DisplayName)
 	if name == "" {
-		http.Error(w, "display_name is required", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, codeMissingField, "display_name is required")
 		return
 	}
 	if !checkLen(w, "display_name", name, maxDisplayNameLen) {
@@ -419,33 +414,29 @@ func (a *api) handleAuthUpdateMe(w http.ResponseWriter, r *http.Request) {
 		a.serverError(w, r, "update display name", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toUserJSON(u))
+	writeJSON(w, http.StatusOK, toUser(u))
 }
 
-// inviteJSON is the one-time reveal. Every field is shown exactly once.
+// writeInvite renders the one-time reveal. Every field is shown exactly once.
 //
 // SignInURL is the same invite as a scannable link. The server builds it
 // because only the server knows which of its origins a phone can reach: the
 // browser minting an invite is typically on the Access-gated hostname, and a QR
 // built from that origin walks the phone into an SSO wall a bearer token cannot
 // open. Omitted when CHRONICLE_MOBILE_BASE_URL is unset.
-type inviteJSON struct {
-	User        userJSON `json:"user"`
-	InviteToken string   `json:"invite_token"`
-	SignInURL   string   `json:"sign_in_url,omitempty"`
-	ExpiresIn   string   `json:"expires_in"`
-}
-
 func (a *api) writeInvite(w http.ResponseWriter, status int, u store.User, token string) {
-	writeJSON(w, status, inviteJSON{
-		User:        toUserJSON(u),
+	body := wire.Invite{
+		User:        toUser(u),
 		InviteToken: token,
-		SignInURL:   invite.SignInURL(a.mobileBaseURL, token),
 		ExpiresIn:   store.InviteTTL.String(),
-	})
+	}
+	if url := invite.SignInURL(a.mobileBaseURL, token); url != "" {
+		body.SignInUrl = &url
+	}
+	writeJSON(w, status, body)
 }
 
-// handleSelfInvite mints a one-time invite for the caller — the "add my next
+// CreateSelfInvite mints a one-time invite for the caller — the "add my next
 // device" path.
 //
 // Deliberately not an /admin route. Adding your own second device is not
@@ -456,7 +447,7 @@ func (a *api) writeInvite(w http.ResponseWriter, status int, u store.User, token
 //
 // It is weaker than the session that authorises it: single-use, and expired
 // after store.InviteTTL.
-func (a *api) handleSelfInvite(w http.ResponseWriter, r *http.Request) {
+func (a *api) CreateSelfInvite(w http.ResponseWriter, r *http.Request) {
 	u := userFrom(r.Context())
 
 	// Retire any device invite this account minted earlier and never redeemed,
@@ -478,26 +469,24 @@ func (a *api) handleSelfInvite(w http.ResponseWriter, r *http.Request) {
 	a.writeInvite(w, http.StatusCreated, u, token)
 }
 
-// memberJSON is one row of the account list: the account plus enough to tell an
-// active one from one that was invited and never showed up.
-type memberJSON struct {
-	userJSON
-	LastSeenAt      *time.Time `json:"last_seen_at"`
-	InviteExpiresAt *time.Time `json:"invite_expires_at"`
-	SessionCount    int        `json:"session_count"`
-}
-
-// handleAdminUserList returns every account. Owner only.
-func (a *api) handleAdminUserList(w http.ResponseWriter, r *http.Request) {
+// ListUsers returns every account. Owner only.
+func (a *api) ListUsers(w http.ResponseWriter, r *http.Request) {
 	members, err := a.accounts.ListMembers(r.Context())
 	if err != nil {
 		a.serverError(w, r, "list members", err)
 		return
 	}
-	out := make([]memberJSON, 0, len(members))
+	// wire.Member is the account plus enough to tell an active one from one
+	// that was invited and never showed up. The document flattens it out of an
+	// allOf, so the generated struct carries User's fields directly.
+	out := make([]wire.Member, 0, len(members))
 	for _, m := range members {
-		out = append(out, memberJSON{
-			userJSON:        toUserJSON(m.User),
+		out = append(out, wire.Member{
+			Id:              m.ID,
+			Email:           m.Email,
+			DisplayName:     m.DisplayName,
+			Kind:            m.Kind,
+			IsOwner:         m.IsOwner,
 			LastSeenAt:      m.LastSeenAt,
 			InviteExpiresAt: m.InviteExpiresAt,
 			SessionCount:    m.SessionCount,
@@ -506,10 +495,10 @@ func (a *api) handleAdminUserList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// handleAdminUserCreate adds an account and returns its one-time invite. Owner
+// CreateUser adds an account and returns its one-time invite. Owner
 // only. `kind` may be "agent" — this is how the Scribe gets an identity of its
 // own, so a discussion turn can be attributed to it rather than to the owner.
-func (a *api) handleAdminUserCreate(w http.ResponseWriter, r *http.Request) {
+func (a *api) CreateUser(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Email       string `json:"email"`
 		DisplayName string `json:"display_name"`
@@ -519,7 +508,7 @@ func (a *api) handleAdminUserCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.TrimSpace(req.Email) == "" {
-		http.Error(w, "email is required", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, codeMissingField, "email is required")
 		return
 	}
 	if !checkLen(w, "email", req.Email, maxEmailLen) ||
@@ -530,13 +519,13 @@ func (a *api) handleAdminUserCreate(w http.ResponseWriter, r *http.Request) {
 	u, err := a.accounts.CreateUser(r.Context(), req.Email, strings.TrimSpace(req.DisplayName), req.Kind)
 	switch {
 	case errors.Is(err, store.ErrDuplicateEmail):
-		http.Error(w, "email is already registered", http.StatusConflict)
+		writeError(w, http.StatusConflict, codeEmailTaken, "email is already registered")
 		return
 	// A client-supplied `kind` the store refuses is a bad request, not a server
 	// fault. Answering 500 would tell the caller to retry something that can
 	// never succeed, and would page somebody for a typo.
 	case errors.Is(err, store.ErrInvalidInput):
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, codeInvalidBody, err.Error())
 		return
 	case err != nil:
 		a.serverError(w, r, "create user", err)
@@ -551,16 +540,12 @@ func (a *api) handleAdminUserCreate(w http.ResponseWriter, r *http.Request) {
 	a.writeInvite(w, http.StatusCreated, u, token)
 }
 
-// handleAdminUserInvite mints a fresh invite for an existing account — a second
+// CreateUserInvite mints a fresh invite for an existing account — a second
 // device, or a replacement for one never redeemed. Owner only.
-func (a *api) handleAdminUserInvite(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathUUID(w, r, "id", "user")
-	if !ok {
-		return
-	}
+func (a *api) CreateUserInvite(w http.ResponseWriter, r *http.Request, id wire.UserId) {
 	u, err := a.accounts.GetUser(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
-		http.Error(w, "user not found", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, codeNotFound, "user not found")
 		return
 	}
 	if err != nil {
@@ -576,22 +561,18 @@ func (a *api) handleAdminUserInvite(w http.ResponseWriter, r *http.Request) {
 	a.writeInvite(w, http.StatusCreated, u, token)
 }
 
-// handleAdminUserDelete removes an account with its credentials (FK cascade).
+// DeleteUser removes an account with its credentials (FK cascade).
 // The owner cannot be removed, and neither can an author the corpus references
 // — that answers 409, because it is a refusal the caller can act on rather than
 // a fault. Owner only.
-func (a *api) handleAdminUserDelete(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathUUID(w, r, "id", "user")
-	if !ok {
-		return
-	}
+func (a *api) DeleteUser(w http.ResponseWriter, r *http.Request, id wire.UserId) {
 	switch err := a.accounts.DeleteUser(r.Context(), id); {
 	case errors.Is(err, store.ErrNotFound):
-		http.Error(w, "user not found", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, codeNotFound, "user not found")
 	case errors.Is(err, store.ErrOwnerImmutable):
-		http.Error(w, "the owner account cannot be removed", http.StatusForbidden)
+		writeError(w, http.StatusForbidden, codeOwnerImmutable, "the owner account cannot be removed")
 	case errors.Is(err, store.ErrAuthorHasMemos):
-		http.Error(w, "this account has memos and cannot be removed", http.StatusConflict)
+		writeError(w, http.StatusConflict, codeAuthorHasMemos, "this account has memos and cannot be removed")
 	case err != nil:
 		a.serverError(w, r, "delete user", err)
 	default:
@@ -599,54 +580,42 @@ func (a *api) handleAdminUserDelete(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// sessionJSON is one signed-in device. It never carries token material — a
-// session is revoked by row id, not by presenting the secret again.
-type sessionJSON struct {
-	ID         uuid.UUID  `json:"id"`
-	DeviceName string     `json:"device_label"`
-	CreatedAt  time.Time  `json:"created_at"`
-	LastSeenAt *time.Time `json:"last_seen_at"`
-	Current    bool       `json:"current"`
-}
-
-// handleSessionList returns the caller's own signed-in devices.
+// ListSessions returns the caller's own signed-in devices.
 //
 // This is the one real risk in a password-free model: a session does not
 // expire, so a lost device stays signed in forever unless its holder can see it
 // and cut it off. Hence the list. Sessions stay durable on purpose — CHRN-20's
 // Android upload queue has to be able to drain a memo recorded weeks ago, and a
 // rolling expiry would turn a backlogged upload into a silent 401.
-func (a *api) handleSessionList(w http.ResponseWriter, r *http.Request) {
+func (a *api) ListSessions(w http.ResponseWriter, r *http.Request) {
 	sessions, err := a.accounts.ListSessions(r.Context(), userFrom(r.Context()).ID, sessionToken(r))
 	if err != nil {
 		a.serverError(w, r, "list sessions", err)
 		return
 	}
-	out := make([]sessionJSON, 0, len(sessions))
+	// wire.DeviceSession never carries token material — a session is revoked by
+	// row id, not by presenting the secret again.
+	out := make([]wire.DeviceSession, 0, len(sessions))
 	for _, s := range sessions {
-		out = append(out, sessionJSON{
-			ID: s.ID, DeviceName: s.Label, CreatedAt: s.CreatedAt,
+		out = append(out, wire.DeviceSession{
+			Id: s.ID, DeviceLabel: s.Label, CreatedAt: s.CreatedAt,
 			LastSeenAt: s.LastUsedAt, Current: s.Current,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
-// handleSessionRevoke signs one of the caller's own devices out. The store
+// RevokeSession signs one of the caller's own devices out. The store
 // scopes the delete to the caller, so guessing another account's id reports 404
 // rather than cutting off somebody else's device.
-func (a *api) handleSessionRevoke(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathUUID(w, r, "id", "session")
-	if !ok {
-		return
-	}
+func (a *api) RevokeSession(w http.ResponseWriter, r *http.Request, id wire.SessionId) {
 	// The store reports whether the row it deleted is the one this request rode
 	// in on, so there is no follow-up probe whose own failure would have to be
 	// swallowed.
 	wasCurrent, err := a.accounts.RevokeSession(r.Context(), userFrom(r.Context()).ID, id, sessionToken(r))
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		http.Error(w, "session not found", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, codeNotFound, "session not found")
 		return
 	case err != nil:
 		a.serverError(w, r, "revoke session", err)
@@ -660,13 +629,13 @@ func (a *api) handleSessionRevoke(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// pathUUID parses a {…} path value, answering 400 rather than leaking the shape
-// of the id space through a lookup.
-func pathUUID(w http.ResponseWriter, r *http.Request, name, what string) (uuid.UUID, bool) {
-	id, err := uuid.Parse(r.PathValue(name))
-	if err != nil {
-		http.Error(w, "invalid "+what+" id", http.StatusBadRequest)
-		return uuid.Nil, false
-	}
-	return id, true
-}
+// pathUUID is GONE, and its absence is the point.
+//
+// It parsed a {…} path value and answered 400 "rather than leaking the shape of
+// the id space through a lookup". Every route that called it now takes its id
+// as a BOUND PARAMETER from the generated wrapper, declared `format: uuid` in
+// openapi.yaml — so the parse happens before the handler runs, the refusal is
+// bindError's, and the flat message its comment argued for is the one
+// bindError deliberately writes instead of relaying the parser's words.
+//
+// One fewer place for that rule to be remembered, rather than one more.

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/oapi-codegen/runtime"
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
@@ -22,6 +23,48 @@ const (
 func (e HealthStatus) Valid() bool {
 	switch e {
 	case Ok:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MemoRetention.
+const (
+	MemoRetentionDays30     MemoRetention = "days_30"
+	MemoRetentionDiscardNow MemoRetention = "discard_now"
+	MemoRetentionForever    MemoRetention = "forever"
+)
+
+// Valid indicates whether the value is a known member of the MemoRetention enum.
+func (e MemoRetention) Valid() bool {
+	switch e {
+	case MemoRetentionDays30:
+		return true
+	case MemoRetentionDiscardNow:
+		return true
+	case MemoRetentionForever:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for OpenUploadRequestRetention.
+const (
+	OpenUploadRequestRetentionDays30     OpenUploadRequestRetention = "days_30"
+	OpenUploadRequestRetentionDiscardNow OpenUploadRequestRetention = "discard_now"
+	OpenUploadRequestRetentionForever    OpenUploadRequestRetention = "forever"
+)
+
+// Valid indicates whether the value is a known member of the OpenUploadRequestRetention enum.
+func (e OpenUploadRequestRetention) Valid() bool {
+	switch e {
+	case OpenUploadRequestRetentionDays30:
+		return true
+	case OpenUploadRequestRetentionDiscardNow:
+		return true
+	case OpenUploadRequestRetentionForever:
 		return true
 	default:
 		return false
@@ -46,6 +89,27 @@ func (e ReadinessStatus) Valid() bool {
 	}
 }
 
+// Defines values for UploadStateStatus.
+const (
+	Complete   UploadStateStatus = "complete"
+	Incomplete UploadStateStatus = "incomplete"
+	Open       UploadStateStatus = "open"
+)
+
+// Valid indicates whether the value is a known member of the UploadStateStatus enum.
+func (e UploadStateStatus) Valid() bool {
+	switch e {
+	case Complete:
+		return true
+	case Incomplete:
+		return true
+	case Open:
+		return true
+	default:
+		return false
+	}
+}
+
 // CorpusReport defines model for CorpusReport.
 type CorpusReport struct {
 	AudioPresent  int64      `json:"audio_present"`
@@ -57,6 +121,18 @@ type CorpusReport struct {
 	// OldestCapture Null on an empty corpus. Always present, so absent never means empty.
 	OldestCapture *time.Time `json:"oldest_capture"`
 	RecordedBytes int64      `json:"recorded_bytes"`
+}
+
+// DeviceSession defines model for DeviceSession.
+type DeviceSession struct {
+	CreatedAt time.Time `json:"created_at"`
+
+	// Current Whether this is the session making the request. What lets a person
+	// revoke every device but the one in their hand.
+	Current     bool               `json:"current"`
+	DeviceLabel string             `json:"device_label"`
+	Id          openapi_types.UUID `json:"id"`
+	LastSeenAt  *time.Time         `json:"last_seen_at"`
 }
 
 // DiskReport defines model for DiskReport.
@@ -122,6 +198,69 @@ type HeldMemo struct {
 	Retry string `json:"retry"`
 }
 
+// Invite A single-use invite, shown once. `sign_in_url` is the QR target and is
+// absent when this deployment has no mobile base URL configured — a link
+// built from the Access-gated host would walk a phone into an SSO wall a
+// bearer token cannot open.
+type Invite struct {
+	// ExpiresIn How long the invite is good for, as a Go duration string.
+	//
+	// Example: 24h0m0s
+	ExpiresIn   string  `json:"expires_in"`
+	InviteToken string  `json:"invite_token"`
+	SignInUrl   *string `json:"sign_in_url,omitempty"`
+
+	// User An account, as the wire carries it. It deliberately holds **no token
+	// material**: a credential is returned exactly once, by the call that
+	// mints it.
+	User User `json:"user"`
+}
+
+// Member An account with what the owner needs to administer it. `last_seen_at`
+// null and `invite_expires_at` set is an invite never redeemed.
+type Member struct {
+	DisplayName     string             `json:"display_name"`
+	Email           string             `json:"email"`
+	Id              openapi_types.UUID `json:"id"`
+	InviteExpiresAt *time.Time         `json:"invite_expires_at"`
+	IsOwner         bool               `json:"is_owner"`
+	Kind            string             `json:"kind"`
+	LastSeenAt      *time.Time         `json:"last_seen_at"`
+	SessionCount    int                `json:"session_count"`
+}
+
+// Memo A captured recording. **Tier 2**: what a person said, derivable from
+// nothing, rebuildable by nobody.
+type Memo struct {
+	// AudioPruned The recording is gone and the transcript remains. Never true without
+	// a durable transcript — that predicate, not the calendar, is what
+	// gates deletion.
+	AudioPruned bool      `json:"audio_pruned"`
+	ByteSize    int64     `json:"byte_size"`
+	CapturedAt  time.Time `json:"captured_at"`
+	Codec       *string   `json:"codec"`
+	ContentHash string    `json:"content_hash"`
+
+	// DurationMs Null until something has decoded the file; a declaration is not a measurement.
+	DurationMs       *int32             `json:"duration_ms"`
+	Id               openapi_types.UUID `json:"id"`
+	OriginalFilename *string            `json:"original_filename,omitempty"`
+
+	// PrunesAt When, on that clause. Null when nothing will prune it.
+	PrunesAt  *time.Time    `json:"prunes_at"`
+	Retention MemoRetention `json:"retention"`
+
+	// RetentionStatus What will happen to this memo's audio — the same clause the pruner sweeps with.
+	RetentionStatus string `json:"retention_status"`
+	SampleRateHz    *int32 `json:"sample_rate_hz"`
+
+	// State captured, queued, transcribing, transcribed, held, discarded.
+	State string `json:"state"`
+}
+
+// MemoRetention defines model for Memo.Retention.
+type MemoRetention string
+
 // Mismatch defines model for Mismatch.
 type Mismatch struct {
 	OnDiskBytes   int64 `json:"on_disk_bytes"`
@@ -130,6 +269,46 @@ type Mismatch struct {
 	// Ref `<author-id>/<content-hash>`.
 	Ref string `json:"ref"`
 }
+
+// NewUserRequest defines model for NewUserRequest.
+type NewUserRequest struct {
+	DisplayName *string `json:"display_name,omitempty"`
+
+	// Email Also the Access identity this account is matched to on SSO.
+	Email string `json:"email"`
+
+	// Kind `person` or `agent`. An agent account can hold a token but is never
+	// an owner and never confirms authored text — `note_revisions_guard`
+	// refuses any revision whose `confirmed_by` names one.
+	Kind *string `json:"kind,omitempty"`
+}
+
+// OpenUploadRequest defines model for OpenUploadRequest.
+type OpenUploadRequest struct {
+	ByteSize int64 `json:"byte_size"`
+
+	// ContentHash SHA-256 of the file, lowercase hex. Checked on completion: bytes
+	// that do not match it are discarded rather than stored as a memo
+	// nobody can verify.
+	ContentHash string `json:"content_hash"`
+
+	// IdempotencyKey Minted per capture and persisted by the client BEFORE the request
+	// goes out, so an HTTP retry is a replay rather than a second memo.
+	IdempotencyKey   string  `json:"idempotency_key"`
+	OriginalFilename *string `json:"original_filename,omitempty"`
+
+	// Retention Omitted means the deployment default. `days_30` is pruned by policy
+	// once a durable transcript exists — never on the calendar alone,
+	// because pruning audio whose transcription never succeeded is
+	// unrecoverable loss with no user-visible warning.
+	Retention *OpenUploadRequestRetention `json:"retention,omitempty"`
+}
+
+// OpenUploadRequestRetention Omitted means the deployment default. `days_30` is pruned by policy
+// once a durable transcript exists — never on the calendar alone,
+// because pruning audio whose transcription never succeeded is
+// unrecoverable loss with no user-visible warning.
+type OpenUploadRequestRetention string
 
 // PartialTranscript defines model for PartialTranscript.
 type PartialTranscript struct {
@@ -178,6 +357,46 @@ type ReconciliationReport struct {
 	Orphans int `json:"orphans"`
 }
 
+// Session A signed-in session. `session_token` is shown HERE AND NEVER AGAIN —
+// there is no endpoint that returns it a second time, because it is stored
+// hashed.
+type Session struct {
+	SessionToken string `json:"session_token"`
+
+	// User An account, as the wire carries it. It deliberately holds **no token
+	// material**: a credential is returned exactly once, by the call that
+	// mints it.
+	User User `json:"user"`
+}
+
+// SignInRequest defines model for SignInRequest.
+type SignInRequest struct {
+	// DeviceLabel What this device is called in the session list its holder reads.
+	// Optional, and bounded — it reaches a TEXT column with no length of
+	// its own.
+	DeviceLabel *string `json:"device_label,omitempty"`
+
+	// Token A single-use invite token.
+	Token string `json:"token"`
+}
+
+// SsoError The Access path's error, which carries one field more than the shared
+// envelope: the **email the assertion named**. Without it a person facing
+// an SSO wall cannot tell which identity was rejected, and that is the
+// whole question they have.
+//
+// `code` rather than `error`: the handler's own vocabulary has always
+// called it a code, and two names for one concept in one document is the
+// drift this contract exists to remove.
+type SsoError struct {
+	// Code Example: no_account
+	Code string `json:"code"`
+
+	// Email The verified email the assertion named. Absent when there was no assertion to read.
+	Email   *string `json:"email,omitempty"`
+	Message string  `json:"message"`
+}
+
 // StorageReport defines model for StorageReport.
 type StorageReport struct {
 	Corpus         CorpusReport         `json:"corpus"`
@@ -219,6 +438,46 @@ type TranscriptionReport struct {
 	States map[string]int64 `json:"states"`
 }
 
+// UpdateMeRequest defines model for UpdateMeRequest.
+type UpdateMeRequest struct {
+	DisplayName string `json:"display_name"`
+}
+
+// UploadState Where an upload got to. The same shape answers the successful cases and
+// the two that carry a resume instruction (409, 408), so a client has one
+// thing to parse.
+type UploadState struct {
+	ByteSize int64 `json:"byte_size"`
+
+	// Duplicate Whether this declaration matched a memo that already exists. A
+	// replay is a success, not a conflict.
+	Duplicate bool       `json:"duplicate"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+
+	// Memo A captured recording. **Tier 2**: what a person said, derivable from
+	// nothing, rebuildable by nobody.
+	Memo *Memo `json:"memo,omitempty"`
+
+	// Offset How many bytes the server holds. Send from here next.
+	Offset   int64             `json:"offset"`
+	Status   UploadStateStatus `json:"status"`
+	UploadId *string           `json:"upload_id,omitempty"`
+}
+
+// UploadStateStatus defines model for UploadState.Status.
+type UploadStateStatus string
+
+// User An account, as the wire carries it. It deliberately holds **no token
+// material**: a credential is returned exactly once, by the call that
+// mints it.
+type User struct {
+	DisplayName string             `json:"display_name"`
+	Email       string             `json:"email"`
+	Id          openapi_types.UUID `json:"id"`
+	IsOwner     bool               `json:"is_owner"`
+	Kind        string             `json:"kind"`
+}
+
 // WindowReport defines model for WindowReport.
 type WindowReport struct {
 	Bytes          int64   `json:"bytes"`
@@ -230,14 +489,72 @@ type WindowReport struct {
 	ProjectedBytes int64 `json:"projected_bytes"`
 }
 
+// SessionId defines model for SessionId.
+type SessionId = openapi_types.UUID
+
+// UploadId defines model for UploadId.
+type UploadId = openapi_types.UUID
+
+// UserId defines model for UserId.
+type UserId = openapi_types.UUID
+
+// BadRequest defines model for BadRequest.
+type BadRequest = Error
+
 // Forbidden defines model for Forbidden.
 type Forbidden = Error
 
 // InternalError defines model for InternalError.
 type InternalError = Error
 
+// NotFound defines model for NotFound.
+type NotFound = Error
+
+// RateLimited defines model for RateLimited.
+type RateLimited = Error
+
+// TooLarge defines model for TooLarge.
+type TooLarge = Error
+
+// TransferCut Where an upload got to. The same shape answers the successful cases and
+// the two that carry a resume instruction (409, 408), so a client has one
+// thing to parse.
+type TransferCut = UploadState
+
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = Error
+
+// Unprocessable defines model for Unprocessable.
+type Unprocessable = Error
+
+// UnsupportedMediaType defines model for UnsupportedMediaType.
+type UnsupportedMediaType = Error
+
+// UploadConflict Where an upload got to. The same shape answers the successful cases and
+// the two that carry a resume instruction (409, 408), so a client has one
+// thing to parse.
+type UploadConflict = UploadState
+
+// UploadsUnconfigured defines model for UploadsUnconfigured.
+type UploadsUnconfigured = Error
+
+// AppendChunkParams defines parameters for AppendChunk.
+type AppendChunkParams struct {
+	// UploadOffset The offset these bytes start at. A disagreement answers 409 carrying the server's.
+	UploadOffset int64 `json:"Upload-Offset"`
+}
+
+// CreateUserJSONRequestBody defines body for CreateUser for application/json ContentType.
+type CreateUserJSONRequestBody = NewUserRequest
+
+// UpdateMeJSONRequestBody defines body for UpdateMe for application/json ContentType.
+type UpdateMeJSONRequestBody = UpdateMeRequest
+
+// CreateSessionJSONRequestBody defines body for CreateSession for application/json ContentType.
+type CreateSessionJSONRequestBody = SignInRequest
+
+// OpenUploadJSONRequestBody defines body for OpenUpload for application/json ContentType.
+type OpenUploadJSONRequestBody = OpenUploadRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -247,9 +564,57 @@ type ServerInterface interface {
 	// GetTranscriptionReport How transcription is going, and which memos are stuck.
 	// (GET /admin/transcription)
 	GetTranscriptionReport(w http.ResponseWriter, r *http.Request)
+	// ListUsers Every account, with its devices and invite state.
+	// (GET /admin/users)
+	ListUsers(w http.ResponseWriter, r *http.Request)
+	// CreateUser Create an account and mint its first invite.
+	// (POST /admin/users)
+	CreateUser(w http.ResponseWriter, r *http.Request)
+	// DeleteUser Remove an account and its credentials.
+	// (DELETE /admin/users/{id})
+	DeleteUser(w http.ResponseWriter, r *http.Request, id UserId)
+	// CreateUserInvite Mint a fresh invite for an existing account.
+	// (POST /admin/users/{id}/invite)
+	CreateUserInvite(w http.ResponseWriter, r *http.Request, id UserId)
+	// CreateSelfInvite Mint an invite for another of your own devices.
+	// (POST /auth/invite)
+	CreateSelfInvite(w http.ResponseWriter, r *http.Request)
+	// GetMe The account this session belongs to.
+	// (GET /auth/me)
+	GetMe(w http.ResponseWriter, r *http.Request)
+	// UpdateMe Change your own display name.
+	// (PATCH /auth/me)
+	UpdateMe(w http.ResponseWriter, r *http.Request)
+	// DeleteSession Sign out, revoking this session.
+	// (DELETE /auth/session)
+	DeleteSession(w http.ResponseWriter, r *http.Request)
+	// CreateSession Redeem an invite for a session.
+	// (POST /auth/session)
+	CreateSession(w http.ResponseWriter, r *http.Request)
+	// ListSessions Your own signed-in devices.
+	// (GET /auth/sessions)
+	ListSessions(w http.ResponseWriter, r *http.Request)
+	// RevokeSession Revoke one of your own sessions.
+	// (DELETE /auth/sessions/{id})
+	RevokeSession(w http.ResponseWriter, r *http.Request, id SessionId)
+	// CreateSessionFromAccess Exchange a verified Cloudflare Access identity for a session.
+	// (POST /auth/sso/cloudflare)
+	CreateSessionFromAccess(w http.ResponseWriter, r *http.Request)
 	// GetHealthz Liveness. No dependencies, no credential.
 	// (GET /healthz)
 	GetHealthz(w http.ResponseWriter, r *http.Request)
+	// OpenUpload Declare an upload and open a session for it.
+	// (POST /memos/uploads)
+	OpenUpload(w http.ResponseWriter, r *http.Request)
+	// AbandonUpload Abandon an upload and discard its staged bytes.
+	// (DELETE /memos/uploads/{id})
+	AbandonUpload(w http.ResponseWriter, r *http.Request, id UploadId)
+	// GetUpload Where this upload got to.
+	// (GET /memos/uploads/{id})
+	GetUpload(w http.ResponseWriter, r *http.Request, id UploadId)
+	// AppendChunk Append a chunk.
+	// (PATCH /memos/uploads/{id})
+	AppendChunk(w http.ResponseWriter, r *http.Request, id UploadId, params AppendChunkParams)
 	// GetReadyz Readiness. Pings the database.
 	// (GET /readyz)
 	GetReadyz(w http.ResponseWriter, r *http.Request)
@@ -292,11 +657,335 @@ func (siw *ServerInterfaceWrapper) GetTranscriptionReport(w http.ResponseWriter,
 	handler.ServeHTTP(w, r)
 }
 
+// ListUsers operation middleware
+func (siw *ServerInterfaceWrapper) ListUsers(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListUsers(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateUser operation middleware
+func (siw *ServerInterfaceWrapper) CreateUser(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateUser(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteUser operation middleware
+func (siw *ServerInterfaceWrapper) DeleteUser(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id UserId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteUser(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateUserInvite operation middleware
+func (siw *ServerInterfaceWrapper) CreateUserInvite(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id UserId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateUserInvite(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateSelfInvite operation middleware
+func (siw *ServerInterfaceWrapper) CreateSelfInvite(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateSelfInvite(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetMe operation middleware
+func (siw *ServerInterfaceWrapper) GetMe(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetMe(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateMe operation middleware
+func (siw *ServerInterfaceWrapper) UpdateMe(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateMe(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteSession operation middleware
+func (siw *ServerInterfaceWrapper) DeleteSession(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteSession(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateSession operation middleware
+func (siw *ServerInterfaceWrapper) CreateSession(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateSession(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListSessions operation middleware
+func (siw *ServerInterfaceWrapper) ListSessions(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListSessions(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RevokeSession operation middleware
+func (siw *ServerInterfaceWrapper) RevokeSession(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id SessionId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RevokeSession(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateSessionFromAccess operation middleware
+func (siw *ServerInterfaceWrapper) CreateSessionFromAccess(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateSessionFromAccess(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetHealthz operation middleware
 func (siw *ServerInterfaceWrapper) GetHealthz(w http.ResponseWriter, r *http.Request) {
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetHealthz(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// OpenUpload operation middleware
+func (siw *ServerInterfaceWrapper) OpenUpload(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.OpenUpload(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AbandonUpload operation middleware
+func (siw *ServerInterfaceWrapper) AbandonUpload(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id UploadId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AbandonUpload(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetUpload operation middleware
+func (siw *ServerInterfaceWrapper) GetUpload(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id UploadId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetUpload(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AppendChunk operation middleware
+func (siw *ServerInterfaceWrapper) AppendChunk(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id UploadId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AppendChunkParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "Upload-Offset" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Upload-Offset")]; found {
+		var UploadOffset int64
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Upload-Offset", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Upload-Offset", valueList[0], &UploadOffset, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "integer", Format: "int64"})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Upload-Offset", Err: err})
+			return
+		}
+
+		params.UploadOffset = UploadOffset
+
+	} else {
+		err := fmt.Errorf("Header parameter Upload-Offset is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "Upload-Offset", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AppendChunk(w, r, id, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -444,6 +1133,22 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/readyz", wrapper.GetReadyz)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/storage", wrapper.GetStorageReport)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/transcription", wrapper.GetTranscriptionReport)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/auth/session", wrapper.DeleteSession)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/auth/session", wrapper.CreateSession)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/auth/sso/cloudflare", wrapper.CreateSessionFromAccess)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/auth/me", wrapper.GetMe)
+	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/auth/me", wrapper.UpdateMe)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/auth/invite", wrapper.CreateSelfInvite)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/auth/sessions", wrapper.ListSessions)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/auth/sessions/{id}", wrapper.RevokeSession)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/admin/users", wrapper.ListUsers)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/users", wrapper.CreateUser)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/admin/users/{id}/invite", wrapper.CreateUserInvite)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/admin/users/{id}", wrapper.DeleteUser)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/memos/uploads", wrapper.OpenUpload)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/memos/uploads/{id}", wrapper.AbandonUpload)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/memos/uploads/{id}", wrapper.GetUpload)
+	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/memos/uploads/{id}", wrapper.AppendChunk)
 
 	return m
 }

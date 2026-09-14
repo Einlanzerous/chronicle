@@ -144,9 +144,11 @@ type api struct {
 //
 // Routes arrive two ways while CHRN-97 is in flight: the ones openapi.yaml
 // describes are registered BY THE GENERATOR onto a policyRouter, and the rest
-// are hand-registered on the same mux below, exactly as they were. Every route
-// moves to the first form; a route that is in the document is never also in the
-// second list, because the mux would refuse the duplicate pattern at boot.
+// are hand-registered on the same mux below, exactly as they were. Twenty of
+// the twenty-six are now generated; the six that remain are the triage group,
+// and they move with their payloads. A route that is in the document is never
+// also in the second list, because the mux would refuse the duplicate pattern
+// at boot.
 //
 // The two probes answer different questions and must not be collapsed:
 //
@@ -210,48 +212,15 @@ func NewRouter(d Deps) http.Handler {
 		return requestLogger(d.Logger, mux)
 	}
 
-	// Sign-in. Both paths mint the same kind of session, and both must stay
-	// reachable without one.
-	//
-	// BOTH are rate-limited. They are the two unauthenticated endpoints that
-	// mint a credential, and limiting only one of them just moves the target:
-	// /auth/sso/cloudflare drives a JWKS fetch and a database write per call.
-	mux.HandleFunc("POST /auth/session", a.limitSignIn(a.handleAuthSession))
-	mux.HandleFunc("POST /auth/sso/cloudflare", a.limitSignIn(a.handleAuthCFAccess))
-
-	mux.HandleFunc("DELETE /auth/session", a.requireUser(a.handleAuthSignOut))
-	mux.HandleFunc("GET /auth/me", a.requireUser(a.handleAuthMe))
-	mux.HandleFunc("PATCH /auth/me", a.requireUser(a.handleAuthUpdateMe))
-	mux.HandleFunc("POST /auth/invite", a.requireUser(a.handleSelfInvite))
-	mux.HandleFunc("GET /auth/sessions", a.requireUser(a.handleSessionList))
-	mux.HandleFunc("DELETE /auth/sessions/{id}", a.requireUser(a.handleSessionRevoke))
-
-	// Account administration. Owner only, and never an agent.
-	mux.HandleFunc("POST /admin/users", a.requireOwner(a.handleAdminUserCreate))
-	mux.HandleFunc("GET /admin/users", a.requireOwner(a.handleAdminUserList))
-	mux.HandleFunc("POST /admin/users/{id}/invite", a.requireOwner(a.handleAdminUserInvite))
-	mux.HandleFunc("DELETE /admin/users/{id}", a.requireOwner(a.handleAdminUserDelete))
-
-	// Memo ingest from the app (CHRN-20). requireUser and not requireOwner:
-	// every account records its own memos, and the author is taken from the
-	// session rather than from anything the request carries.
-	//
-	// Deliberately NOT on limitSignIn. That wrapper exists for unauthenticated
-	// endpoints that mint a credential; putting a 20-per-minute bucket on a
-	// chunked upload would throttle ingest and nothing else. The edge agrees --
-	// construct-server's config/traefik/dynamic/routers.yml keeps
-	// chronicle-login-ratelimit on a separate PathPrefix(`/auth/`) router for
-	// exactly this ticket, by name (CHRN-89 removed this repo's stale copy of
-	// that file; the reasoning is in deploy/README.md). What bounds
-	// this surface instead is the per-account cap on open sessions and the
-	// declared-size limit, both in internal/upload.
-	mux.HandleFunc("POST /memos/uploads", a.requireUser(a.handleUploadOpen))
-	mux.HandleFunc("GET /memos/uploads/{id}", a.requireUser(a.handleUploadStatus))
-	mux.HandleFunc("PATCH /memos/uploads/{id}", a.requireUser(a.handleUploadAppend))
-	mux.HandleFunc("DELETE /memos/uploads/{id}", a.requireUser(a.handleUploadAbandon))
-
 	// TRIAGE (CHRN-33) — the primary surface, and the one place derived state
 	// becomes authored state.
+	//
+	// The last routes still registered by hand. Everything above them is in
+	// openapi.yaml and was registered by the generator; these five and
+	// GET /admin/triage move with their payloads, which are a domain model
+	// rather than a report -- triage.BatchItem carries scribe.Proposal, and
+	// transcribing CHRN-32's proposal contract into the document is its own
+	// diff rather than a tail on this one.
 	//
 	// requireUser and not requireOwner: every account triages its own memos.
 	// The author scoping is applied inside the service, PER ITEM on the POST as
@@ -270,12 +239,6 @@ func NewRouter(d Deps) http.Handler {
 	// What triage left behind: the backlog by age, and the decisions that did
 	// not finish landing. Owner only, because it spans every author's corpus.
 	mux.HandleFunc("GET /admin/triage", a.requireOwner(a.handleAdminTriage))
-
-	// Not registered here and not missing: the two probes, GET /admin/storage
-	// and GET /admin/transcription are in openapi.yaml, so the generator
-	// registered them above and policy.go declared their credential. The
-	// routes still hand-written below this line are the ones CHRN-97's second
-	// half moves.
 
 	return requestLogger(d.Logger, mux)
 }
