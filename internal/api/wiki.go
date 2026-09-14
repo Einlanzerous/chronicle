@@ -79,6 +79,7 @@ type Wiki interface {
 	NoteRevisions(ctx context.Context, noteID uuid.UUID) ([]store.NoteRevision, error)
 	NotesOnPage(ctx context.Context, pageID uuid.UUID) ([]store.Note, error)
 	DiscussionsResolvedInto(ctx context.Context, noteID uuid.UUID) ([]store.Discussion, error)
+	Backlinks(ctx context.Context, number int64) ([]store.Backlink, error)
 
 	Search(ctx context.Context, query string, limit int) ([]store.SearchHit, error)
 }
@@ -538,8 +539,73 @@ func (a *api) AppendRevision(w http.ResponseWriter, r *http.Request, ref string)
 	})
 }
 
+// ListNoteBacklinks answers what links here (CHRN-105).
+//
+// A SIBLING OF GetNote, NOT A FIELD ON IT, because of the ETag. Ruling 5 makes
+// a note's ETag its revision id, and that is honest only while nothing in the
+// payload changes unless a revision is appended. Backlinks change when OTHER
+// notes change: fold them in and an unchanged note answers 304 over a stale
+// link list, or the ETag has to become a hash of the whole graph. So they live
+// here, without a validator.
+//
+// NOTHING HERE RUNS ON THE TIER-1 POOL. The row is tier 1 — tier1.note_links
+// is derived from the text and RebuildNoteLinks regenerates it — but the
+// resolution to a ref and a title joins tier2.notes and tier2.note_revisions,
+// which chronicle_tier1 may not read (the decision on CHRN-100, 2026-09-14,
+// and TestTheTierOneRoleCannotResolveBacklinks in internal/store). The read
+// is tier 2's, over the same Wiki the rest of this group holds; the payload
+// carries the marking because the LIST is derived even though every note in
+// it is authored.
+//
+// Each row costs a page-path read, as the listing's title does; the cursor
+// windows the store's whole-list read by source number. Both are the trade
+// CHRN-98 made and raised, and this route makes it no worse.
+func (a *api) ListNoteBacklinks(w http.ResponseWriter, r *http.Request, ref string, params wire.ListNoteBacklinksParams) {
+	if a.wikiUnavailable(w) {
+		return
+	}
+	number, ok := noteRef(w, ref)
+	if !ok {
+		return
+	}
+	limit, ok := clampLimit(w, params.Limit, defaultListLimit, maxListLimit)
+	if !ok {
+		return
+	}
+	after, ok := cursorAfter(w, params.Cursor)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), wikiTimeout)
+	defer cancel()
+
+	if _, ok := a.liveNote(w, r, ctx, number); !ok {
+		return
+	}
+	links, err := a.wiki.Backlinks(ctx, number)
+	if err != nil {
+		a.serverError(w, r, "list backlinks", err)
+		return
+	}
+	pageOf, next := window(links, func(b store.Backlink) int64 { return b.Number }, after, limit)
+	items := make([]wire.Backlink, 0, len(pageOf))
+	for _, b := range pageOf {
+		path, err := a.wiki.PagePath(ctx, b.PageID)
+		if err != nil {
+			a.serverError(w, r, "list backlinks: page path", err)
+			return
+		}
+		items = append(items, toBacklink(b, path))
+	}
+	writeJSON(w, http.StatusOK, wire.BacklinkList{
+		Items:      items,
+		NextCursor: next,
+		Generated:  generatedByChronicle(),
+	})
+}
+
 // liveNote reads a note by number and answers 404 or the 410 tombstone itself,
-// so the three routes under /notes/{ref} cannot disagree about a deleted note.
+// so the four routes under /notes/{ref} cannot disagree about a deleted note.
 func (a *api) liveNote(w http.ResponseWriter, r *http.Request, ctx context.Context, number int64) (store.Note, bool) {
 	n, err := a.wiki.NoteByNumber(ctx, number)
 	switch {

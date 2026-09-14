@@ -38,6 +38,7 @@ type fakeWiki struct {
 	notes     map[int64]store.Note
 	revs      map[uuid.UUID][]store.NoteRevision
 	threads   map[uuid.UUID][]store.Discussion
+	links     map[int64][]store.Backlink // target number -> sources, as the index would answer
 	hits      []store.SearchHit
 	agents    map[uuid.UUID]bool
 	next      int64
@@ -51,6 +52,7 @@ func newFakeWiki() *fakeWiki {
 		notes:     map[int64]store.Note{},
 		revs:      map[uuid.UUID][]store.NoteRevision{},
 		threads:   map[uuid.UUID][]store.Discussion{},
+		links:     map[int64][]store.Backlink{},
 		agents:    map[uuid.UUID]bool{},
 		next:      1,
 	}
@@ -245,6 +247,27 @@ func (f *fakeWiki) DiscussionsResolvedInto(_ context.Context, noteID uuid.UUID) 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]store.Discussion(nil), f.threads[noteID]...), nil
+}
+
+// Backlinks answers what the seeded index says, minus any source that has
+// since been soft-deleted — the store's query has `n.deleted_at IS NULL` on
+// the join, and the fake keeps that half of the contract so the handler test
+// can drive it.
+func (f *fakeWiki) Backlinks(_ context.Context, number int64) ([]store.Backlink, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return nil, f.err
+	}
+	out := []store.Backlink{}
+	for _, b := range f.links[number] {
+		if src, ok := f.notes[b.Number]; !ok || src.Deleted() {
+			continue
+		}
+		out = append(out, b)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Number < out[j].Number })
+	return out, nil
 }
 
 func (f *fakeWiki) Search(_ context.Context, query string, limit int) ([]store.SearchHit, error) {
@@ -567,7 +590,7 @@ func TestWithoutAKeySetTicketTokensStayProse(t *testing.T) {
 	}
 }
 
-// Ruling 4: the tombstone, and nothing else, on all three routes.
+// Ruling 4: the tombstone, and nothing else, on all four routes.
 func TestADeletedNoteAnswersABareTombstone(t *testing.T) {
 	rig := newWikiRig(t, false)
 	call := rig.as("member-token")
@@ -580,6 +603,7 @@ func TestADeletedNoteAnswersABareTombstone(t *testing.T) {
 		{http.MethodGet, "/notes/CHR-0001", "", "getNote"},
 		{http.MethodGet, "/notes/CHR-0001/revisions", "", "listNoteRevisions"},
 		{http.MethodPost, "/notes/CHR-0001/revisions", `{"body":"more"}`, "appendRevision"},
+		{http.MethodGet, "/notes/CHR-0001/backlinks", "", "listNoteBacklinks"},
 	} {
 		rec := call(tc.method, tc.path, tc.body)
 		mustStatus(t, rec, http.StatusGone, tc.op)
@@ -718,6 +742,7 @@ func TestWikiWithoutAStoreAnswersTheDocumented503(t *testing.T) {
 		{http.MethodGet, "/notes/CHR-0001", "", "getNote"},
 		{http.MethodGet, "/notes/CHR-0001/revisions", "", "listNoteRevisions"},
 		{http.MethodPost, "/notes/CHR-0001/revisions", `{"body":"b"}`, "appendRevision"},
+		{http.MethodGet, "/notes/CHR-0001/backlinks", "", "listNoteBacklinks"},
 		{http.MethodGet, "/search?q=x", "", "search"},
 	} {
 		rec := httptest.NewRecorder()
@@ -744,6 +769,8 @@ func TestWikiAnswersTheDocumented500(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "connection reset") {
 		t.Error("the cause reached the body")
 	}
+	rec = call(http.MethodGet, "/notes/CHR-0001/backlinks", "")
+	mustStatus(t, rec, http.StatusInternalServerError, "listNoteBacklinks")
 }
 
 // The shared decoder's refusals, driven on each body-taking operation.
@@ -821,6 +848,85 @@ func TestANoteCarriesTheThreadsThatConcludedIntoIt(t *testing.T) {
 	n := decodeInto[wire.Note](t, rec)
 	if len(n.ResolvedFrom) != 1 || n.ResolvedFrom[0].Ref != "DSC-0007" || !n.ResolvedFrom[0].ResolvedAt.Equal(at) {
 		t.Errorf("resolved_from = %+v", n.ResolvedFrom)
+	}
+}
+
+// CHRN-105: what links here is a sibling route, marked derived, read from
+// the same store the rest of the group holds — and it changes when OTHER notes
+// do, which is why it is not a field on the note and carries no validator.
+func TestBacklinksAreASiblingMarkedDerived(t *testing.T) {
+	rig := newWikiRig(t, false)
+	call := rig.as("member-token")
+	mustStatus(t, call(http.MethodPost, "/pages", `{"path":"estate"}`), http.StatusCreated, "createPage")
+	mustStatus(t, call(http.MethodPost, "/pages", `{"path":"estate/conventions"}`), http.StatusCreated, "createPage")
+	for _, in := range []string{
+		`{"page":"estate","title":"Target","body":"the note everything points at"}`,
+		`{"page":"estate/conventions","title":"First source","body":"see CHR-0001"}`,
+		`{"page":"estate","title":"Second source","body":"also CHR-0001"}`,
+		`{"page":"estate","title":"Third source","body":"and CHR-0001 again"}`,
+	} {
+		mustStatus(t, call(http.MethodPost, "/notes", in), http.StatusCreated, "createNote")
+	}
+
+	// A fresh note has an empty list, not a null, and the marking is present
+	// even when there is nothing under it.
+	rec := call(http.MethodGet, "/notes/CHR-0001/backlinks", "")
+	mustStatus(t, rec, http.StatusOK, "listNoteBacklinks")
+	empty := decodeInto[wire.BacklinkList](t, rec)
+	if empty.Items == nil || len(empty.Items) != 0 || empty.NextCursor != nil {
+		t.Errorf("backlinks of an unlinked note = %+v, want an empty list", empty)
+	}
+	if empty.Generated.Tier != wire.GeneratedTierOne || empty.Generated.Source != wire.GeneratedSourceChronicle ||
+		empty.Generated.Regenerable != wire.GeneratedRegenerableTrue || empty.Generated.Notice != noticeChronicle {
+		t.Errorf("generated = %+v, want Chronicle's own marking", empty.Generated)
+	}
+	if empty.Generated.Ref != nil || empty.Generated.GeneratedAt != nil {
+		t.Errorf("generated carries a stamp nothing produced: %+v", empty.Generated)
+	}
+	if rec.Header().Get("ETag") != "" {
+		t.Error("a backlink list carries an ETag; it changes when other notes do, so nothing validates it")
+	}
+
+	// The index says three notes point here. The handler resolves each to
+	// the page it is filed on, oldest source first, and windows by number.
+	for _, n := range []int64{2, 3, 4} {
+		src := rig.wiki.notes[n]
+		rig.wiki.links[1] = append(rig.wiki.links[1], store.Backlink{
+			NoteID: src.ID, Number: src.Number, Title: rig.wiki.revs[src.ID][0].Title, PageID: src.PageID,
+		})
+	}
+	rec = call(http.MethodGet, "/notes/CHR-0001/backlinks?limit=2", "")
+	mustStatus(t, rec, http.StatusOK, "listNoteBacklinks")
+	l := decodeInto[wire.BacklinkList](t, rec)
+	if len(l.Items) != 2 || l.NextCursor == nil {
+		t.Fatalf("page 1 = %+v", l)
+	}
+	if l.Items[0] != (wire.Backlink{Ref: "CHR-0002", Title: "First source", Page: "estate/conventions"}) ||
+		l.Items[1] != (wire.Backlink{Ref: "CHR-0003", Title: "Second source", Page: "estate"}) {
+		t.Errorf("page 1 items = %+v", l.Items)
+	}
+	rec = call(http.MethodGet, "/notes/CHR-0001/backlinks?limit=2&cursor="+*l.NextCursor, "")
+	mustStatus(t, rec, http.StatusOK, "listNoteBacklinks")
+	if l = decodeInto[wire.BacklinkList](t, rec); len(l.Items) != 1 || l.Items[0].Ref != "CHR-0004" || l.NextCursor != nil {
+		t.Errorf("page 2 = %+v", l)
+	}
+
+	// A soft-deleted source drops out; the target still answers.
+	rig.wiki.softDelete(3, rig.member.ID)
+	rec = call(http.MethodGet, "/notes/CHR-0001/backlinks", "")
+	mustStatus(t, rec, http.StatusOK, "listNoteBacklinks")
+	if l = decodeInto[wire.BacklinkList](t, rec); len(l.Items) != 2 || l.Items[0].Ref != "CHR-0002" || l.Items[1].Ref != "CHR-0004" {
+		t.Errorf("after deleting a source = %+v", l.Items)
+	}
+
+	// The shared refusals: a ref that is not a note reference, a note that
+	// never existed, and the bounds the other lists refuse.
+	mustStatus(t, call(http.MethodGet, "/notes/SWY-0001/backlinks", ""), http.StatusBadRequest, "listNoteBacklinks")
+	mustStatus(t, call(http.MethodGet, "/notes/CHR-0099/backlinks", ""), http.StatusNotFound, "listNoteBacklinks")
+	mustStatus(t, call(http.MethodGet, "/notes/CHR-0001/backlinks?limit=0", ""), http.StatusBadRequest, "listNoteBacklinks")
+	mustStatus(t, call(http.MethodGet, "/notes/CHR-0001/backlinks?cursor=abc", ""), http.StatusBadRequest, "listNoteBacklinks")
+	if rig.guard.calls.Load() != 0 {
+		t.Error("a backlink read dialled an upstream")
 	}
 }
 

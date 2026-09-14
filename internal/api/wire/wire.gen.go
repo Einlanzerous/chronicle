@@ -441,6 +441,49 @@ type AppendRevisionRequest struct {
 	Title *string `json:"title,omitempty"`
 }
 
+// Backlink One note whose current text names another — enough to render a row
+// in a "what links here" list and follow it. Resolved at read time
+// against `tier2.notes`, which is what makes a reference written before
+// its target existed start working on its own.
+type Backlink struct {
+	// Page The path of the page the source note is filed on, current as of this read.
+	Page string `json:"page"`
+
+	// Ref The source note's `CHR-0311`.
+	Ref string `json:"ref"`
+
+	// Title The source note's current title.
+	Title string `json:"title"`
+}
+
+// BacklinkList A note's backlinks, marked. `generated` is required here and on no
+// other payload of the `notes` group: the note itself is authored, and
+// the list of what points at it is derived.
+type BacklinkList struct {
+	// Generated **The tier-1 marking.** Present and required on every payload of the
+	// `tier1` group, on the Scribe's `Proposal`, and on a note's
+	// `BacklinkList` — the generated *content* a client might render beside
+	// a note — under its own key, so a client that ignores it still cannot
+	// mistake the shape for a `Note`. It says who regenerates the content
+	// and carries the line the tier-1 pane renders.
+	//
+	// Two other payloads are built from tier-1 tables and deliberately do
+	// not carry it: the transcription report (`tier1.memo_jobs`) and the
+	// deferred list (`tier1.triage_holds`). Those are operational state
+	// about memos, not content anyone renders as a page; the marking is for
+	// the pane, not for every row the tier-1 role can reach.
+	//
+	// `tier` and `regenerable` are literals, not flags: there is no value a
+	// client could read as "this one is authored".
+	Generated Generated `json:"generated"`
+
+	// Items Oldest source note first.
+	Items []Backlink `json:"items"`
+
+	// NextCursor Absent at the end.
+	NextCursor *string `json:"next_cursor,omitempty"`
+}
+
 // BacklogReport defines model for BacklogReport.
 type BacklogReport struct {
 	Older            int        `json:"older"`
@@ -640,11 +683,11 @@ type Error struct {
 }
 
 // Generated **The tier-1 marking.** Present and required on every payload of the
-// `tier1` group and on the Scribe's `Proposal` — the generated *content*
-// a client might render beside a note — under its own key, so a client
-// that ignores it still cannot mistake the shape for a `Note`. It says
-// who regenerates the content and carries the line the tier-1 pane
-// renders.
+// `tier1` group, on the Scribe's `Proposal`, and on a note's
+// `BacklinkList` — the generated *content* a client might render beside
+// a note — under its own key, so a client that ignores it still cannot
+// mistake the shape for a `Note`. It says who regenerates the content
+// and carries the line the tier-1 pane renders.
 //
 // Two other payloads are built from tier-1 tables and deliberately do
 // not carry it: the transcription report (`tier1.memo_jobs`) and the
@@ -670,7 +713,8 @@ type Generated struct {
 
 	// Source Who regenerates it. `serv` is construct-server's wiki generator;
 	// `chronicle` is Chronicle deriving from its own corpus — the
-	// Scribe's proposals.
+	// Scribe's proposals, and the link graph a note's backlinks are
+	// read from.
 	Source GeneratedSource `json:"source"`
 	Tier   GeneratedTier   `json:"tier"`
 }
@@ -680,7 +724,8 @@ type GeneratedRegenerable bool
 
 // GeneratedSource Who regenerates it. `serv` is construct-server's wiki generator;
 // `chronicle` is Chronicle deriving from its own corpus — the
-// Scribe's proposals.
+// Scribe's proposals, and the link graph a note's backlinks are
+// read from.
 type GeneratedSource string
 
 // GeneratedTier defines model for Generated.Tier.
@@ -1059,11 +1104,11 @@ type Proposal struct {
 	Destination ProposalDestination `json:"destination"`
 
 	// Generated **The tier-1 marking.** Present and required on every payload of the
-	// `tier1` group and on the Scribe's `Proposal` — the generated *content*
-	// a client might render beside a note — under its own key, so a client
-	// that ignores it still cannot mistake the shape for a `Note`. It says
-	// who regenerates the content and carries the line the tier-1 pane
-	// renders.
+	// `tier1` group, on the Scribe's `Proposal`, and on a note's
+	// `BacklinkList` — the generated *content* a client might render beside
+	// a note — under its own key, so a client that ignores it still cannot
+	// mistake the shape for a `Note`. It says who regenerates the content
+	// and carries the line the tier-1 pane renders.
 	//
 	// Two other payloads are built from tier-1 tables and deliberately do
 	// not carry it: the transcription report (`tier1.memo_jobs`) and the
@@ -1579,11 +1624,11 @@ type Tier1Page struct {
 	Body string `json:"body"`
 
 	// Generated **The tier-1 marking.** Present and required on every payload of the
-	// `tier1` group and on the Scribe's `Proposal` — the generated *content*
-	// a client might render beside a note — under its own key, so a client
-	// that ignores it still cannot mistake the shape for a `Note`. It says
-	// who regenerates the content and carries the line the tier-1 pane
-	// renders.
+	// `tier1` group, on the Scribe's `Proposal`, and on a note's
+	// `BacklinkList` — the generated *content* a client might render beside
+	// a note — under its own key, so a client that ignores it still cannot
+	// mistake the shape for a `Note`. It says who regenerates the content
+	// and carries the line the tier-1 pane renders.
 	//
 	// Two other payloads are built from tier-1 tables and deliberately do
 	// not carry it: the transcription report (`tier1.memo_jobs`) and the
@@ -1608,11 +1653,11 @@ type Tier1Page struct {
 // Tier1PageList defines model for Tier1PageList.
 type Tier1PageList struct {
 	// Generated **The tier-1 marking.** Present and required on every payload of the
-	// `tier1` group and on the Scribe's `Proposal` — the generated *content*
-	// a client might render beside a note — under its own key, so a client
-	// that ignores it still cannot mistake the shape for a `Note`. It says
-	// who regenerates the content and carries the line the tier-1 pane
-	// renders.
+	// `tier1` group, on the Scribe's `Proposal`, and on a note's
+	// `BacklinkList` — the generated *content* a client might render beside
+	// a note — under its own key, so a client that ignores it still cannot
+	// mistake the shape for a `Note`. It says who regenerates the content
+	// and carries the line the tier-1 pane renders.
 	//
 	// Two other payloads are built from tier-1 tables and deliberately do
 	// not carry it: the transcription report (`tier1.memo_jobs`) and the
@@ -2003,6 +2048,21 @@ type GetNoteParams struct {
 	IfNoneMatch *string `json:"If-None-Match,omitempty"`
 }
 
+// ListNoteBacklinksParams defines parameters for ListNoteBacklinks.
+type ListNoteBacklinksParams struct {
+	// Limit How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch
+	// caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and
+	// the note and revision lists cap at 200 and say so by answering a
+	// `next_cursor` for the rest. A client asking for more than the cap gets
+	// the cap.
+	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor Opaque; the `next_cursor` of the previous page. Absent means the
+	// start. Never an offset: every list here is over an append-only table,
+	// and an offset silently repeats and skips rows as new ones land.
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
 // ListNoteRevisionsParams defines parameters for ListNoteRevisions.
 type ListNoteRevisionsParams struct {
 	// Limit How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch
@@ -2267,6 +2327,9 @@ type ServerInterface interface {
 	// GetNote A note, rendered, with the references its text names.
 	// (GET /notes/{ref})
 	GetNote(w http.ResponseWriter, r *http.Request, ref NoteRef, params GetNoteParams)
+	// ListNoteBacklinks The notes whose text names this one, resolved.
+	// (GET /notes/{ref}/backlinks)
+	ListNoteBacklinks(w http.ResponseWriter, r *http.Request, ref NoteRef, params ListNoteBacklinksParams)
 	// ListNoteRevisions A note's history, oldest first, with each revision's text.
 	// (GET /notes/{ref}/revisions)
 	ListNoteRevisions(w http.ResponseWriter, r *http.Request, ref NoteRef, params ListNoteRevisionsParams)
@@ -3075,6 +3138,61 @@ func (siw *ServerInterfaceWrapper) GetNote(w http.ResponseWriter, r *http.Reques
 	handler.ServeHTTP(w, r)
 }
 
+// ListNoteBacklinks operation middleware
+func (siw *ServerInterfaceWrapper) ListNoteBacklinks(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "ref" -------------
+	var ref NoteRef
+
+	err = runtime.BindStyledParameterWithOptions("simple", "ref", r.PathValue("ref"), &ref, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "ref", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListNoteBacklinksParams
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "cursor", r.URL.Query(), &params.Cursor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "cursor"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListNoteBacklinks(w, r, ref, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListNoteRevisions operation middleware
 func (siw *ServerInterfaceWrapper) ListNoteRevisions(w http.ResponseWriter, r *http.Request) {
 
@@ -3567,6 +3685,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/notes/{ref}", wrapper.GetNote)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/notes/{ref}/revisions", wrapper.ListNoteRevisions)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/notes/{ref}/revisions", wrapper.AppendRevision)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/notes/{ref}/backlinks", wrapper.ListNoteBacklinks)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/search", wrapper.Search)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/discussions", wrapper.ListDiscussions)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/discussions", wrapper.OpenDiscussion)

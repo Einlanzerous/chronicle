@@ -163,6 +163,19 @@ func TestNotesRoundTripThroughTheRealStore(t *testing.T) {
 	}
 	mustStatus(t, call(http.MethodGet, "/search?q=%21%21%21", "", owner), http.StatusBadRequest, "search")
 
+	// CHRN-105 over the real index: CHR-0001's text names CHR-0002 — which did
+	// not exist when the edge was extracted — and the list on CHR-0002 shows
+	// it, under the current title, resolved by tier 2 from tier1.note_links.
+	rec = call(http.MethodGet, "/notes/CHR-0002/backlinks", "", owner)
+	mustStatus(t, rec, http.StatusOK, "listNoteBacklinks")
+	back := decodeInto[wire.BacklinkList](t, rec)
+	if len(back.Items) != 1 || back.Items[0] != (wire.Backlink{Ref: "CHR-0001", Title: "Retention pruner", Page: "estate/conventions"}) {
+		t.Errorf("backlinks of CHR-0002 = %+v", back.Items)
+	}
+	if back.Generated.Source != wire.GeneratedSourceChronicle || back.Generated.Tier != wire.GeneratedTierOne {
+		t.Errorf("backlinks unmarked: %+v", back.Generated)
+	}
+
 	// CH041 IS REAL: the guard the 403 rests on refuses an agent confirmer at
 	// the store, whatever the handler checked first.
 	_, _, err := st.CreateNote(ctx, store.NewNote{
@@ -197,6 +210,14 @@ func TestNotesRoundTripThroughTheRealStore(t *testing.T) {
 	mustStatus(t, rec, http.StatusOK, "listNotes")
 	if l := decodeInto[wire.NoteList](t, rec); len(l.Items) != 0 {
 		t.Errorf("a deleted note is still listed: %+v", l.Items)
+	}
+	// And out of the backlink list it was the only entry of, by the store's
+	// join rather than by this handler.
+	mustStatus(t, call(http.MethodGet, "/notes/CHR-0001/backlinks", "", owner), http.StatusGone, "listNoteBacklinks")
+	rec = call(http.MethodGet, "/notes/CHR-0002/backlinks", "", owner)
+	mustStatus(t, rec, http.StatusOK, "listNoteBacklinks")
+	if back := decodeInto[wire.BacklinkList](t, rec); len(back.Items) != 0 {
+		t.Errorf("a deleted source is still a backlink: %+v", back.Items)
 	}
 
 	// Undelete, and the same URL answers 200 again.
