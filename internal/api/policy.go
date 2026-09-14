@@ -139,6 +139,7 @@ var routePolicy = map[string]policy{
 	"GET /notes/{ref}":            policyMember,
 	"GET /notes/{ref}/revisions":  policyMember,
 	"POST /notes/{ref}/revisions": policyMember,
+	"GET /notes/{ref}/backlinks":  policyMember,
 	// SEARCH SPANS EVERY AUTHOR'S TRANSCRIPTS, so owner rather than member --
 	// GET /admin/triage's reasoning, and the triage batch's: "a list that
 	// merely hides a memo is not access control." store.Search takes no actor

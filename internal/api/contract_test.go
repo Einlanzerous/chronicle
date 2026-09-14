@@ -401,13 +401,13 @@ func TestDocumentedOperations(t *testing.T) {
 		"deleteUser", "getDiscussion", "getHealthz", "getMe", "getNote", "getReadyz",
 		"getStorageReport", "getTier1Page", "getTranscriptionReport", "getTriageBatch",
 		"getTriageReport", "getUpload", "holdMemo", "listDeferred", "listDiscussions",
-		"listNoteRevisions", "listNotes", "listPages", "listSessions", "listTier1Pages",
+		"listNoteBacklinks", "listNoteRevisions", "listNotes", "listPages", "listSessions", "listTier1Pages",
 		"listUnread", "listUsers", "markRead", "openDiscussion", "openUpload", "releaseMemo",
 		"removeParticipant", "resolveDiscussion", "resolveReferences", "revokeSession",
 		"search", "updateMe",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Errorf("operations = %v, want %v.\nAll 46 routes are in the document now; a change here is a change to the surface.", got, want)
+		t.Errorf("operations = %v, want %v.\nAll 47 routes are in the document now; a change here is a change to the surface.", got, want)
 	}
 }
 
@@ -817,6 +817,7 @@ func TestEveryParameterBindingOperationRefusesAMalformedOne(t *testing.T) {
 		{"listNotes", http.MethodGet, "/notes?page=estate&limit=not-a-number", "owner-token", nil},
 		{"listNotes", http.MethodGet, "/notes", "owner-token", nil},
 		{"listNoteRevisions", http.MethodGet, "/notes/CHR-0311/revisions?limit=not-a-number", "owner-token", nil},
+		{"listNoteBacklinks", http.MethodGet, "/notes/CHR-0311/backlinks?limit=not-a-number", "owner-token", nil},
 		{"search", http.MethodGet, "/search?q=pruner&limit=not-a-number", "owner-token", nil},
 		{"search", http.MethodGet, "/search", "owner-token", nil},
 
@@ -1005,6 +1006,11 @@ func TestEveryResolutionFieldReachesTheDocument(t *testing.T) {
 		{"DiscussionSummary", store.Discussion{}, map[string]string{
 			"ID": "-", "Number": "ref", "PageID": "-", "Title": "title", "CreatedAt": "-",
 			"ResolvedAt": "resolved_at", "ResolvedBy": "-", "ResolvedNoteID": "-",
+		}, nil},
+		// CHRN-105: the id stays off the wire as on every note payload; the
+		// page id becomes the path it names, as Page's does.
+		{"Backlink", store.Backlink{}, map[string]string{
+			"NoteID": "-", "Number": "ref", "Title": "title", "PageID": "page",
 		}, nil},
 		{"SearchHit", store.SearchHit{}, map[string]string{
 			"Kind": "kind", "NoteID": "-", "Number": "ref", "Title": "title", "PageID": "-",

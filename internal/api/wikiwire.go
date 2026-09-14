@@ -36,6 +36,14 @@ func toNoteSummary(n store.Note, rev store.NoteRevision, path string) wire.NoteS
 	}
 }
 
+// toBacklink renders one source note beside the path it was reached by —
+// toPage's shape, for the same reason: the store's Backlink carries a page
+// id, and a path is computed at read time. The note id stays off the wire, as
+// it does on every other note payload; a client follows the ref.
+func toBacklink(b store.Backlink, path string) wire.Backlink {
+	return wire.Backlink{Ref: b.Ref(), Title: b.Title, Page: path}
+}
+
 func toRevisionMeta(rv store.NoteRevision) wire.RevisionMeta {
 	out := wire.RevisionMeta{
 		Id:           rv.ID,

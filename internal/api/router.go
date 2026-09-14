@@ -128,8 +128,9 @@ type Deps struct {
 	LocalReferences LocalReferences
 
 	// Wiki is E5's store, reachable (CHRN-98): pages, notes, revisions and
-	// search. Nil only on a router assembled without one, and the eight
-	// routes then answer 503 rather than dereferencing it.
+	// search, and a note's backlinks (CHRN-105). Nil only on a router
+	// assembled without one, and the nine routes then answer 503 rather than
+	// dereferencing it.
 	Wiki Wiki
 
 	// Threads is E6's store, reachable (CHRN-99). Nil only on a router

@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -36,6 +37,42 @@ func TestLinkingAToBMakesBShowA(t *testing.T) {
 	}
 	if len(out) != 1 || out[0].Target == nil || out[0].Target.NoteID != b.ID {
 		t.Errorf("outbound = %+v, want a resolved link to %s", out, b.ID)
+	}
+}
+
+// CHRN-105's premise, as a test rather than a sentence. CHRN-100 found that
+// tier1.note_links cannot be SERVED through the tier-1 pool because resolving
+// an edge to a ref and a title joins tier2.notes and tier2.note_revisions,
+// which chronicle_tier1 may not read. If that ever stops being true — a
+// widening of the role — this is where it shows, and the route's "nothing
+// here runs on the tier-1 pool" becomes a choice again rather than a fact.
+func TestTheTierOneRoleCannotResolveBacklinks(t *testing.T) {
+	s, ctx := newTestStore(t)
+	page, author := notePage(t, s, ctx, "tier1-backlinks@example.com")
+	b := mkNote(t, s, ctx, page, author, "Target", "pointed at")
+	mkNote(t, s, ctx, page, author, "Source", "see "+b.Ref())
+
+	pool := tier1Pool(t, ctx)
+	defer pool.Close()
+
+	// The raw edge is the role's to read: the row is tier 1.
+	var edges int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM tier1.note_links WHERE to_number = $1`, b.Number).Scan(&edges); err != nil {
+		t.Fatalf("chronicle_tier1 cannot read its own derived table: %v", err)
+	}
+	if edges != 1 {
+		t.Fatalf("edges = %d, want 1", edges)
+	}
+
+	// The resolution is not.
+	_, err := New(pool).Backlinks(ctx, b.Number)
+	if err == nil {
+		t.Fatal("chronicle_tier1 resolved a backlink list: it can now read tier2.notes and tier2.note_revisions, " +
+			"and the decision on CHRN-100 that put the route on the tier-2 pool rests on it not being able to")
+	}
+	if !strings.Contains(err.Error(), "permission denied") {
+		t.Errorf("refused for a reason other than privilege: %v", err)
 	}
 }
 

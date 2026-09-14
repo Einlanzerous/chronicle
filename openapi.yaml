@@ -1130,6 +1130,8 @@ paths:
         are the descriptors the scan produced, and nothing an upstream said
         about them — batch them to `POST /references/resolve` for cards. No
         upstream is dialled, which is what lets the `ETag` mean what it says.
+        What links *here* is `GET /notes/{ref}/backlinks`, a sibling rather
+        than a field, for the same reason: it changes when other notes do.
 
         The `ETag` is the current revision id. Send it back as `If-None-Match`
         and an unchanged note answers `304` with no body.
@@ -1241,6 +1243,58 @@ paths:
         "410": { $ref: "#/components/responses/Gone" }
         "413": { $ref: "#/components/responses/TooLarge" }
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/WikiUnconfigured" }
+
+  /notes/{ref}/backlinks:
+    get:
+      tags: [notes]
+      summary: The notes whose text names this one, resolved.
+      description: |
+        **Derived, and read by tier 2 from its own index.** `tier1.note_links`
+        is extracted from each note's current revision inside the transaction
+        that writes it (CHRN-42), so the graph is never stale with respect to
+        the text it came from; this route resolves those edges against
+        `tier2.notes` to a ref and a title, oldest note first. The payload
+        carries the `Generated` marking with `source: chronicle`, because the
+        list is regenerable and nobody authored it — delete every row and
+        `RebuildNoteLinks` puts them back.
+
+        **A sibling of `getNote` rather than a field on it, because of the
+        `ETag`.** A note's `ETag` is its current revision id, and it can mean
+        that only while nothing in the payload changes unless a revision is
+        appended. Backlinks change when *other* notes change. Folding them in
+        would make an unchanged note answer `304` with a stale link list, or
+        force the `ETag` to become a hash of the whole graph; neither is
+        honest, so they live here, uncached.
+
+        **Nothing here runs on the tier-1 pool.** The decision recorded on
+        CHRN-100 (2026-09-14) found that `chronicle_tier1` cannot resolve the
+        edges — it may not read `tier2.notes` or `tier2.note_revisions` — so a
+        read through that pool would be raw numbers with resolution left to
+        tier 2. The whole read is tier 2's, over the store the `notes` group
+        already holds; the row is tier 1 and the marking says so.
+
+        Paginated by cursor over the source note's number, which is minted once
+        and never reused. A soft-deleted source note drops out of the list; a
+        soft-deleted target answers `410` as `getNote` does.
+      operationId: listNoteBacklinks
+      x-chronicle-policy: member
+      parameters:
+        - $ref: "#/components/parameters/NoteRef"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: the notes that link here
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BacklinkList"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "410": { $ref: "#/components/responses/Gone" }
         "500": { $ref: "#/components/responses/InternalError" }
         "503": { $ref: "#/components/responses/WikiUnconfigured" }
 
@@ -3310,11 +3364,11 @@ components:
       type: object
       description: |
         **The tier-1 marking.** Present and required on every payload of the
-        `tier1` group and on the Scribe's `Proposal` — the generated *content*
-        a client might render beside a note — under its own key, so a client
-        that ignores it still cannot mistake the shape for a `Note`. It says
-        who regenerates the content and carries the line the tier-1 pane
-        renders.
+        `tier1` group, on the Scribe's `Proposal`, and on a note's
+        `BacklinkList` — the generated *content* a client might render beside
+        a note — under its own key, so a client that ignores it still cannot
+        mistake the shape for a `Note`. It says who regenerates the content
+        and carries the line the tier-1 pane renders.
 
         Two other payloads are built from tier-1 tables and deliberately do
         not carry it: the transcription report (`tier1.memo_jobs`) and the
@@ -3336,7 +3390,8 @@ components:
           description: |
             Who regenerates it. `serv` is construct-server's wiki generator;
             `chronicle` is Chronicle deriving from its own corpus — the
-            Scribe's proposals.
+            Scribe's proposals, and the link graph a note's backlinks are
+            read from.
         ref:
           type: string
           description: |
@@ -3463,6 +3518,45 @@ components:
         next_cursor:
           type: string
           description: Absent at the end.
+
+    Backlink:
+      type: object
+      description: |
+        One note whose current text names another — enough to render a row
+        in a "what links here" list and follow it. Resolved at read time
+        against `tier2.notes`, which is what makes a reference written before
+        its target existed start working on its own.
+      required: [ref, title, page]
+      properties:
+        ref:
+          type: string
+          description: "The source note's `CHR-0311`."
+        title:
+          type: string
+          description: The source note's current title.
+        page:
+          type: string
+          description: The path of the page the source note is filed on, current as of this read.
+
+    BacklinkList:
+      type: object
+      description: |
+        A note's backlinks, marked. `generated` is required here and on no
+        other payload of the `notes` group: the note itself is authored, and
+        the list of what points at it is derived.
+      required: [items, generated]
+      properties:
+        items:
+          type: array
+          description: Oldest source note first.
+          items:
+            $ref: "#/components/schemas/Backlink"
+          x-go-type-skip-optional-pointer: true
+        next_cursor:
+          type: string
+          description: Absent at the end.
+        generated:
+          $ref: "#/components/schemas/Generated"
 
     NewNoteRequest:
       type: object
