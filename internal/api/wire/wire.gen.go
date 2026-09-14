@@ -93,7 +93,6 @@ func (e ReadinessStatus) Valid() bool {
 const (
 	Complete   UploadStateStatus = "complete"
 	Incomplete UploadStateStatus = "incomplete"
-	Open       UploadStateStatus = "open"
 )
 
 // Valid indicates whether the value is a known member of the UploadStateStatus enum.
@@ -102,8 +101,6 @@ func (e UploadStateStatus) Valid() bool {
 	case Complete:
 		return true
 	case Incomplete:
-		return true
-	case Open:
 		return true
 	default:
 		return false
@@ -459,12 +456,26 @@ type UploadState struct {
 	Memo *Memo `json:"memo,omitempty"`
 
 	// Offset How many bytes the server holds. Send from here next.
-	Offset   int64             `json:"offset"`
+	Offset int64 `json:"offset"`
+
+	// Status `incomplete` — more bytes are expected, and `offset` says from
+	// where. `complete` — `memo` is set and there is no session left to
+	// name. There is no third member: a freshly opened session is
+	// `incomplete` with `offset: 0`, because "opened" and "opened and
+	// nothing received" are the same fact and a client that had to tell
+	// them apart would be switching on a distinction the server does not
+	// make.
 	Status   UploadStateStatus `json:"status"`
 	UploadId *string           `json:"upload_id,omitempty"`
 }
 
-// UploadStateStatus defines model for UploadState.Status.
+// UploadStateStatus `incomplete` — more bytes are expected, and `offset` says from
+// where. `complete` — `memo` is set and there is no session left to
+// name. There is no third member: a freshly opened session is
+// `incomplete` with `offset: 0`, because "opened" and "opened and
+// nothing received" are the same fact and a client that had to tell
+// them apart would be switching on a distinction the server does not
+// make.
 type UploadStateStatus string
 
 // User An account, as the wire carries it. It deliberately holds **no token

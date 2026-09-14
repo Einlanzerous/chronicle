@@ -566,13 +566,20 @@ paths:
     get:
       tags: [uploads]
       summary: Where this upload got to.
+      description: |
+        **This can finalise.** `Status` completes an upload whose bytes are all
+        present, which is what makes a client's "where did I get to" call safe
+        after a restart that landed the last chunk and died before committing —
+        and it means this read answers the same refusals the append does. A
+        client polling here needs the 409 and 422 branches as much as one
+        sending bytes.
       operationId: getUpload
       x-chronicle-policy: member
       parameters:
         - $ref: "#/components/parameters/UploadId"
       responses:
         "200":
-          description: the session's state
+          description: the session's state, or the memo if this call completed it
           headers:
             Upload-Offset: { $ref: "#/components/headers/UploadOffset" }
           content:
@@ -582,6 +589,8 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/UploadConflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
         "500": { $ref: "#/components/responses/InternalError" }
         "503": { $ref: "#/components/responses/UploadsUnconfigured" }
 
@@ -1313,7 +1322,15 @@ components:
       properties:
         status:
           type: string
-          enum: [open, incomplete, complete]
+          description: |
+            `incomplete` — more bytes are expected, and `offset` says from
+            where. `complete` — `memo` is set and there is no session left to
+            name. There is no third member: a freshly opened session is
+            `incomplete` with `offset: 0`, because "opened" and "opened and
+            nothing received" are the same fact and a client that had to tell
+            them apart would be switching on a distinction the server does not
+            make.
+          enum: [incomplete, complete]
         upload_id:
           type: string
         byte_size:

@@ -706,7 +706,7 @@ func TestSSOReusesTheSessionTheBrowserAlreadyHolds(t *testing.T) {
 		t.Errorf("minted %v; the browser's existing session should have been reused", f.mintedSessions)
 	}
 
-	apitest.Conform(t, "createSession", rec)
+	apitest.Conform(t, "createSessionFromAccess", rec)
 
 	var got wire.Session
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {

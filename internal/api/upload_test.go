@@ -549,7 +549,7 @@ func TestStatusReportsWhereToResume(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: %d", rec.Code)
 	}
-	got := decodeUpload(t, "openUpload", rec)
+	got := decodeUpload(t, "getUpload", rec)
 	if got.Offset != 640 || got.ByteSize != 1500 {
 		t.Fatalf("status reports offset %d of %d, want 640 of 1500", got.Offset, got.ByteSize)
 	}
