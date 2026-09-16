@@ -28,6 +28,12 @@ const pagePathsError = ref(false)
 const tier1Pages = ref<Tier1PageSummary[] | null>(null)
 const tier1PagesError = ref(false)
 const triageCount = ref<number | null>(null)
+// The DISCUSSIONS row's own badge (CHRN-57). Not on the canvas -- named as a
+// deliberate addition in the PR -- but a thread has to be REACHABLE from
+// somewhere, and `listUnread` (openapi.yaml) exists for exactly this: "the
+// badge -- every thread this account has something unread in." Degrades to
+// no badge on a failed read, the same shape as the TRIAGE count beside it.
+const discussionsUnreadCount = ref<number | null>(null)
 
 // Provided so `/app/pages/` (no path -- "the root page list") can render
 // the tree's own roots without a second GET /pages: the shell already holds
@@ -75,6 +81,17 @@ onMounted(() => {
     .GET('/triage/batch')
     .then((res) => {
       if (res.data) triageCount.value = res.data.items.length
+    })
+    .catch(() => {})
+
+  // Account-wide and needs no page (openapi.yaml: "Removed participants are
+  // excluded... An agent gets an empty list"), so one read per session is
+  // the whole of it -- same independent-read shape as the two above, a
+  // failure here just means no badge.
+  api
+    .GET('/discussions/unread')
+    .then((res) => {
+      if (res.data) discussionsUnreadCount.value = res.data.items.length
     })
     .catch(() => {})
 })
@@ -146,6 +163,17 @@ const triageCountTitle = computed(() =>
           :title="triageCountTitle"
           >{{ triageCount }}</span
         >
+      </RouterLink>
+
+      <!-- CHRN-57: not on the canvas -- see the ticket comment -- placed and
+           treated exactly like TRIAGE above it (same badge shape, same
+           active/hover states) because a thread otherwise has no way into
+           the shell at all. -->
+      <RouterLink to="/discussions" class="ch-shell-triage" active-class="is-active">
+        <span class="ch-shell-triage-label">DISCUSSIONS</span>
+        <span v-if="discussionsUnreadCount !== null" class="ch-shell-triage-count">{{
+          discussionsUnreadCount
+        }}</span>
       </RouterLink>
 
       <nav class="ch-shell-section" aria-label="Tier 2, authored">

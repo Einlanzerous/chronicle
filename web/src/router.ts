@@ -4,6 +4,7 @@ import PageTreeView from './views/PageTreeView.vue'
 import Tier1PageView from './views/Tier1PageView.vue'
 import SearchView from './views/SearchView.vue'
 import NoteView from './views/NoteView.vue'
+import DiscussionsListView from './views/DiscussionsListView.vue'
 import DiscussionView from './views/DiscussionView.vue'
 import TriageView from './views/TriageView.vue'
 import AccountView from './views/AccountView.vue'
@@ -36,6 +37,11 @@ export const router = createRouter({
         // CHRN-56/57/55/106 build these; each is a minimal placeholder
         // inside the shell for now, named after the ticket that owns it.
         { path: 'notes/:ref', name: 'note', component: NoteView },
+        // CHRN-57: the DISCUSSIONS sidebar row links to the bare 'discussions'
+        // list; 'discussions/:ref' is a thread. Order matters only in that
+        // the exact path must be registered -- vue-router does not treat
+        // 'discussions' as matching ':ref' of the row below it.
+        { path: 'discussions', name: 'discussions', component: DiscussionsListView },
         { path: 'discussions/:ref', name: 'discussion', component: DiscussionView },
         { path: 'triage', name: 'triage', component: TriageView },
         { path: 'account', name: 'account', component: AccountView },
