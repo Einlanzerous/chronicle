@@ -52,16 +52,35 @@
   --ch-font-mono: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', monospace;
   --ch-font-serif: 'Newsreader Variable', Georgia, serif;
 
-  /* NAMED DEFERRAL, not an oversight (flagged in review on CHRN-53's PR):
-   * the canvas has no discrete type or spacing SCALE to extract -- its
-   * mockup carries ~26 distinct one-off font sizes across the boards
-   * (9px through 52px, no clean step pattern), which is a prototype's
-   * freeform sizing, not a designed set of steps. Colour had exactly ten
-   * reused values because CHRN-54's table names them; type and spacing have
-   * no equivalent table, so inventing a scale here would be deciding a
-   * design question this ticket does not settle rather than transcribing
-   * one it does. The three families above ARE the type scale CHRN-54's own
-   * description and Done-when ask for. A real size/spacing scale is a
-   * decision for whichever ticket builds the first real screen and can see
-   * what sizes it actually needs. */
+  /* Type and spacing scale (CHRN-58, carrying forward CHRN-54's NAMED
+   * DEFERRAL above): CHRN-54 found no discrete scale to extract from the
+   * canvas -- a prototype's freeform sizing, ~26 one-off sizes with no clean
+   * steps -- and left the decision to "whichever ticket builds the first
+   * real screen and can see what sizes it actually needs." CHRN-58 is that
+   * screen: board 1c's sidebar, page tree, tier-1 pane and search reuse a
+   * small set of sizes over and over (a tree row is 13px everywhere; every
+   * mono section label -- TIER 2 · AUTHORED, TIER 1 · GENERATED, READ ONLY
+   * -- is 9.5px at a wide 0.16em track; the section-to-section gap in the
+   * sidebar is 18px three times over), so THIS is the scale read off it --
+   * not the full ~26-value inventory, only what repeats. It is deliberately
+   * short and named as a scale that MAY GROW: the next screen that needs a
+   * size not here adds it, rather than reaching for a bare pixel value.
+   * Values that appear once in the canvas (h2 sizes, which differ board to
+   * board -- 30px/36px/38px -- and the READ ONLY body copy's 12px) stay
+   * literal; tokenising a one-off buys nothing scripts/check-tokens.sh would
+   * catch, because that guard is for colour, not size. */
+  --ch-size-2xs: 9.5px; /* micro mono labels: TIER 2/TIER 1 headers, READ ONLY stamp, wordmark tagline */
+  --ch-size-xs: 10.5px; /* meta captions: breadcrumb, timestamps, account email, moved-page notice */
+  --ch-size-sm: 11.5px; /* sidebar wordmark text, tier-1 tree items, TRIAGE label, search source labels */
+  --ch-size-body: 13px; /* tree rows and list rows -- the sidebar's and the page view's own text size */
+  --ch-size-md: 14.5px; /* row titles: account display name, a list row's primary text */
+  --ch-size-base: 15px; /* body copy baseline; also base.css's default */
+
+  --ch-track-wide: 0.16em; /* loud mono micro-labels: section headers, TRIAGE, READ ONLY */
+  --ch-track-mid: 0.08em; /* meta mono captions: breadcrumb separators, timestamps */
+
+  --ch-space-1: 7px; /* tight gaps: a tree row's own vertical padding, icon-to-label */
+  --ch-space-2: 10px; /* row-internal gaps: the search box, the TRIAGE row */
+  --ch-space-3: 16px; /* sidebar horizontal rhythm: padding, section indent */
+  --ch-space-4: 18px; /* section breaks: the border-top gap between sidebar groups */
 }
