@@ -57,6 +57,29 @@ func TestHandlerFSFallsBackToIndexForDeepLinks(t *testing.T) {
 	}
 }
 
+// TestHandlerFSFallsBackToIndexForADirectory is CHRN-53's review fix: a bare
+// directory (e.g. /app/assets/) exists in the bundle, so a naive existence
+// check would hand it to http.FileServer, which answers a directory
+// listing -- a second, undocumented response from a handler whose contract
+// is "a file, or index.html". fs.Stat + IsDir in HandlerFS routes it to the
+// SPA fallback instead, same as any other path with no file behind it.
+func TestHandlerFSFallsBackToIndexForADirectory(t *testing.T) {
+	root := fstest.MapFS{
+		"index.html":             {Data: []byte("<!doctype html><title>t</title>")},
+		"assets/index-abc123.js": {Data: []byte("console.log(1)")},
+	}
+	h := HandlerFS(root)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/app/assets/", nil))
+	if rec.Code != 200 {
+		t.Fatalf("GET /app/assets/ = %d, want 200", rec.Code)
+	}
+	if rec.Body.String() != "<!doctype html><title>t</title>" {
+		t.Errorf("body = %q, want index.html's content, not a directory listing", rec.Body.String())
+	}
+}
+
 // TestHandlerFSAnswersNotBuiltWhenOnlyThePlaceholderExists is the fallback
 // the checked-in dist/.gitkeep exercises for real: an fs.FS with no
 // index.html at all, which is exactly what CI's Go job compiles against,

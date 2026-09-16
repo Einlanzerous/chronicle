@@ -19,15 +19,20 @@ export const currentUser = ref<User | null>(null)
 // Resolved once, from main.ts, before the app mounts:
 //
 //   1. GET /auth/me. A 200 means the cookie is still good.
-//   2. On 401, try the Cloudflare Access exchange
-//      (POST /auth/sso/cloudflare): the tunnel may have injected a verified
-//      identity Chronicle has not yet turned into a session, and this is
-//      the same call the browser would make on any cold load.
-//   3. A SECOND 401 means there is truly nobody signed in and no way to
-//      become somebody without a person present, so this routes to a
-//      placeholder sign-in view rather than leaving the app to fail every
-//      later request one at a time. CHRN-106 owns what that screen actually
-//      looks like; this is only the fork in the road.
+//   2. ANYTHING ELSE -- 401 (no session, or an expired one), 403 (the
+//      Access assertion verified but named an email no account holds,
+//      openapi.yaml's `createSessionFromAccess`), 429, 500 -- try the
+//      Cloudflare Access exchange (POST /auth/sso/cloudflare): the tunnel
+//      may have injected a verified identity Chronicle has not yet turned
+//      into a session, and this is the same call the browser would make on
+//      any cold load. Every one of those statuses means "not signed in
+//      right now", and none of them is actionable here -- there is no
+//      retry or backoff to attempt before falling through to step 3.
+//   3. Still no session after that means there is truly nobody signed in
+//      and no way to become somebody without a person present, so this
+//      routes to a placeholder sign-in view rather than leaving the app to
+//      fail every later request one at a time. CHRN-106 owns what that
+//      screen actually looks like; this is only the fork in the road.
 export async function resolveSession(router: Router): Promise<User | null> {
   const me = await api.GET('/auth/me')
   if (me.data) {

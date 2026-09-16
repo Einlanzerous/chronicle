@@ -68,9 +68,13 @@ func HandlerFS(root fs.FS) http.Handler {
 			serveIndex(w, root)
 			return
 		}
-		// Serve the file if it exists in the bundle; otherwise SPA-fallback.
-		if f, err := root.Open(clean); err == nil {
-			_ = f.Close()
+		// Serve the file if it exists in the bundle AND is not a directory --
+		// otherwise SPA-fallback. Checking existence alone let a request for a
+		// bare directory (e.g. /app/assets/) through to http.FileServer, which
+		// answers a directory listing rather than the documented index
+		// fallback; fs.Stat + IsDir catches that case too. Caught in review
+		// before merge; see the CHRN-53 ticket comment.
+		if info, err := fs.Stat(root, clean); err == nil && !info.IsDir() {
 			fileServer.ServeHTTP(w, r)
 			return
 		}

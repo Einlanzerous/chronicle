@@ -15,8 +15,12 @@
 # The regex is deliberately simple, per CHRN-54: `#` followed by 3-8 hex
 # digits, word-bounded so it does not partially match into a longer token.
 # The one false positive worth naming is a same-page URL fragment that
-# happens to look hex -- `href="#fff"` -- filtered below by shape rather than
-# by a smarter regex.
+# happens to look hex -- `href="#fff"` -- filtered below BY ATTRIBUTE
+# (href / xlink:href only), not by shape: an earlier version filtered any
+# `="#…"`, which also swallowed every SVG presentation attribute --
+# `fill="#e2623d"`, `stroke="…"`, `stop-color="…"` -- exactly the shape
+# Mark.vue's own colour would take if it ever hardcoded one. Caught in
+# review before merge; see the CHRN-54 ticket comment.
 set -uo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -24,10 +28,10 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 HEX_RE='#[0-9a-fA-F]{3,8}\b'
 
 matches="$(grep -rnE "$HEX_RE" web/src \
-  --include='*.vue' --include='*.ts' --include='*.css' \
+  --include='*.vue' --include='*.ts' --include='*.css' --include='*.svg' --include='*.js' \
   | grep -v '^web/src/styles/tokens\.css:' \
   | grep -v '^web/src/api/schema\.d\.ts:' \
-  | grep -vE '="#[0-9a-fA-F]{3,8}"' \
+  | grep -vE '(href|xlink:href)="#[0-9a-fA-F]{3,8}"' \
   || true)"
 
 if [ -n "$matches" ]; then

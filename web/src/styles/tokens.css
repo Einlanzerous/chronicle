@@ -51,4 +51,17 @@
   --ch-font-sans: 'Hanken Grotesk Variable', system-ui, sans-serif;
   --ch-font-mono: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', monospace;
   --ch-font-serif: 'Newsreader Variable', Georgia, serif;
+
+  /* NAMED DEFERRAL, not an oversight (flagged in review on CHRN-53's PR):
+   * the canvas has no discrete type or spacing SCALE to extract -- its
+   * mockup carries ~26 distinct one-off font sizes across the boards
+   * (9px through 52px, no clean step pattern), which is a prototype's
+   * freeform sizing, not a designed set of steps. Colour had exactly ten
+   * reused values because CHRN-54's table names them; type and spacing have
+   * no equivalent table, so inventing a scale here would be deciding a
+   * design question this ticket does not settle rather than transcribing
+   * one it does. The three families above ARE the type scale CHRN-54's own
+   * description and Done-when ask for. A real size/spacing scale is a
+   * decision for whichever ticket builds the first real screen and can see
+   * what sizes it actually needs. */
 }
