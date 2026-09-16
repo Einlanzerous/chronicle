@@ -116,6 +116,26 @@ apiwire_check() {
   return "$rc"
 }
 
+# web/src/api/schema.d.ts is GENERATED from openapi.yaml too -- the web
+# client's own end of the same contract (CHRN-53), openapi-typescript's
+# reading of it rather than oapi-codegen's. Same guard, same shape as
+# apiwire_check above: regenerated to a TEMPORARY FILE and byte-compared, so
+# the check never rewrites what it is checking.
+webapi_check() {
+  local tmp rc=0
+  tmp="$(mktemp -t webapi.XXXXXX.d.ts)"
+  # shellcheck disable=SC2064
+  trap "rm -f '$tmp'" RETURN
+  GEN_WEBAPI_OUT="$tmp" scripts/gen-webapi.sh >/dev/null || return 1
+  if ! diff -q "$tmp" web/src/api/schema.d.ts >/dev/null; then
+    echo "web/src/api/schema.d.ts does not match openapi.yaml."
+    diff -u web/src/api/schema.d.ts "$tmp" | head -40
+    echo "Run scripts/gen-webapi.sh and commit the result."
+    rc=1
+  fi
+  return "$rc"
+}
+
 # asr/ is a SUBTREE with a sealed boundary (docs/decisions/chrn-82-asr-subtree-
 # and-publish.md, section 2): nothing under it imports anything else in this
 # module, so that `git filter-repo --subdirectory-filter asr` yields a
@@ -148,6 +168,20 @@ step "build"        go build ./...
 step "asr client"   asrclient_check
 step "api types"    apiwire_check
 step "asr boundary" asr_boundary_check
+
+# web/ (CHRN-53, CHRN-54): the app skeleton and its design tokens. Skipped
+# with a NOTE when bun is not on PATH, the same shape the database NOTEs
+# below use -- these four need bun, not hardware, but the principle (an
+# absent dependency is announced, not silently green) is the same.
+if command -v bun >/dev/null 2>&1; then
+  step "web typecheck" bash -c 'cd web && bun install --frozen-lockfile >/dev/null && bun run typecheck'
+  step "web build"     bash -c 'cd web && bun install --frozen-lockfile >/dev/null && bun run build'
+  step "web api types" webapi_check
+  step "tokens"        scripts/check-tokens.sh
+else
+  printf '\nNOTE: bun not on PATH — web typecheck/web build/web api types/tokens steps were skipped.\n'
+fi
+
 # -p 1: ONE TEST BINARY AT A TIME.
 #
 # `go test ./...` runs packages in parallel by default, and more than one

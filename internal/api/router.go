@@ -19,6 +19,7 @@ import (
 	"github.com/Einlanzerous/chronicle/internal/resolve"
 	"github.com/Einlanzerous/chronicle/internal/store"
 	"github.com/Einlanzerous/chronicle/internal/upload"
+	"github.com/Einlanzerous/chronicle/web"
 )
 
 // Pinger is the slice of the store the readiness probe needs. An interface so
@@ -156,6 +157,14 @@ type Deps struct {
 	// the same instant the resolver's own clock gives the upstream half — a
 	// response should not carry two clocks.
 	Now func() time.Time
+
+	// Web is the embedded SPA handler (CHRN-53). Nil uses the production
+	// bundle, web.Handler(). A test substitutes a small fs.FS-backed fixture
+	// (web.HandlerFS) here so the router's WIRING — the redirect, the /app/
+	// mount, the API keeping the root — is provable without a real bun
+	// build, which the CI Go job (build, vet, test) deliberately does not
+	// run: the compiled-in dist/ there is only the checked-in placeholder.
+	Web http.Handler
 }
 
 // api holds what the handlers share.
@@ -279,14 +288,37 @@ func NewRouter(d Deps) http.Handler {
 		ErrorHandlerFunc: bindError(d.Logger),
 	})
 
+	// The web app (CHRN-53), mounted directly on the mux — NOT on routed, i.e.
+	// outside policyRouter. Every route above carries a credential
+	// policy.go declares for it (see "NOTHING IS HAND-REGISTERED ANY MORE"
+	// below); this one is the deliberate exception, because it is not an
+	// OPERATION in the sense that comment means. It serves files, takes no
+	// credential and returns no API payload, so there is nothing for the
+	// policy table to say about it. The API still owns the root — GET
+	// /notes/{ref} is JSON — so the app's own client routes live under
+	// /app/, and GET / only redirects there. Go 1.22's mux prefers the more
+	// specific pattern, so a documented route under a different prefix is
+	// never shadowed by this catch-all.
+	webHandler := d.Web
+	if webHandler == nil {
+		webHandler = web.Handler()
+	}
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/app/", http.StatusFound)
+	})
+	mux.Handle("/app/", webHandler)
+
 	if d.Accounts == nil {
 		return requestLogger(d.Logger, mux)
 	}
 
-	// NOTHING IS HAND-REGISTERED ANY MORE. Every route this service serves is
-	// in openapi.yaml, was registered above by the generator, and carries the
-	// credential policy.go declares for it — which is what CHRN-97 set out to
-	// make true and what the four guards keep true.
+	// NOTHING IS HAND-REGISTERED ANY MORE, WITH ONE EXCEPTION ABOVE. Every
+	// API route this service serves is in openapi.yaml, was registered above
+	// by the generator, and carries the credential policy.go declares for it
+	// — which is what CHRN-97 set out to make true and what the four guards
+	// keep true. The SPA mount above is not a second source of hand-written
+	// routes in that sense: it is a static catch-all, not an operation, and
+	// CHRN-53's decision comment is where that distinction is written down.
 	//
 	// The mux is still built here rather than by wire.Handler so that
 	// requestLogger wraps it, and so that a route added to the document

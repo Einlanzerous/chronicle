@@ -24,3 +24,11 @@ coverage.*
 # from the `real` stratum is corpus-adjacent, and tier 2 does not go in git
 # (CHRN-36 §1). Ignored so committing one needs a deliberate -f.
 *.eval.json
+
+# The web app (CHRN-53). node_modules is reproducible from web/bun.lock; the
+# built bundle is reproducible from `bun run build` and is what deploy/
+# Dockerfile's web stage produces before `go build` embeds it. Only the
+# placeholder that makes //go:embed always resolve is checked in.
+web/node_modules
+web/dist/*
+!web/dist/.gitkeep

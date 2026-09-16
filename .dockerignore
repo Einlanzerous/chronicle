@@ -15,6 +15,16 @@
 *.test
 coverage.*
 
+# The web app's host-installed deps and build output (CHRN-53), already in
+# .gitignore. deploy/Dockerfile's web stage runs `bun install
+# --frozen-lockfile` and then `COPY web/ ./` on top of it -- without this, a
+# developer who has run `bun install` or `bun run build` locally gets their
+# HOST's node_modules or dist copied into the context, silently overwriting
+# the container's own reproducible install (the same LYCM-71 failure mode
+# Lyceum's .dockerignore guards against).
+web/node_modules
+web/dist
+
 # History. Neither image reads it: the build identity comes in as VERSION and
 # GIT_SHA build args, precisely so an image cannot claim a version from a tree
 # it was not built from.
