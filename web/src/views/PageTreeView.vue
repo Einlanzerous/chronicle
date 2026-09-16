@@ -10,7 +10,7 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { buildPageTree, formatMovedNotice } from '@/lib/pageTree'
 import { formatTimestamp } from '@/lib/format'
 import { api } from '@/api/client'
-import { PAGE_PATHS_KEY } from '@/layouts/shellData'
+import { PAGE_PATHS_ERROR_KEY, PAGE_PATHS_KEY } from '@/layouts/shellData'
 import type { components } from '@/api/schema.d.ts'
 
 type NoteSummary = components['schemas']['NoteSummary']
@@ -19,6 +19,7 @@ const route = useRoute()
 const router = useRouter()
 
 const pagePaths = inject(PAGE_PATHS_KEY, ref<string[] | null>(null))
+const pagePathsError = inject(PAGE_PATHS_ERROR_KEY, ref(false))
 const rootPages = computed(() => buildPageTree(pagePaths.value ?? []))
 
 const path = computed(() => {
@@ -37,12 +38,19 @@ const movedNotice = ref<string | null>(null)
 // already has for the canonical path that replace navigates to.
 let skipNextLoad = false
 
+// Bumped on every load and captured per-request, so a slower answer to an
+// earlier path cannot land after a faster answer to a later one and show
+// stale notes under the new breadcrumb (two sidebar rows clicked quickly).
+let loadSeq = 0
+
 async function loadNotes(requestedPath: string): Promise<void> {
+  const seq = ++loadSeq
   loading.value = true
   notFound.value = false
   errorMessage.value = null
   movedNotice.value = null
   const res = await api.GET('/notes', { params: { query: { page: requestedPath } } })
+  if (seq !== loadSeq) return // superseded by a later request
   loading.value = false
   if (res.data) {
     notes.value = res.data.items
@@ -82,7 +90,8 @@ const breadcrumbSegments = computed(() => (path.value ? path.value.split('/') : 
     <template v-if="!path">
       <div class="ch-page-breadcrumb">pages</div>
       <h1 class="ch-page-heading">Pages</h1>
-      <p v-if="rootPages.length === 0" class="ch-page-empty">No pages yet.</p>
+      <p v-if="pagePathsError" class="ch-page-empty">The corpus could not be read.</p>
+      <p v-else-if="rootPages.length === 0" class="ch-page-empty">No pages yet.</p>
       <ul v-else class="ch-page-root-list">
         <li v-for="node in rootPages" :key="node.path">
           <RouterLink :to="`/pages/${node.path}`" class="ch-page-root-link">{{

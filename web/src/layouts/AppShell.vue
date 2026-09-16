@@ -12,7 +12,7 @@ import Mark from '@/components/Mark.vue'
 import { api } from '@/api/client'
 import { currentUser } from '@/auth'
 import { buildPageTree, flattenPageTree } from '@/lib/pageTree'
-import { PAGE_PATHS_KEY } from './shellData'
+import { PAGE_PATHS_ERROR_KEY, PAGE_PATHS_KEY } from './shellData'
 import type { components } from '@/api/schema.d.ts'
 
 type Tier1PageSummary = components['schemas']['Tier1PageSummary']
@@ -24,18 +24,59 @@ const router = useRouter()
 // route -- see router.ts -- so this is once per signed-in session, not
 // once per page view).
 const pagePaths = ref<string[] | null>(null)
+const pagePathsError = ref(false)
 const tier1Pages = ref<Tier1PageSummary[] | null>(null)
+const tier1PagesError = ref(false)
+const triageCount = ref<number | null>(null)
 
 // Provided so `/app/pages/` (no path -- "the root page list") can render
 // the tree's own roots without a second GET /pages: the shell already holds
 // it for the session, and listPages is the whole corpus in one unpaginated
-// call (openapi.yaml: "a few hundred pages at most").
+// call (openapi.yaml: "a few hundred pages at most"). The error flag rides
+// along so that view can tell "the corpus really is empty" from "the read
+// failed" -- an empty tree and a failed read look identical from `paths`
+// alone, and only one of them is honestly "no pages yet".
 provide(PAGE_PATHS_KEY, pagePaths)
+provide(PAGE_PATHS_ERROR_KEY, pagePathsError)
 
-onMounted(async () => {
-  const [pages, tier1] = await Promise.all([api.GET('/pages'), api.GET('/tier1/pages')])
-  if (pages.data) pagePaths.value = pages.data.paths
-  if (tier1.data) tier1Pages.value = tier1.data.items
+// Three independent reads, each with its own success/failure handling --
+// not a single Promise.all, so one failing (or the backend being
+// unreachable, which openapi-fetch surfaces as a throw rather than an
+// {error}, same as main.ts's resolveSession) does not also blank the other
+// two, and does not surface as an unhandled rejection either.
+onMounted(() => {
+  api
+    .GET('/pages')
+    .then((res) => {
+      if (res.data) pagePaths.value = res.data.paths
+      else pagePathsError.value = true
+    })
+    .catch(() => {
+      pagePathsError.value = true
+    })
+
+  api
+    .GET('/tier1/pages')
+    .then((res) => {
+      if (res.data) tier1Pages.value = res.data.items
+      else tier1PagesError.value = true
+    })
+    .catch(() => {
+      tier1PagesError.value = true
+    })
+
+  // The TRIAGE row's count badge -- "the batch size" (CHRN-58's ticket
+  // comment), which is exactly items.length from one getTriageBatch call
+  // (DefaultLimit == MaxLimit == 25, internal/triage/triage.go), made once
+  // per session alongside the two reads above. A failure here just means no
+  // badge, not a blank sidebar -- it is not asserting a fact the way an
+  // empty tree would.
+  api
+    .GET('/triage/batch')
+    .then((res) => {
+      if (res.data) triageCount.value = res.data.items.length
+    })
+    .catch(() => {})
 })
 
 const pageTreeRows = computed(() =>
@@ -53,14 +94,6 @@ function currentTier1Path(): string {
   const raw = route.params.pathMatch
   return Array.isArray(raw) ? raw.filter(Boolean).join('/') : (raw ?? '')
 }
-
-// NOTE (decision, recorded in the CHRN-58 completion comment): the TRIAGE
-// row draws no count badge. `getTriageBatch` is not a cheap "how many are
-// pending" call -- it has no total/count field, only `items` (each one
-// carrying a full excerpt and proposal) capped by `limit`, and `limit`'s
-// minimum is 1, so there is no way to ask it for a count without paying for
-// a batch of proposal payloads on every sidebar mount, on every route. The
-// ticket names this exact fallback: render the row without a badge.
 
 const searchInput = ref(typeof route.query.q === 'string' ? route.query.q : '')
 watch(
@@ -98,10 +131,12 @@ function submitSearch(): void {
 
       <RouterLink to="/triage" class="ch-shell-triage" active-class="is-active">
         <span class="ch-shell-triage-label">TRIAGE</span>
+        <span v-if="triageCount !== null" class="ch-shell-triage-count">{{ triageCount }}</span>
       </RouterLink>
 
       <nav class="ch-shell-section" aria-label="Tier 2, authored">
         <div class="ch-shell-section-label ch-shell-section-label--tier2">TIER 2 · AUTHORED</div>
+        <p v-if="pagePathsError" class="ch-shell-section-error">Could not load.</p>
         <RouterLink
           v-for="node in pageTreeRows"
           :key="node.path"
@@ -119,6 +154,7 @@ function submitSearch(): void {
           <span class="ch-shell-tier1-dot" aria-hidden="true"></span>
           TIER 1 · GENERATED
         </div>
+        <p v-if="tier1PagesError" class="ch-shell-section-error">Could not load.</p>
         <RouterLink
           v-for="page in tier1Pages ?? []"
           :key="page.path"
@@ -218,6 +254,7 @@ function submitSearch(): void {
 .ch-shell-triage {
   display: flex;
   align-items: center;
+  gap: var(--ch-space-2);
   margin: 0 var(--ch-space-3) var(--ch-space-4);
   padding: var(--ch-space-1) 10px;
   border-left: 2px solid transparent;
@@ -235,6 +272,16 @@ function submitSearch(): void {
   font-size: var(--ch-size-sm);
   letter-spacing: var(--ch-track-wide);
   color: var(--ch-text);
+}
+
+.ch-shell-triage-count {
+  margin-left: auto;
+  font-family: var(--ch-font-mono);
+  font-size: var(--ch-size-xs);
+  font-weight: 600;
+  color: var(--ch-base);
+  background: var(--ch-signal);
+  padding: 1px 6px;
 }
 
 .ch-shell-section {
@@ -264,6 +311,13 @@ function submitSearch(): void {
   align-items: center;
   gap: 8px;
   color: var(--ch-generated);
+}
+
+.ch-shell-section-error {
+  margin: 0;
+  padding: 0 var(--ch-space-3) var(--ch-space-1);
+  font-size: var(--ch-size-xs);
+  color: var(--ch-text-meta);
 }
 
 .ch-shell-tier1-dot {

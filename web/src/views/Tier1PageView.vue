@@ -22,7 +22,13 @@ const path = computed(() => {
   return Array.isArray(raw) ? raw.filter(Boolean).join('/') : (raw ?? '')
 })
 
+// Bumped on every load and captured per-request, so a slower answer to an
+// earlier path cannot land after a faster one and show the wrong page under
+// the sidebar's currently-highlighted tier-1 row (two rows clicked quickly).
+let loadSeq = 0
+
 async function load(): Promise<void> {
+  const seq = ++loadSeq
   page.value = null
   error.value = null
   if (!path.value) {
@@ -32,6 +38,7 @@ async function load(): Promise<void> {
   }
   loading.value = true
   const res = await api.GET('/tier1/page', { params: { query: { path: path.value } } })
+  if (seq !== loadSeq) return // superseded by a later request
   loading.value = false
   if (res.data) {
     page.value = res.data

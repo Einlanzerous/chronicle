@@ -23,13 +23,21 @@ const loading = ref(false)
 const forbidden = ref(false)
 const errorMessage = ref<string | null>(null)
 
+// Bumped on every search and captured per-request, so a slower answer to an
+// earlier query cannot land after a faster answer to a later one and show
+// the wrong results under the current query string (typing "pruner", then
+// "amber" before the first answers).
+let searchSeq = 0
+
 async function runSearch(q: string): Promise<void> {
+  const seq = ++searchSeq
   hits.value = null
   forbidden.value = false
   errorMessage.value = null
   if (!q) return
   loading.value = true
   const res = await api.GET('/search', { params: { query: { q } } })
+  if (seq !== searchSeq) return // superseded by a later search
   loading.value = false
   if (res.data) {
     hits.value = res.data.items
@@ -44,7 +52,18 @@ async function runSearch(q: string): Promise<void> {
 
 watch(query, runSearch, { immediate: true })
 
-const rows = computed(() => (hits.value ?? []).map((hit) => ({ hit, source: describeSearchHit(hit) })))
+// A note hit's ref and a transcript hit's memo_id are each unique on their
+// own kind (SearchHit's own doc: the two field sets are mutually
+// exclusive), so kind plus whichever identity the hit carries is unique
+// across the whole result list -- unlike the label, which two transcripts
+// landing in the same minute can share (formatTimestamp truncates to it).
+const rows = computed(() =>
+  (hits.value ?? []).map((hit) => ({
+    hit,
+    source: describeSearchHit(hit),
+    key: `${hit.kind}-${hit.ref ?? hit.memo_id}`,
+  })),
+)
 </script>
 
 <template>
@@ -53,8 +72,9 @@ const rows = computed(() => (hits.value ?? []).map((hit) => ({ hit, source: desc
     <p class="ch-search-query" v-if="query">for “{{ query }}”</p>
 
     <!-- search is owner-only in the contract (x-chronicle-policy: owner) --
-         the box stays visible and this explains the 403 rather than
-         hiding it, per the CHRN-58 ticket comment. -->
+         the ticket comment names the 403 as a constraint and leaves the
+         choice open ("decide whether the box hides or explains"); this PR
+         explains rather than hides, and the box stays visible either way. -->
     <p v-if="forbidden" class="ch-search-forbidden">
       Search spans every author's transcripts, so it is owner-only.
     </p>
@@ -63,7 +83,7 @@ const rows = computed(() => (hits.value ?? []).map((hit) => ({ hit, source: desc
     <p v-else-if="query && rows.length === 0" class="ch-search-status">No results.</p>
 
     <ul v-else-if="rows.length > 0" class="ch-search-results">
-      <li v-for="{ hit, source } in rows" :key="`${source.kind}-${source.label}`" class="ch-search-row">
+      <li v-for="{ hit, source, key } in rows" :key="key" class="ch-search-row">
         <RouterLink
           v-if="source.to"
           :to="source.to"

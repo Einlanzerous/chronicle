@@ -9,8 +9,9 @@ const app = createApp(App)
 app.use(router)
 
 // Resolve who is signed in (or send them to /app/sign-in) before the first
-// paint, so Home never flashes a signed-out shell for the instant it takes
-// GET /auth/me to answer.
+// paint, so the shell never flashes a signed-out state for the instant it
+// takes GET /auth/me to answer (CHRN-58's AppShell and its /pages route,
+// where /app/ lands once signed in).
 //
 // openapi-fetch answers an HTTP error as {error}, not a throw -- but a
 // request that never reaches the server (backend unreachable, offline) DOES

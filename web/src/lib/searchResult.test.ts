@@ -34,7 +34,7 @@ describe('describeSearchHit', () => {
     expect(source.title).toBeUndefined()
   })
 
-  it('labels a transcript hit with its captured time and does not link', () => {
+  it('labels a transcript hit with its transcribed-at time and does not link', () => {
     const source = describeSearchHit(transcriptHit())
     expect(source.kind).toBe('transcript')
     expect(source.label).toBe('TRANSCRIPT · 2026-09-15 18:22')

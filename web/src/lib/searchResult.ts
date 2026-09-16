@@ -33,9 +33,15 @@ export function describeSearchHit(hit: SearchHit): SearchHitSource {
   }
   return {
     kind: 'transcript',
-    // The schema's shared `created_at` is the memo's captured time on a
-    // transcript hit (SearchHit's own description: "a transcript carries
-    // `memo_id` and `model`" beside the fields every hit carries).
+    // The appended timestamp is NOT the memo's captured time, despite the
+    // shared field name: a transcript hit's `created_at` is
+    // `tier2.transcripts.created_at` (internal/store/search.go), stamped
+    // when THIS transcription row was written -- when the ASR result was
+    // collected, not when the memo was recorded. A re-transcription (a
+    // later, better decode of an old memo) surfaces with today's date, not
+    // the memo's. `TRANSCRIPT` is still the right SOURCE label (parallel to
+    // `NOTE · <ref>`, matching the CHRN-58 brief) -- it is the timestamp
+    // next to it that is transcribed-at, not captured-at.
     label: `TRANSCRIPT · ${formatTimestamp(hit.created_at)}`,
     to: null,
     title: TRANSCRIPT_NOT_YET_LINKABLE,
