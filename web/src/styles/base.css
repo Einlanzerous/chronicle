@@ -1,0 +1,42 @@
+/* Base styles: the reset and defaults every screen inherits. Colour and type
+ * come only from tokens.css's custom properties -- no hex literal belongs
+ * here, and scripts/check-tokens.sh enforces that mechanically.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  /* Explicit, per CHRN-54's Done-when: the body background is not left to
+   * inherit from the page default, it is set from the token. */
+  background: var(--ch-base);
+  color: var(--ch-text);
+  font-family: var(--ch-font-sans);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  min-height: 100%;
+}
+
+a {
+  color: inherit;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
