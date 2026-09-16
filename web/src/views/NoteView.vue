@@ -69,15 +69,24 @@ const mode = ref<Mode>('read')
 // cannot land after a faster one and show the wrong note under the URL.
 let loadSeq = 0
 
-async function loadNote(ref_: string): Promise<void> {
+// `silent` is what saveEdit/restoreRevision pass: a post-save or
+// post-restore reload of the SAME note, not a navigation to a different one.
+// Review finding on the CHRN-56 PR: without it, this set `loading.value = true` on
+// every reload, and the template's top-level `v-if="loading"` gates the
+// WHOLE note view (topbar, editor/history panel, aside) -- so saving an edit
+// or restoring a revision blanked the entire screen to "Loading…" and back,
+// discarding whatever panel the person was just looking at. A silent reload
+// leaves `loading` alone; the old content stays on screen until the new
+// note replaces it in place.
+async function loadNote(ref_: string, opts: { silent?: boolean } = {}): Promise<void> {
   const seq = ++loadSeq
-  loading.value = true
+  if (!opts.silent) loading.value = true
   loadError.value = null
   notFound.value = false
   tombstone.value = null
   const res = await api.GET('/notes/{ref}', { params: { path: { ref: ref_ } } })
   if (seq !== loadSeq) return // superseded by a later navigation
-  loading.value = false
+  if (!opts.silent) loading.value = false
   if (res.data) {
     note.value = res.data
     mode.value = 'read'
@@ -100,7 +109,15 @@ async function loadNote(ref_: string): Promise<void> {
   loadError.value = errorMessage(res.error, 'This note could not be read.')
 }
 
-watch(noteRef, loadNote, { immediate: true })
+// Wrapped rather than passed directly: `watch`'s callback signature is
+// `(newValue, oldValue)`, and `loadNote`'s own second parameter is now an
+// options object -- passing `loadNote` straight to `watch` would hand it the
+// PREVIOUS ref string as `opts` on every navigation.
+watch(
+  noteRef,
+  (ref_) => loadNote(ref_),
+  { immediate: true },
+)
 
 // A live clock so a card's cache age keeps telling the truth for as long as
 // somebody stays on the page, rather than freezing at the instant of load --
@@ -251,7 +268,7 @@ async function saveEdit(): Promise<void> {
   })
   saving.value = false
   if (res.data) {
-    await loadNote(noteRef.value)
+    await loadNote(noteRef.value, { silent: true })
     return
   }
   // Shown verbatim -- a guard refusal (CH041 PersonRequired, or any other
@@ -317,7 +334,7 @@ async function restoreRevision(): Promise<void> {
   restoring.value = false
   if (res.data) {
     selectedRevision.value = null
-    await loadNote(noteRef.value)
+    await loadNote(noteRef.value, { silent: true })
     return
   }
   restoreError.value = errorMessage(res.error, 'The restore was refused.')
