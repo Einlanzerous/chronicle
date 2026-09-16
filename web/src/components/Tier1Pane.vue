@@ -5,7 +5,9 @@
 // Reusable rather than folded into Tier1PageView so CHRN-56 can place it
 // beside a note; this component makes no assumption about its own width,
 // the route that renders it full-width is what decides that.
+import { useRouter } from 'vue-router'
 import type { components } from '@/api/schema.d.ts'
+import { tier1RoutePath } from '@/lib/tier1Link'
 
 type Tier1Page = components['schemas']['Tier1Page']
 
@@ -15,6 +17,31 @@ defineProps<{
   /** A one-sentence, person-facing reason there is no page to show. */
   error: string | null
 }>()
+
+const router = useRouter()
+
+// The corpus's own inter-page links are root-absolute (review finding on
+// CHRN-58: `/services/postgres`), and goldmark passes them through
+// untouched, so left alone a click leaves the SPA entirely. One delegated
+// handler on the body rather than a per-link listener, since v-html'd
+// content carries no Vue bindings of its own for @click to attach to.
+// tier1RoutePath (web/src/lib/tier1Link.ts) does the actual classification,
+// with its own vitest coverage. A modifier key or a non-primary button
+// means "open in a new tab/window" -- left to the browser's default rather
+// than intercepted.
+function onBodyClick(event: MouseEvent): void {
+  if (event.defaultPrevented) return
+  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
+    return
+  }
+  const anchor = (event.target as HTMLElement).closest('a')
+  const href = anchor?.getAttribute('href')
+  if (!href) return
+  const route = tier1RoutePath(href)
+  if (!route) return
+  event.preventDefault()
+  router.push(route)
+}
 </script>
 
 <template>
@@ -32,7 +59,7 @@ defineProps<{
            sidebar's and the browser tab's job; it does not need a second
            on-page appearance. -->
       <!-- eslint-disable-next-line vue/no-v-html -->
-      <div class="ch-tier1-pane-body" v-html="page.html"></div>
+      <div class="ch-tier1-pane-body" v-html="page.html" @click="onBodyClick"></div>
       <!-- The Generated marking's own line, rendered verbatim -- never
            composed here (CHRN-58's ticket comment: "render that marking's
            line verbatim as the fact sheet's footer rather than composing

@@ -77,7 +77,18 @@ watch(
       return
     }
     notes.value = null
-    if (p) loadNotes(p)
+    if (p) {
+      loadNotes(p)
+    } else {
+      // Navigating to the root has no loadNotes call of its own to bump
+      // loadSeq (review, CHRN-58): without this, a path-to-root navigation
+      // while a load for the old path is still in flight leaves that load's
+      // `seq` matching `loadSeq` when it finally lands, so a late
+      // `moved_from` answer can still set notes and router.replace() off
+      // the root the person already navigated to. Bumping here supersedes
+      // it the same way a path-to-path navigation already does.
+      loadSeq++
+    }
   },
   { immediate: true },
 )
@@ -91,6 +102,7 @@ const breadcrumbSegments = computed(() => (path.value ? path.value.split('/') : 
       <div class="ch-page-breadcrumb">pages</div>
       <h1 class="ch-page-heading">Pages</h1>
       <p v-if="pagePathsError" class="ch-page-empty">The corpus could not be read.</p>
+      <p v-else-if="pagePaths === null" class="ch-page-status">Loading…</p>
       <p v-else-if="rootPages.length === 0" class="ch-page-empty">No pages yet.</p>
       <ul v-else class="ch-page-root-list">
         <li v-for="node in rootPages" :key="node.path">

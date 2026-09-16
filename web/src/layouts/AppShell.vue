@@ -108,6 +108,15 @@ function submitSearch(): void {
   if (!q) return
   router.push({ path: '/search', query: { q } })
 }
+
+// getTriageBatch scopes to actor.ID for a member and to everyone for the
+// owner (internal/triage/batch.go), so the badge is the right number but a
+// different number per person -- named here so it does not read as a
+// global (review, CHRN-58). Snapshot-vs-live after a decision is CHRN-55's
+// to solve; this does not poll.
+const triageCountTitle = computed(() =>
+  currentUser.value?.is_owner ? 'all memos awaiting a decision' : 'your memos awaiting a decision',
+)
 </script>
 
 <template>
@@ -131,7 +140,12 @@ function submitSearch(): void {
 
       <RouterLink to="/triage" class="ch-shell-triage" active-class="is-active">
         <span class="ch-shell-triage-label">TRIAGE</span>
-        <span v-if="triageCount !== null" class="ch-shell-triage-count">{{ triageCount }}</span>
+        <span
+          v-if="triageCount !== null"
+          class="ch-shell-triage-count"
+          :title="triageCountTitle"
+          >{{ triageCount }}</span
+        >
       </RouterLink>
 
       <nav class="ch-shell-section" aria-label="Tier 2, authored">
@@ -200,7 +214,16 @@ function submitSearch(): void {
   background: var(--ch-base);
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  /* Pinned to the viewport rather than scrolling with the main column
+   * (review, CHRN-58): listPages is the whole corpus in one call ("a few
+   * hundred pages at most", openapi.yaml), so the page tree alone can run
+   * to ~8000px at that size. Without this the account row's `margin-top:
+   * auto` pins to the bottom of THAT, not the viewport, and on a long
+   * tier-1 page the READ ONLY stamp and the tree scroll away with it. */
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
 }
 
 .ch-shell-wordmark {
