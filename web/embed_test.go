@@ -35,6 +35,12 @@ func TestHandlerFSServesKnownFiles(t *testing.T) {
 	if rec.Body.String() != "console.log(1)" {
 		t.Errorf("asset body = %q, want the file content verbatim", rec.Body.String())
 	}
+	// Vite bakes a content hash into the filename, so this asset is safe to
+	// cache immutably for a year -- unlike index.html above, which must
+	// always be refetched.
+	if cc := rec.Header().Get("Cache-Control"); cc != "public, max-age=31536000, immutable" {
+		t.Errorf("asset Cache-Control = %q, want a long-lived immutable directive", cc)
+	}
 }
 
 // TestHandlerFSFallsBackToIndexForDeepLinks is the SPA behaviour a client

@@ -27,7 +27,12 @@ export const currentUser = ref<User | null>(null)
 //      into a session, and this is the same call the browser would make on
 //      any cold load. Every one of those statuses means "not signed in
 //      right now", and none of them is actionable here -- there is no
-//      retry or backoff to attempt before falling through to step 3.
+//      retry or backoff to attempt before falling through to step 3. This
+//      call spends one attempt from `signInLimiter`, the same 20/min-per-
+//      client-IP budget shared with POST /auth/session -- so every
+//      unauthenticated cold load, including a reload of the sign-in screen
+//      itself, draws from it; CHRN-106's sign-in screen should not add a
+//      second SSO probe of its own on top of this one.
 //   3. Still no session after that means there is truly nobody signed in
 //      and no way to become somebody without a person present, so this
 //      routes to a placeholder sign-in view rather than leaving the app to

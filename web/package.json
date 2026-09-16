@@ -7,7 +7,7 @@
   "description": "Chronicle web app skeleton (CHRN-53) — Vue 3 + TypeScript, served by the Go binary under /app/.",
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc --noEmit && vite build",
+    "build": "vue-tsc --noEmit && vite build && touch dist/.gitkeep",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit",
     "api:gen": "bunx openapi-typescript ../openapi.yaml -o src/api/schema.d.ts"
@@ -21,6 +21,7 @@
     "vue-router": "^4.5.1"
   },
   "devDependencies": {
+    "@types/node": "^20",
     "@vitejs/plugin-vue": "^5.2.1",
     "@vue/tsconfig": "^0.7.0",
     "openapi-typescript": "^7.4.4",

@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // Placeholder. CHRN-106 builds the real sign-in screen; src/auth/index.ts
-// routes here when GET /auth/me and POST /auth/sso/cloudflare have both
-// answered 401, i.e. nobody is signed in and there is no SSO session to
-// adopt.
+// routes here when GET /auth/me and POST /auth/sso/cloudflare have
+// neither returned a session, i.e. nobody is signed in and there is no SSO
+// session to adopt.
 </script>
 
 <template>

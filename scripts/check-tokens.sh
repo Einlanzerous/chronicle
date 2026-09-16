@@ -21,6 +21,11 @@
 # `fill="#e2623d"`, `stroke="…"`, `stop-color="…"` -- exactly the shape
 # Mark.vue's own colour would take if it ever hardcoded one. Caught in
 # review before merge; see the CHRN-54 ticket comment.
+#
+# The other false positive is an HTML numeric character reference, e.g.
+# `&#8226;` (bullet) -- `#` followed by hex digits with no colour behind it
+# at all -- filtered below by shape, since an entity has no attribute to key
+# on the way the href case above does.
 set -uo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -32,6 +37,7 @@ matches="$(grep -rnE "$HEX_RE" web/src \
   | grep -v '^web/src/styles/tokens\.css:' \
   | grep -v '^web/src/api/schema\.d\.ts:' \
   | grep -vE '(href|xlink:href)="#[0-9a-fA-F]{3,8}"' \
+  | grep -vE '&#[0-9]+;' \
   || true)"
 
 if [ -n "$matches" ]; then

@@ -75,6 +75,15 @@ func HandlerFS(root fs.FS) http.Handler {
 		// fallback; fs.Stat + IsDir catches that case too. Caught in review
 		// before merge; see the CHRN-53 ticket comment.
 		if info, err := fs.Stat(root, clean); err == nil && !info.IsDir() {
+			// Vite bakes a content hash into every assets/ filename, so those
+			// files are safe to cache immutably for a year; embed.FS gives no
+			// modtime or ETag to drive a conditional request otherwise, so
+			// without this every navigation would refetch them in full.
+			// Anything else under dist/ (e.g. a future unhashed favicon) keeps
+			// the default, uncached behaviour.
+			if strings.HasPrefix(clean, "assets/") {
+				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			}
 			fileServer.ServeHTTP(w, r)
 			return
 		}
