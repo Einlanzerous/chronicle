@@ -61,8 +61,14 @@ async function browse(page: string): Promise<void> {
   const seq = ++browseSeq
   pageDiscussions.value = null
   pageError.value = null
+  // Set unconditionally, both branches, BEFORE any early return -- a PR
+  // review nit caught the earlier version setting this only on the "has a
+  // page" path: selecting a page, then clearing the picker again before the
+  // in-flight GET resolved, left `pageLoading` stuck `true` forever (the
+  // superseded response's own `pageLoading.value = false` never ran either,
+  // since it is behind the `seq !== browseSeq` guard).
+  pageLoading.value = Boolean(page)
   if (!page) return
-  pageLoading.value = true
   const res = await api.GET('/discussions', { params: { query: { page } } })
   if (seq !== browseSeq) return // superseded by a later selection
   pageLoading.value = false
