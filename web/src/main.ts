@@ -4,6 +4,7 @@ import { router } from './router'
 import { currentUser, resolveSession } from './auth'
 import './styles/tokens.css'
 import './styles/base.css'
+import './styles/markdown.css'
 
 const app = createApp(App)
 app.use(router)

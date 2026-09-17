@@ -59,7 +59,7 @@ function onBodyClick(event: MouseEvent): void {
            sidebar's and the browser tab's job; it does not need a second
            on-page appearance. -->
       <!-- eslint-disable-next-line vue/no-v-html -->
-      <div class="ch-tier1-pane-body" v-html="page.html" @click="onBodyClick"></div>
+      <div class="ch-tier1-pane-body ch-md" v-html="page.html" @click="onBodyClick"></div>
       <!-- The Generated marking's own line, rendered verbatim -- never
            composed here (CHRN-58's ticket comment: "render that marking's
            line verbatim as the fact sheet's footer rather than composing

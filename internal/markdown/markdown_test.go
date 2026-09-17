@@ -498,12 +498,12 @@ func TestMentionsStillWorkAlongsideReferences(t *testing.T) {
 	}
 }
 
-// plainRender is goldmark with no reference grammar at all — the baseline the
-// "nothing is guessed" criteria compare against.
+// plainRender is the dialect with no reference grammar at all — the baseline
+// the "nothing is guessed" criteria compare against.
 func plainRender(t *testing.T, src string) string {
 	t.Helper()
 	var buf bytes.Buffer
-	if err := goldmark.New().Convert([]byte(src), &buf); err != nil {
+	if err := goldmark.New(goldmark.WithExtensions(dialect()...)).Convert([]byte(src), &buf); err != nil {
 		t.Fatalf("plain render: %v", err)
 	}
 	return buf.String()

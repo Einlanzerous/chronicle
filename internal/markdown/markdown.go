@@ -264,7 +264,7 @@ func NewRenderer(keys ProjectKeys) *Renderer {
 		// output would be defending against a path that does not exist, and
 		// would invite somebody to add WithUnsafe() later on the grounds that
 		// the scrubber will catch it.
-		md:   goldmark.New(goldmark.WithExtensions(&refExtension{keys: keys})),
+		md:   goldmark.New(goldmark.WithExtensions(append(dialect(), &refExtension{keys: keys})...)),
 		keys: keys,
 	}
 }
@@ -277,7 +277,12 @@ var defaultRenderer = NewRenderer(nil)
 // Scan and Mentions walk it rather than a marked tree. They share scanSegment
 // with the transformer, so nothing about WHAT a reference is can differ between
 // the two; only whether the tree was rewritten.
-var plainParser = goldmark.New().Parser()
+//
+// IT READS THE SAME DIALECT AS RENDER (CHRN-108). The share above holds only if
+// both walk the same tree shape: a construct one parser understands and the
+// other does not is a place where Render marks a token Scan never returns, or
+// the reverse, and the backlink index is built from Scan.
+var plainParser = goldmark.New(goldmark.WithExtensions(dialect()...)).Parser()
 
 // Render turns stored markdown into HTML that is safe to embed in a page.
 //

@@ -150,7 +150,7 @@ defineExpose({ canReply: computed(() => (thread.value ? canReply(thread.value.di
                 <span class="ch-thread-turn-time">{{ formatTimestamp(t.created_at) }}</span>
               </div>
               <!-- eslint-disable-next-line vue/no-v-html -->
-              <div class="ch-thread-turn-html" v-html="t.html"></div>
+              <div class="ch-thread-turn-html ch-md" v-html="t.html"></div>
             </div>
           </div>
         </template>
