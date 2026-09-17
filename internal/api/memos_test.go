@@ -400,6 +400,9 @@ func TestProvenanceListsEveryMemoBearingRevisionOldestFirst(t *testing.T) {
 func TestProvenanceFollowsTheNoteSubResourceRules(t *testing.T) {
 	rig := newMemoRig(t)
 	m := rig.memo(t, rig.author, "said once")
+	// TRANSCRIBED, so the assertion below is about the withdrawal and not
+	// about a memo that had nothing to answer with either way.
+	rig.transcribe(m, "said once", false, "whisper.cpp/small.en", m.CapturedAt.Add(time.Minute))
 	n := rig.note(t, rig.author, &m)
 
 	rec := rig.get("/notes/not-a-note-ref/provenance", "author-token")
@@ -418,8 +421,10 @@ func TestProvenanceFollowsTheNoteSubResourceRules(t *testing.T) {
 		t.Errorf("tombstone = %+v", tomb)
 	}
 
-	// A memo is its own tier-2 fact and did not stop having been said.
-	mustStatus(t, rig.get("/transcripts/"+m.ID.String(), "author-token"), http.StatusNotFound, "getMemoTranscript")
+	// A memo is its own tier-2 fact and did not stop having been said. Both
+	// operations answer for a memo whose note was withdrawn exactly what they
+	// answered before it was — 200, not the note's 410 and not a 404.
+	mustStatus(t, rig.get("/transcripts/"+m.ID.String(), "author-token"), http.StatusOK, "getMemoTranscript")
 	mustStatus(t, rig.get("/audio/"+m.ID.String(), "author-token"), http.StatusOK, "getMemoAudio")
 }
 

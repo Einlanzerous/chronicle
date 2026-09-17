@@ -49,16 +49,28 @@ func TestMediaType(t *testing.T) {
 // and then drift. Reading a sibling package's file is unusual and is the
 // cheapest guard that can actually fail.
 func TestTranscribeCallsThisFunctionRatherThanKeepingACopy(t *testing.T) {
-	src, err := os.ReadFile(filepath.Join("..", "transcribe", "transcribe.go"))
-	if err != nil {
-		t.Fatalf("reading internal/transcribe: %v", err)
+	// THE WHOLE PACKAGE, not transcribe.go: a re-introduced copy in any other
+	// file of it would pass a one-file check.
+	files, err := filepath.Glob(filepath.Join("..", "transcribe", "*.go"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("globbing internal/transcribe: %v (%d files)", err, len(files))
 	}
-	if bytes.Contains(src, []byte("func mediaTypeFor")) {
-		t.Error("internal/transcribe still defines mediaTypeFor: two answers to one question, " +
-			"which is the failure this repo names in four places")
+	calls := false
+	for _, name := range files {
+		src, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("reading %s: %v", name, err)
+		}
+		if bytes.Contains(src, []byte("func mediaTypeFor")) {
+			t.Errorf("%s still defines mediaTypeFor: two answers to one question, which is "+
+				"the failure this repo names in four places", name)
+		}
+		if bytes.Contains(src, []byte("audio.MediaType(")) {
+			calls = true
+		}
 	}
-	if !bytes.Contains(src, []byte("audio.MediaType(")) {
-		t.Error("internal/transcribe does not call audio.MediaType; the ASR submission and the " +
-			"audio stream would be naming the same recording from two rules")
+	if !calls {
+		t.Error("nothing in internal/transcribe calls audio.MediaType; the ASR submission and " +
+			"the audio stream would be naming the same recording from two rules")
 	}
 }

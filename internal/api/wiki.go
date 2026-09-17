@@ -605,7 +605,9 @@ func (a *api) ListNoteBacklinks(w http.ResponseWriter, r *http.Request, ref stri
 }
 
 // liveNote reads a note by number and answers 404 or the 410 tombstone itself,
-// so the four routes under /notes/{ref} cannot disagree about a deleted note.
+// so no route under /notes/{ref} can disagree with another about a deleted
+// note. CHRN-107's provenance sibling is a caller too, which is why this says
+// "no route" rather than counting them.
 func (a *api) liveNote(w http.ResponseWriter, r *http.Request, ctx context.Context, number int64) (store.Note, bool) {
 	n, err := a.wiki.NoteByNumber(ctx, number)
 	switch {
