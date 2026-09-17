@@ -34,6 +34,15 @@
    * estate's account of what exists, regenerated and never hand-edited. */
   --ch-generated: #8fa6bd;
 
+  /* A thread's resolved marker (CHRN-57), read off the canvas's own
+   * "RESOLVED -> PRINCIPLES §6" / "CLOSED" green. Distinct from
+   * --ch-generated on purpose: resolving a thread is an authored, tier-2
+   * event (CHRN-43 ruling 6), not regenerated content, so it does not get
+   * steel -- and it is neither of CLAUDE.md invariant 2's two reserved
+   * colours (coral/Switchyard, gold/Amber), which this ticket touches
+   * nothing else with. */
+  --ch-resolved: #63b58c;
+
   /* Surfaces, darkest to lightest. */
   --ch-base: #08090a;
   --ch-raised: #1b1c21;
