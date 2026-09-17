@@ -251,6 +251,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun run build
+      - run: bun run test
 
       # web/src/api/schema.d.ts is GENERATED from ../openapi.yaml
       # (openapi-typescript, pinned as a devDependency). Regenerated to a

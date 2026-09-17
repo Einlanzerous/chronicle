@@ -176,10 +176,11 @@ step "asr boundary" asr_boundary_check
 if command -v bun >/dev/null 2>&1; then
   step "web typecheck" bash -c 'cd web && bun install --frozen-lockfile >/dev/null && bun run typecheck'
   step "web build"     bash -c 'cd web && bun install --frozen-lockfile >/dev/null && bun run build'
+  step "web test"      bash -c 'cd web && bun install --frozen-lockfile >/dev/null && bun run test'
   step "web api types" webapi_check
   step "tokens"        scripts/check-tokens.sh
 else
-  printf '\nNOTE: bun not on PATH — web typecheck/web build/web api types/tokens steps were skipped.\n'
+  printf '\nNOTE: bun not on PATH — web typecheck/web build/web test/web api types/tokens steps were skipped.\n'
 fi
 
 # -p 1: ONE TEST BINARY AT A TIME.
