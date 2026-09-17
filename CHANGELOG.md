@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.15.0](https://github.com/Einlanzerous/chronicle/compare/v1.14.0...v1.15.0) (2026-09-17)
+
+
+### Features
+
+* **api:** a note's backlinks over HTTP, resolved by tier 2 from its own index (CHRN-105) ([#94](https://github.com/Einlanzerous/chronicle/issues/94)) ([ee6ad5e](https://github.com/Einlanzerous/chronicle/commit/ee6ad5ed402a76edfc8cd2278a6068caf757e091))
+* **web:** account and devices — sign in, device list and revoke, add a device by QR or token (CHRN-106) ([#99](https://github.com/Einlanzerous/chronicle/issues/99)) ([00d2703](https://github.com/Einlanzerous/chronicle/commit/00d2703e58a4835d8406fe1821c6d82bf7debab9))
+* **web:** discussions — threads, replies, unread and resolve (CHRN-57) ([#98](https://github.com/Einlanzerous/chronicle/issues/98)) ([0cad5f9](https://github.com/Einlanzerous/chronicle/commit/0cad5f989851e63c110e2cc608527aef9298345b))
+* **web:** note view, editor and revision history, with live reference cards (CHRN-56) ([#100](https://github.com/Einlanzerous/chronicle/issues/100)) ([1cbe345](https://github.com/Einlanzerous/chronicle/commit/1cbe345faea080cb39b0a9b4dcefd83d6e566065))
+* **web:** the two-tier shell — sidebar, page tree, tier-1 pane and search (CHRN-58) ([#97](https://github.com/Einlanzerous/chronicle/issues/97)) ([8188d36](https://github.com/Einlanzerous/chronicle/commit/8188d366d69d6aef405da1d56aa289630513ad08))
+* **web:** Vue 3 + TypeScript skeleton, served by the Go binary under /app/ (CHRN-53) ([#96](https://github.com/Einlanzerous/chronicle/issues/96)) ([88d9192](https://github.com/Einlanzerous/chronicle/commit/88d9192adb48775c2fcc81bf623cd74cde4b1fef))
+
 ## [1.14.0](https://github.com/Einlanzerous/chronicle/compare/v1.13.0...v1.14.0) (2026-09-14)
 
 
