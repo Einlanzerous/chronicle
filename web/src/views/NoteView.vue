@@ -390,7 +390,7 @@ async function restoreRevision(): Promise<void> {
                to embed") -- the one v-html in this file, matching the
                established pattern (Tier1Pane.vue, DiscussionThread.vue). -->
           <!-- eslint-disable-next-line vue/no-v-html -->
-          <div class="ch-note-html" v-html="note.html"></div>
+          <div class="ch-note-html ch-md" v-html="note.html"></div>
 
           <div v-if="referenceCards.length > 0" class="ch-note-references">
             <p v-if="referencesLoading" class="ch-note-references-status">Resolving references…</p>

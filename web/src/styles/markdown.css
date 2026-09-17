@@ -1,0 +1,132 @@
+/* Rendered markdown (CHRN-108): the constructs internal/markdown's dialect
+ * emits beyond CommonMark -- GFM tables, strikethrough, task lists and
+ * VitePress-style `:::` containers -- styled once, for every surface that
+ * v-html's server-rendered HTML and carries the `ch-md` class: the tier-1
+ * pane, a note's body and a discussion turn.
+ *
+ * STRUCTURE ONLY. Each surface keeps its own face and colour -- serif and
+ * text-2 for authored prose, mono and steel for the tier-1 pane, whose
+ * `:deep(*)` rule is scoped and loads after this sheet, so a table or a
+ * callout inside generated content stays generated-looking without this file
+ * knowing which tier it is in. The colours here are borders, a surface and
+ * the meta text of a label.
+ *
+ * NO REFERENCE COLOUR, ON PURPOSE. A warning is not coral and a tip is not
+ * gold: tokens.css reserves both for Switchyard and Amber, "not on a warning
+ * that has nothing to do with either system". Container kinds are told apart
+ * by their title and by emphasis -- warning and danger take the stronger text
+ * token on their rule and label -- never by borrowing an estate colour.
+ */
+
+.ch-md table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 0 0 16px;
+  border-collapse: collapse;
+  font-size: 0.9em;
+}
+
+.ch-md th,
+.ch-md td {
+  padding: 6px 16px 6px 0;
+  border-bottom: 1px solid var(--ch-line);
+  vertical-align: top;
+}
+
+.ch-md th {
+  font-family: var(--ch-font-mono);
+  font-size: var(--ch-size-2xs);
+  font-weight: 500;
+  letter-spacing: var(--ch-track-wide);
+  text-transform: uppercase;
+}
+
+/* goldmark writes column alignment as an `align` attribute; a header with none
+ * reads left, like the body cells, rather than the browser's centred default. */
+.ch-md th:not([align]) {
+  text-align: left;
+}
+
+/* The estate wiki's key/value sheets open with an empty header row. It is a
+ * table, and should not draw a blank banded row above the first fact. */
+.ch-md th:empty {
+  padding: 0;
+  border-bottom: 0;
+}
+
+.ch-md li:has(> input[type='checkbox']) {
+  list-style: none;
+}
+
+.ch-md input[type='checkbox'] {
+  margin: 0 0.5em 0 -1.3em;
+  vertical-align: middle;
+}
+
+/* Not dialect -- CommonMark has always emitted it -- but no surface ever
+ * styled it, and 37 of the wiki's pages open their generated reasoning with
+ * one. The same rule as a container's, without the surface, so a quotation
+ * reads as set apart and not as a callout. */
+.ch-md blockquote {
+  margin: 0 0 16px;
+  padding: 0 0 0 14px;
+  border-left: 2px solid var(--ch-line);
+}
+
+.ch-md .md-container {
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  border-left: 2px solid var(--ch-line);
+  background: var(--ch-raised);
+}
+
+/* Warning and danger carry the stronger rule. Not text colour, so not behind
+ * :where() below -- the `border-left` shorthand above would otherwise win. */
+.ch-md .md-container-warning,
+.ch-md .md-container-danger {
+  border-left-color: var(--ch-text-2);
+}
+
+.ch-md .md-container > :last-child {
+  margin-bottom: 0;
+}
+
+/* `.md-container >` for weight as well as meaning: a surface's own
+ * `:deep(p)` margin (two classes) must not out-rank the title's (three). */
+.ch-md .md-container > .md-container-title,
+.ch-md details.md-container > summary {
+  margin: 0 0 6px;
+  font-family: var(--ch-font-mono);
+  font-size: var(--ch-size-2xs);
+  letter-spacing: var(--ch-track-wide);
+  text-transform: uppercase;
+}
+
+.ch-md details.md-container > summary {
+  cursor: pointer;
+}
+
+.ch-md details.md-container:not([open]) > summary {
+  margin-bottom: 0;
+}
+
+/* COLOUR, AT THE LOWEST SPECIFICITY THIS FILE CAN WRITE. Everything below is
+ * `.ch-md :where(…)` -- one class -- so a surface's own colour rule always
+ * wins: the tier-1 pane's scoped `:deep(*)` is two, and it must, because
+ * generated content is steel inside a callout exactly as it is outside one. A
+ * plain `.ch-md .md-container-warning > .md-container-title` is three, and
+ * would turn the wiki's warning titles grey in the tier-1 pane. Borders and
+ * the surface are not text colour, so they stay above. */
+
+.ch-md :where(th, del, .md-container-title, details.md-container > summary) {
+  color: var(--ch-text-meta);
+}
+
+.ch-md :where(input[type='checkbox']) {
+  accent-color: var(--ch-text-2);
+}
+
+.ch-md :where(.md-container-warning, .md-container-danger) > :where(.md-container-title) {
+  color: var(--ch-text-2);
+}
