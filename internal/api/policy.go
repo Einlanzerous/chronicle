@@ -140,6 +140,7 @@ var routePolicy = map[string]policy{
 	"GET /notes/{ref}/revisions":  policyMember,
 	"POST /notes/{ref}/revisions": policyMember,
 	"GET /notes/{ref}/backlinks":  policyMember,
+	"GET /notes/{ref}/provenance": policyMember,
 	// SEARCH SPANS EVERY AUTHOR'S TRANSCRIPTS, so owner rather than member --
 	// GET /admin/triage's reasoning, and the triage batch's: "a list that
 	// merely hides a memo is not access control." store.Search takes no actor
@@ -162,6 +163,23 @@ var routePolicy = map[string]policy{
 	"POST /discussions/{ref}/resolve":             policyMember,
 	"POST /discussions/{ref}/participants":        policyMember,
 	"DELETE /discussions/{ref}/participants/{id}": policyMember,
+
+	// THE RECORDING BEHIND A NOTE (CHRN-107). Member and not owner, and
+	// SCOPED IN THE HANDLER — triage's rule, stated there and applying here
+	// for the same reason: "a list that merely hides a memo is not access
+	// control, because a client naming an id directly never went through the
+	// list." Metadata about a recording goes to every member who can read the
+	// note it fed (GET /notes/{ref}/provenance, above, under the wiki's
+	// group); the transcript's words and the audio's bytes go to the memo's
+	// author and to the owner, and anybody else gets the answer an id that
+	// names nothing gets. mayReadMemo is the whole of it.
+	//
+	// The paths are not under /memos/ because Go's ServeMux would panic
+	// registering GET /memos/{id}/audio beside the shipped
+	// GET /memos/uploads/{id} — see openapi.yaml, and the router test that
+	// asserts construction with all three of these succeeds.
+	"GET /transcripts/{memo_id}": policyMember,
+	"GET /audio/{memo_id}":       policyMember,
 
 	// TIER 1 (CHRN-100): the generated estate wiki, read from a mount. Member
 	// and not owner: the pane sits beside every account's notes, and a read

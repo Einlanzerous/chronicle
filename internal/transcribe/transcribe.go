@@ -28,7 +28,6 @@ import (
 	"net/http"
 	"net/textproto"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -412,7 +411,7 @@ func (s *Service) send(ctx context.Context, job store.MemoJob, memo store.Memo) 
 		return
 	}
 
-	mediaType := mediaTypeFor(memo)
+	mediaType := audio.MediaType(memo.Codec, memo.OriginalFilename)
 	payload, contentType, err := multipartBody(asrclient.JobSpec{
 		AudioSha256: memo.ContentHash,
 		Model:       &job.Model,
@@ -794,39 +793,6 @@ func multipartBody(spec asrclient.JobSpec, mediaType string, audio []byte) ([]by
 		return nil, "", err
 	}
 	return buf.Bytes(), mw.FormDataContentType(), nil
-}
-
-// mediaTypeFor names what the recording is, for the audio part's own
-// Content-Type.
-//
-// The codec CHRN-21 read from the headers is preferred over the filename,
-// because a filename is display-only in this system and is never used to
-// derive anything. The extension is the fallback for a memo whose headers
-// could not be read, and audio/ogg is the fallback for that: every recording
-// either ingest path has produced is Opus in Ogg, and the service probes the
-// content anyway.
-func mediaTypeFor(m store.Memo) string {
-	if m.Codec != nil {
-		switch strings.ToLower(*m.Codec) {
-		case "opus", "vorbis":
-			return "audio/ogg"
-		}
-	}
-	if m.OriginalFilename != nil {
-		switch strings.ToLower(filepath.Ext(*m.OriginalFilename)) {
-		case ".webm":
-			return "audio/webm"
-		case ".m4a", ".mp4", ".aac":
-			return "audio/mp4"
-		case ".mp3":
-			return "audio/mpeg"
-		case ".wav":
-			return "audio/wav"
-		case ".ogg", ".opus", ".oga":
-			return "audio/ogg"
-		}
-	}
-	return "audio/ogg"
 }
 
 func firstLine(s string) string {

@@ -83,13 +83,33 @@ type uploadOpenRequest struct {
 // `retention_status` is a STATUS RATHER THAN A DATE, because for a memo with no
 // durable transcript there is no date the pruner will use — and a
 // `PRUNES 2026-09-20` label that passes with nothing happening is the label
-// lying, which CHRN-25 §5 already refused in the other direction. `prunes_at`
-// is set only for `scheduled` and `pruned`, and it is the same clause the sweep
-// evaluates, which is what makes the date a UI shows the date the job uses.
+// lying, which CHRN-25 §5 already refused in the other direction. It is the
+// same clause the sweep evaluates, which is what makes the date a UI shows the
+// date the job uses.
+//
+// ============================================================================
+// prunes_at NAMES A FUTURE SWEEP OR NOTHING (CHRN-107 ruling 7).
+// ============================================================================
+//
+// store.RetentionStatus overloads one `at` across two cases -- its docstring
+// says so: "set only for `scheduled` and `pruned`" -- and `pruned` carries
+// audio_pruned_at, a date in the PAST. This function passed it through
+// unexamined, so `getUpload` answered a field the document describes as "When,
+// on that clause" with a timestamp behind us, on exactly the memo CHRN-22
+// §3 [rev] says a person is most likely to be looking at when they wonder what
+// happened to their recording.
+//
+// So the past tense gets its own field. audio_pruned_at comes off the memo row
+// rather than out of the overloaded `at`, which also means it is right whatever
+// the status says.
 func toMemo(m store.Memo, retentionStatus string, prunesAt *time.Time) wire.Memo {
+	if retentionStatus != store.RetentionScheduled {
+		prunesAt = nil
+	}
 	return wire.Memo{
 		RetentionStatus:  retentionStatus,
 		PrunesAt:         prunesAt,
+		AudioPrunedAt:    m.AudioPrunedAt,
 		Id:               m.ID,
 		State:            m.State,
 		Retention:        wire.MemoRetention(m.Retention),

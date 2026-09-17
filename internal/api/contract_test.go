@@ -182,7 +182,13 @@ func TestAnonymousGetsTheSameAnswerFromEveryRoute(t *testing.T) {
 		{http.MethodGet, "/notes/CHR-0311/revisions", http.StatusUnauthorized},
 		{http.MethodPost, "/notes/CHR-0311/revisions", http.StatusUnauthorized},
 		{http.MethodGet, "/notes/CHR-0311/backlinks", http.StatusUnauthorized},
+		{http.MethodGet, "/notes/CHR-0311/provenance", http.StatusUnauthorized},
 		{http.MethodGet, "/search", http.StatusUnauthorized},
+
+		// The recording behind a note (CHRN-107). Not under /memos/: see
+		// policy.go, and TestTheNewMemoRoutesRegisterBesideTheUploadRoutes.
+		{http.MethodGet, "/transcripts/" + someUUID, http.StatusUnauthorized},
+		{http.MethodGet, "/audio/" + someUUID, http.StatusUnauthorized},
 
 		{http.MethodGet, "/discussions", http.StatusUnauthorized},
 		{http.MethodPost, "/discussions", http.StatusUnauthorized},
@@ -399,7 +405,8 @@ func TestDocumentedOperations(t *testing.T) {
 		"abandonUpload", "acceptTriage", "addParticipant", "appendChunk", "appendRevision",
 		"appendTurn", "createNote", "createPage", "createSelfInvite", "createSession",
 		"createSessionFromAccess", "createUser", "createUserInvite", "deleteSession",
-		"deleteUser", "getDiscussion", "getHealthz", "getMe", "getNote", "getReadyz",
+		"deleteUser", "getDiscussion", "getHealthz", "getMe", "getMemoAudio",
+		"getMemoTranscript", "getNote", "getNoteProvenance", "getReadyz",
 		"getStorageReport", "getTier1Page", "getTranscriptionReport", "getTriageBatch",
 		"getTriageReport", "getUpload", "holdMemo", "listDeferred", "listDiscussions",
 		"listNoteBacklinks", "listNoteRevisions", "listNotes", "listPages", "listSessions", "listTier1Pages",
@@ -408,7 +415,7 @@ func TestDocumentedOperations(t *testing.T) {
 		"search", "updateMe",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Errorf("operations = %v, want %v.\nAll 47 routes are in the document now; a change here is a change to the surface.", got, want)
+		t.Errorf("operations = %v, want %v.\nAll 50 routes are in the document now; a change here is a change to the surface.", got, want)
 	}
 }
 
@@ -477,7 +484,16 @@ func TestACredentialedCallerIsNotRefusedByTheWrappers(t *testing.T) {
 		{http.MethodGet, "/notes/CHR-0311/revisions", member, "member-token"},
 		{http.MethodPost, "/notes/CHR-0311/revisions", member, "member-token"},
 		{http.MethodGet, "/notes/CHR-0311/backlinks", member, "member-token"},
+		{http.MethodGet, "/notes/CHR-0311/provenance", member, "member-token"},
 		{http.MethodGet, "/search", owner, "owner-token"},
+
+		// A MEMBER REACHES BOTH MEMO ROUTES' HANDLERS, and is then scoped
+		// inside them (CHRN-107 ruling 2). The policy table says `member`
+		// because the credential is a session; whose memo it is, is
+		// mayReadMemo's to answer, and a 404 rather than a wrapper's 403 is
+		// what says so.
+		{http.MethodGet, "/transcripts/" + someUUID, member, "member-token"},
+		{http.MethodGet, "/audio/" + someUUID, member, "member-token"},
 
 		{http.MethodGet, "/discussions", member, "member-token"},
 		{http.MethodPost, "/discussions", member, "member-token"},
@@ -645,6 +661,7 @@ func TestEveryOperationDeclaresWhatItsSharedCodeCanAnswer(t *testing.T) {
 	groupGuard := map[string]string{
 		"triage":        "triageUnavailable",
 		"uploads":       "uploadsReady",
+		"memos":         "memosUnavailable",
 		"storage":       "the nil audio store check",
 		"transcription": "the nil transcription store check",
 		"references":    "referencesUnavailable",
@@ -822,6 +839,14 @@ func TestEveryParameterBindingOperationRefusesAMalformedOne(t *testing.T) {
 		{"listNoteBacklinks", http.MethodGet, "/notes/CHR-0311/backlinks?limit=not-a-number", "owner-token", nil},
 		{"search", http.MethodGet, "/search?q=pruner&limit=not-a-number", "owner-token", nil},
 		{"search", http.MethodGet, "/search", "owner-token", nil},
+
+		// The recording behind a note (CHRN-107): the two {memo_id} binders.
+		// getNoteProvenance's own 400 is noteRef's rather than the generated
+		// binder's, so it runs after the availability guard and is driven in
+		// memos_test.go against a router that has a store — same envelope,
+		// different producer.
+		{"getMemoTranscript", http.MethodGet, "/transcripts/not-a-uuid", "owner-token", nil},
+		{"getMemoAudio", http.MethodGet, "/audio/not-a-uuid", "owner-token", nil},
 
 		// Discussions (CHRN-99): the page list's binders and the one {id}.
 		{"listDiscussions", http.MethodGet, "/discussions?page=estate&limit=not-a-number", "owner-token", nil},

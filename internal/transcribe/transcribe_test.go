@@ -621,34 +621,6 @@ func TestTheAttemptCeilingBoundsTheLoop(t *testing.T) {
 	}
 }
 
-// The audio part's media type comes from what the recording IS, not from what
-// it is called — a filename is display-only in this system.
-func TestMediaTypeFor(t *testing.T) {
-	opus := "opus"
-	webm := "memo.webm"
-	m4a := "voice.M4A"
-	odd := "recording.xyz"
-
-	cases := []struct {
-		name string
-		memo store.Memo
-		want string
-	}{
-		{"codec wins over filename", store.Memo{Codec: &opus, OriginalFilename: &webm}, "audio/ogg"},
-		{"filename when there is no codec", store.Memo{OriginalFilename: &webm}, "audio/webm"},
-		{"extensions are case-insensitive", store.Memo{OriginalFilename: &m4a}, "audio/mp4"},
-		{"an unknown extension falls back", store.Memo{OriginalFilename: &odd}, "audio/ogg"},
-		{"nothing known falls back", store.Memo{}, "audio/ogg"},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if got := mediaTypeFor(c.memo); got != c.want {
-				t.Fatalf("got %q, want %q", got, c.want)
-			}
-		})
-	}
-}
-
 func sha256Hex(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])

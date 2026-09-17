@@ -14,3 +14,11 @@ export function formatTimestamp(iso: string): string {
 export function formatDate(iso: string): string {
   return iso.slice(0, 10)
 }
+
+// CHRN-107: board 1c's `FROM MEMO 12:55` is a time of day and nothing else —
+// the date is already on the note. Same slice-of-the-instant approach as the
+// two above, and deliberately not a locale-aware clock: a mono metadata line
+// wants one unambiguous reading of the instant it was given.
+export function formatClock(iso: string): string {
+  return iso.slice(11, 16)
+}

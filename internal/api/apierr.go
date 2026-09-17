@@ -91,6 +91,41 @@ const (
 	codeResolutionFixed     = "resolution_fixed"
 	codeNoteDeleted         = "note_deleted"
 
+	// The recording behind a note (CHRN-107). Six codes, each one a branch a
+	// client acts on differently -- and one deliberately NOT added:
+	// `memo_not_readable` does not exist, because another account's memo
+	// answers `not_found`, which is the whole reason for not adding it.
+	//
+	// No CHxxx joins them, and the absence is the point: three read-only
+	// operations create no table, add no column and write nothing, so there is
+	// no rule for a table guard to enforce. The next free block is CH110.
+
+	// codeAudioPruned is the invariant on the wire: the recording was deleted
+	// by policy and the transcript remains. Distinct from not_found because
+	// DELETED and NEVER EXISTED are different facts, and 404 collapses them
+	// into the one that reads like a bug.
+	codeAudioPruned = "audio_pruned"
+
+	// codeAudioMissing is CHRN-23's `missing`: the memo expects its audio and
+	// the file is not there. 500 rather than 404 or 410 -- both of those would
+	// tell a client the absence is expected, and it is not.
+	codeAudioMissing = "audio_missing"
+
+	// codeNoTranscript is a readable memo with no transcript row yet. Distinct
+	// from not_found because the remedy is WAIT rather than "you have the
+	// wrong id".
+	codeNoTranscript = "no_transcript"
+
+	// The two http.ServeContent can answer. Both are written in this API's
+	// envelope by errorEnvelopeWriter; http.Error's text/plain would ship a
+	// second error shape inside one document.
+	codeRangeNotSatisfiable = "range_not_satisfiable"
+	codePreconditionFailed  = "precondition_failed"
+
+	// codeMemosUnconfigured is the memos group's guard, on
+	// wiki_unconfigured's exact pattern.
+	codeMemosUnconfigured = "memos_unconfigured"
+
 	codeAudioUnconfigured         = "audio_unconfigured"
 	codeTranscriptionUnconfigured = "transcription_unconfigured"
 	codeAccountsUnconfigured      = "accounts_unconfigured"
