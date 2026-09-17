@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.16.0](https://github.com/Einlanzerous/chronicle/compare/v1.15.0...v1.16.0) (2026-09-17)
+
+
+### Features
+
+* **markdown:** render GFM tables and VitePress containers, styled on every rendered surface (CHRN-108) ([#102](https://github.com/Einlanzerous/chronicle/issues/102)) ([6e50e48](https://github.com/Einlanzerous/chronicle/commit/6e50e4895ee897d3f5efa7f914502db6ffe2826e))
+
 ## [1.15.0](https://github.com/Einlanzerous/chronicle/compare/v1.14.0...v1.15.0) (2026-09-17)
 
 
