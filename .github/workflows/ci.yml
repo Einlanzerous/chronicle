@@ -227,6 +227,57 @@ jobs:
         with:
           version: v2.12.2
 
+  # The web app (CHRN-53, CHRN-54). Mirrors Lyceum's web.yml: bun is PINNED
+  # (the CHRN-53 decision comment, and LYCM-71's reason for pinning it there
+  # too) rather than floating, and kept in sync with web/package.json's
+  # `packageManager` (the source of truth) and deploy/Dockerfile's web stage.
+  #
+  # This job does NOT run as part of `verify` above: that job's Go build and
+  # test must succeed with only the checked-in web/dist/.gitkeep placeholder
+  # present (and does -- the embed pattern always resolves), so a web-side
+  # failure here never blocks the Go build from being provably fine on its
+  # own.
+  web:
+    name: web
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run build
+
+      # web/src/api/schema.d.ts is GENERATED from ../openapi.yaml
+      # (openapi-typescript, pinned as a devDependency). Regenerated to a
+      # temp file and byte-compared, so the check never rewrites what it is
+      # checking -- the same guard verify.sh's "web api types" step runs
+      # locally, and the same reasoning as the Go-side "API contract
+      # staleness guard" step above: a generated artefact with no guard is
+      # one somebody hand-edits, and this document has three OTHER clients
+      # besides this one.
+      - name: Web API types staleness guard
+        run: |
+          tmp="$(mktemp -t webapi.XXXXXX.d.ts)"
+          bunx openapi-typescript ../openapi.yaml -o "$tmp"
+          if ! diff -u src/api/schema.d.ts "$tmp"; then
+            echo "::error file=web/src/api/schema.d.ts::the generated types do not match openapi.yaml."
+            echo "Run scripts/gen-webapi.sh (from the repo root) and commit the result."
+            exit 1
+          fi
+          echo "web/src/api/schema.d.ts matches the contract."
+
+      # CHRN-54's Done-when made mechanical: no component contains a hex
+      # colour literal, because every colour is a token in
+      # web/src/styles/tokens.css. Mirrors verify.sh's "tokens" step.
+      - name: Design tokens guard
+        working-directory: .
+        run: scripts/check-tokens.sh
+
   schema:
     name: migration staleness guard
     runs-on: ubuntu-latest
