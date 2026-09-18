@@ -100,6 +100,51 @@ func (e MemoRetention) Valid() bool {
 	}
 }
 
+// Defines values for MemoProvenanceDurationSource.
+const (
+	MemoProvenanceDurationSourceMemoHeader MemoProvenanceDurationSource = "memo_header"
+	MemoProvenanceDurationSourceTranscript MemoProvenanceDurationSource = "transcript"
+)
+
+// Valid indicates whether the value is a known member of the MemoProvenanceDurationSource enum.
+func (e MemoProvenanceDurationSource) Valid() bool {
+	switch e {
+	case MemoProvenanceDurationSourceMemoHeader:
+		return true
+	case MemoProvenanceDurationSourceTranscript:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MemoProvenanceRetentionStatus.
+const (
+	AwaitingTranscript MemoProvenanceRetentionStatus = "awaiting_transcript"
+	DiscardPending     MemoProvenanceRetentionStatus = "discard_pending"
+	Pinned             MemoProvenanceRetentionStatus = "pinned"
+	Pruned             MemoProvenanceRetentionStatus = "pruned"
+	Scheduled          MemoProvenanceRetentionStatus = "scheduled"
+)
+
+// Valid indicates whether the value is a known member of the MemoProvenanceRetentionStatus enum.
+func (e MemoProvenanceRetentionStatus) Valid() bool {
+	switch e {
+	case AwaitingTranscript:
+		return true
+	case DiscardPending:
+		return true
+	case Pinned:
+		return true
+	case Pruned:
+		return true
+	case Scheduled:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for OpenUploadRequestRetention.
 const (
 	OpenUploadRequestRetentionDays30     OpenUploadRequestRetention = "days_30"
@@ -832,18 +877,30 @@ type Memo struct {
 	// AudioPruned The recording is gone and the transcript remains. Never true without
 	// a durable transcript — that predicate, not the calendar, is what
 	// gates deletion.
-	AudioPruned bool      `json:"audio_pruned"`
-	ByteSize    int64     `json:"byte_size"`
-	CapturedAt  time.Time `json:"captured_at"`
-	Codec       *string   `json:"codec"`
-	ContentHash string    `json:"content_hash"`
+	AudioPruned bool `json:"audio_pruned"`
+
+	// AudioPrunedAt When the audio was deleted, and null until it is. Set exactly when
+	// `retention_status` is `pruned`, which is also when `audio_pruned` is
+	// true — the boolean says whether, this says when.
+	AudioPrunedAt *time.Time `json:"audio_pruned_at"`
+	ByteSize      int64      `json:"byte_size"`
+	CapturedAt    time.Time  `json:"captured_at"`
+	Codec         *string    `json:"codec"`
+	ContentHash   string     `json:"content_hash"`
 
 	// DurationMs Null until something has decoded the file; a declaration is not a measurement.
 	DurationMs       *int32             `json:"duration_ms"`
 	Id               openapi_types.UUID `json:"id"`
 	OriginalFilename *string            `json:"original_filename,omitempty"`
 
-	// PrunesAt When, on that clause. Null when nothing will prune it.
+	// PrunesAt When, on that clause — and **null unless `retention_status` is
+	// `scheduled`** (CHRN-107 ruling 7). It used to carry
+	// `audio_pruned_at` on a pruned memo, because `store.RetentionStatus`
+	// overloads one `at` across both cases and this field took it
+	// unexamined: a field named `prunes_at` answering a date in the past,
+	// on exactly the memo a person is most likely to be looking at when
+	// they wonder what happened to it. The past date is `audio_pruned_at`
+	// below; this one only ever names a future sweep.
 	PrunesAt  *time.Time    `json:"prunes_at"`
 	Retention MemoRetention `json:"retention"`
 
@@ -857,6 +914,162 @@ type Memo struct {
 
 // MemoRetention defines model for Memo.Retention.
 type MemoRetention string
+
+// MemoProvenance One memo, and which revision it produced. **Metadata about a recording,
+// which every member who can read the note may have** — not the recording
+// and not its words: those are `getMemoAudio` and `getMemoTranscript`, and
+// they answer the author and the owner only.
+//
+// Deliberately NOT a `Memo`. That payload carries `content_hash`, which
+// scoped by its author IS the storage path (`<author_id>/<hash[:2]>/<hash>`
+// and nothing else), and `original_filename`, which is authored text
+// arriving from a client that `internal/upload` already declines to log.
+// Neither is here.
+type MemoProvenance struct {
+	// AudioPrunedAt When the audio was deleted, and null until it is. Set exactly when
+	// `retention_status` is `pruned`. **This and `transcript.present` are
+	// what *transcript kept, audio pruned <date>* is rendered from** —
+	// never the audio operation's refusal, which carries only a `code` and
+	// a `message` and which an `<audio src>` element never sees at all.
+	AudioPrunedAt *time.Time `json:"audio_pruned_at"`
+
+	// AudioReadable **A permission, and it says nothing about the disk.** True when this
+	// caller may ask `getMemoAudio` for the bytes: the memo's author, or
+	// the owner. Whether the bytes still EXIST is `retention_status`'s
+	// job — `pruned` says they went by policy, and CHRN-23's `missing` is
+	// a disk fact no query behind this payload performs. A field joining
+	// the two would answer `true` for a memo whose file has gone astray,
+	// which is the one state this contract must not describe
+	// optimistically.
+	AudioReadable bool `json:"audio_readable"`
+
+	// CapturedAt When it was recorded. Immutable — `CH002` refuses an UPDATE that
+	// moves it — which is also why it is what the audio stream's
+	// `Last-Modified` is built from.
+	CapturedAt time.Time `json:"captured_at"`
+
+	// DurationMs How long the recording is. Null for a memo with neither a header
+	// duration nor a transcript — the pre-transcription window, and
+	// honest rather than a zero.
+	DurationMs *int64 `json:"duration_ms"`
+
+	// DurationSource WHICH COLUMN ANSWERED, because two hold a duration and they are
+	// measured differently: `memos.duration_ms` is Ogg granule
+	// arithmetic, exact, and populated for Ogg Opus only, while
+	// `transcripts.audio_duration_ms` is measured off the normalised
+	// 16 kHz mono WAV and is populated for everything that transcribes.
+	// Every memo in the live corpus arrives m4a with a NULL header
+	// duration, so today this says `transcript` — and reading the header
+	// column alone would render a blank where a number should be, for the
+	// whole corpus, with no error anywhere.
+	//
+	// Stating the source rather than quietly preferring one is what keeps
+	// CHRN-85's question open: whichever of its three shapes wins, this
+	// field collapses to a single value and the contract does not change.
+	// Absent exactly when `duration_ms` is null.
+	DurationSource *MemoProvenanceDurationSource `json:"duration_source,omitempty"`
+
+	// MemoId Pass it to `getMemoTranscript` or `getMemoAudio`.
+	MemoId openapi_types.UUID `json:"memo_id"`
+
+	// PrunesAt When the audio is due to go. **Null on every status but
+	// `scheduled`**, and never computable from `captured_at` by a client:
+	// `awaiting_transcript` prunes WHEN TRANSCRIBED and has no date at
+	// all, and rendering `captured_at + 30 days` in its place produces
+	// exactly the label CHRN-22 §3 forbids — one that passes while
+	// nothing happens.
+	PrunesAt *time.Time `json:"prunes_at"`
+
+	// RetentionStatus What will happen to this memo's audio, from `store.RetentionStatus`
+	// — the same clause the pruner sweeps with, which is what makes the
+	// date rendered here the date the job will use rather than a second
+	// calculation that can drift from it.
+	RetentionStatus MemoProvenanceRetentionStatus `json:"retention_status"`
+	RevisionId      openapi_types.UUID            `json:"revision_id"`
+
+	// RevisionSeq Which revision of the note this memo's text became. Zips against
+	// `listNoteRevisions`, whose `seq` is the same number.
+	RevisionSeq int `json:"revision_seq"`
+
+	// Transcript Whether this memo has been transcribed, and whether this caller may read
+	// it. Two separate facts: `present` is about the corpus, `readable` is
+	// about the caller, and splitting them is what lets a client render
+	// *transcript kept* to somebody who may not read the words.
+	//
+	// **It carries no durability claim of its own, on purpose.** `present`,
+	// `model`, `transcribed_at` and `partial` describe `GetTranscript`'s row —
+	// the newest complete transcript, or the newest partial when there is no
+	// complete one — while `retention_status` above is computed from whether
+	// ANY row passes the durability floor. The two can disagree, and the case
+	// is real rather than theoretical: a later complete transcript from a
+	// smaller model is what `GetTranscript` returns while an older
+	// `small.en` row is what holds the audio back from the sweep. Durability
+	// is read from `retention_status`, in the one place it is computed.
+	Transcript ProvenanceTranscript `json:"transcript"`
+}
+
+// MemoProvenanceDurationSource WHICH COLUMN ANSWERED, because two hold a duration and they are
+// measured differently: `memos.duration_ms` is Ogg granule
+// arithmetic, exact, and populated for Ogg Opus only, while
+// `transcripts.audio_duration_ms` is measured off the normalised
+// 16 kHz mono WAV and is populated for everything that transcribes.
+// Every memo in the live corpus arrives m4a with a NULL header
+// duration, so today this says `transcript` — and reading the header
+// column alone would render a blank where a number should be, for the
+// whole corpus, with no error anywhere.
+//
+// Stating the source rather than quietly preferring one is what keeps
+// CHRN-85's question open: whichever of its three shapes wins, this
+// field collapses to a single value and the contract does not change.
+// Absent exactly when `duration_ms` is null.
+type MemoProvenanceDurationSource string
+
+// MemoProvenanceRetentionStatus What will happen to this memo's audio, from `store.RetentionStatus`
+// — the same clause the pruner sweeps with, which is what makes the
+// date rendered here the date the job will use rather than a second
+// calculation that can drift from it.
+type MemoProvenanceRetentionStatus string
+
+// MemoTranscript What a memo said. **Tier 2 and permanent**: the audio behind it is pruned
+// at thirty days and this is what remains.
+//
+// Named `MemoTranscript` rather than `Transcript` deliberately.
+// `MemoProvenance.duration_source` takes the value `transcript`, and a
+// schema named for an enum value renames that enum's generated Go
+// constants package-wide.
+type MemoTranscript struct {
+	// AudioDurationMs Measured off the normalised 16 kHz mono WAV. Evidence, not a
+	// predicate.
+	AudioDurationMs *int64 `json:"audio_duration_ms"`
+
+	// Backend What ran it — `vulkan`, `cpu`.
+	Backend string `json:"backend"`
+
+	// CoveredMs How much of the recording the segments span. Short of the duration
+	// on any recording that ends in silence, which is most of them — so it
+	// is evidence and never a completeness test.
+	CoveredMs *int64             `json:"covered_ms"`
+	MemoId    openapi_types.UUID `json:"memo_id"`
+
+	// Model Runner-qualified, as the store holds it — `whisper.cpp/small.en`.
+	Model string `json:"model"`
+
+	// Partial The service recorded that its own run did not complete. A partial
+	// transcript never satisfies the durability floor, so it never lets
+	// the pruner take the audio.
+	Partial bool `json:"partial"`
+
+	// Segments The spans of speech, in order. Whole rather than bounded: the live
+	// corpus averages under two minutes a memo, which is a few kilobytes
+	// of segments, so a bounded-or-not ruling here would be a ruling about
+	// nothing.
+	Segments []TranscriptSegment `json:"segments"`
+
+	// Text Never null and MAY BE EMPTY. A memo that is forty seconds of silence
+	// has a true and complete answer, and the answer is "no speech".
+	Text          string    `json:"text"`
+	TranscribedAt time.Time `json:"transcribed_at"`
+}
 
 // Mismatch defines model for Mismatch.
 type Mismatch struct {
@@ -1157,6 +1370,54 @@ type ProposalDestination string
 // `note_revisions_guard` requires a confirming person who is never an
 // agent.
 type ProposalVerb string
+
+// ProvenanceList A note's memos, oldest revision first. No `next_cursor`: *N* is 1 for
+// every note in the live corpus, and an undriven cursor is a window no
+// fixture crosses — an intention rather than a contract. It arrives with
+// the note that needs it, and with a test that crosses a page.
+type ProvenanceList struct {
+	// Items One entry per revision that came from a memo. **Empty for a note
+	// somebody typed**, which is not an error and not a 404.
+	Items []MemoProvenance `json:"items"`
+}
+
+// ProvenanceTranscript Whether this memo has been transcribed, and whether this caller may read
+// it. Two separate facts: `present` is about the corpus, `readable` is
+// about the caller, and splitting them is what lets a client render
+// *transcript kept* to somebody who may not read the words.
+//
+// **It carries no durability claim of its own, on purpose.** `present`,
+// `model`, `transcribed_at` and `partial` describe `GetTranscript`'s row —
+// the newest complete transcript, or the newest partial when there is no
+// complete one — while `retention_status` above is computed from whether
+// ANY row passes the durability floor. The two can disagree, and the case
+// is real rather than theoretical: a later complete transcript from a
+// smaller model is what `GetTranscript` returns while an older
+// `small.en` row is what holds the audio back from the sweep. Durability
+// is read from `retention_status`, in the one place it is computed.
+type ProvenanceTranscript struct {
+	// Model Runner-qualified, as the store holds it — `whisper.cpp/small.en`,
+	// not `small.en`. Absent when no transcript exists.
+	Model *string `json:"model,omitempty"`
+
+	// Partial The ASR service recorded that its own run did not complete, and this
+	// row is the fallback `GetTranscript` returned because no complete
+	// transcript exists yet. A non-author holds `readable: false` and has
+	// no other way to learn that a `present: true` memo has only an
+	// incomplete transcript behind it. Never computed here, and never from
+	// `covered_ms` against a duration.
+	Partial *bool `json:"partial,omitempty"`
+
+	// Present A transcript row exists. Says nothing about whether this caller may read it.
+	Present bool `json:"present"`
+
+	// Readable This caller may ask `getMemoTranscript` for the words: the memo's
+	// author, or the owner.
+	Readable bool `json:"readable"`
+
+	// TranscribedAt Absent when no transcript exists.
+	TranscribedAt *time.Time `json:"transcribed_at,omitempty"`
+}
 
 // Readiness defines model for Readiness.
 type Readiness struct {
@@ -1680,6 +1941,13 @@ type Tier1PageSummary struct {
 	Title string `json:"title"`
 }
 
+// TranscriptSegment One span of speech.
+type TranscriptSegment struct {
+	EndMs   int64  `json:"end_ms"`
+	StartMs int64  `json:"start_ms"`
+	Text    string `json:"text"`
+}
+
 // TranscriptionReport defines model for TranscriptionReport.
 type TranscriptionReport struct {
 	// Enabled Whether a transcription pump is configured at all. Without it, an
@@ -1911,6 +2179,9 @@ type DiscussionRef = string
 // Limit defines model for Limit.
 type Limit = int
 
+// MemoId defines model for MemoId.
+type MemoId = openapi_types.UUID
+
 // NoteRef defines model for NoteRef.
 type NoteRef = string
 
@@ -1929,6 +2200,9 @@ type UploadId = openapi_types.UUID
 // UserId defines model for UserId.
 type UserId = openapi_types.UUID
 
+// AudioUnavailable defines model for AudioUnavailable.
+type AudioUnavailable = Error
+
 // BadRequest defines model for BadRequest.
 type BadRequest = Error
 
@@ -1943,6 +2217,9 @@ type Gone = NoteTombstone
 
 // InternalError defines model for InternalError.
 type InternalError = Error
+
+// MemosUnconfigured defines model for MemosUnconfigured.
+type MemosUnconfigured = Error
 
 // NotFound defines model for NotFound.
 type NotFound = Error
@@ -1999,6 +2276,17 @@ type UploadsUnconfigured = Error
 
 // WikiUnconfigured defines model for WikiUnconfigured.
 type WikiUnconfigured = Error
+
+// GetMemoAudioParams defines parameters for GetMemoAudio.
+type GetMemoAudioParams struct {
+	// Range One byte range, `bytes=0-65535`. A header naming more than one — a
+	// comma — is IGNORED and the whole body answered, so no response here
+	// is `multipart/byteranges`.
+	Range *string `json:"Range,omitempty"`
+
+	// IfNoneMatch The `ETag` of a previous read — the memo id, quoted. A match answers `304`.
+	IfNoneMatch *string `json:"If-None-Match,omitempty"`
+}
 
 // ListDiscussionsParams defines parameters for ListDiscussions.
 type ListDiscussionsParams struct {
@@ -2252,6 +2540,9 @@ type ServerInterface interface {
 	// CreateUserInvite Mint a fresh invite for an existing account.
 	// (POST /admin/users/{id}/invite)
 	CreateUserInvite(w http.ResponseWriter, r *http.Request, id UserId)
+	// GetMemoAudio The recording itself, while it still exists.
+	// (GET /audio/{memo_id})
+	GetMemoAudio(w http.ResponseWriter, r *http.Request, memoId MemoId, params GetMemoAudioParams)
 	// CreateSelfInvite Mint an invite for another of your own devices.
 	// (POST /auth/invite)
 	CreateSelfInvite(w http.ResponseWriter, r *http.Request)
@@ -2330,6 +2621,9 @@ type ServerInterface interface {
 	// ListNoteBacklinks The notes whose text names this one, resolved.
 	// (GET /notes/{ref}/backlinks)
 	ListNoteBacklinks(w http.ResponseWriter, r *http.Request, ref NoteRef, params ListNoteBacklinksParams)
+	// GetNoteProvenance The memos this note's text came from, oldest revision first.
+	// (GET /notes/{ref}/provenance)
+	GetNoteProvenance(w http.ResponseWriter, r *http.Request, ref NoteRef)
 	// ListNoteRevisions A note's history, oldest first, with each revision's text.
 	// (GET /notes/{ref}/revisions)
 	ListNoteRevisions(w http.ResponseWriter, r *http.Request, ref NoteRef, params ListNoteRevisionsParams)
@@ -2357,6 +2651,9 @@ type ServerInterface interface {
 	// ListTier1Pages Every page of the generated estate wiki.
 	// (GET /tier1/pages)
 	ListTier1Pages(w http.ResponseWriter, r *http.Request)
+	// GetMemoTranscript What a memo said, in full.
+	// (GET /transcripts/{memo_id})
+	GetMemoTranscript(w http.ResponseWriter, r *http.Request, memoId MemoId)
 	// AcceptTriage Confirm a batch of decisions.
 	// (POST /triage/accept)
 	AcceptTriage(w http.ResponseWriter, r *http.Request)
@@ -2496,6 +2793,75 @@ func (siw *ServerInterfaceWrapper) CreateUserInvite(w http.ResponseWriter, r *ht
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateUserInvite(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetMemoAudio operation middleware
+func (siw *ServerInterfaceWrapper) GetMemoAudio(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "memo_id" -------------
+	var memoId MemoId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "memo_id", r.PathValue("memo_id"), &memoId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "memo_id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetMemoAudioParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "Range" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Range")]; found {
+		var Range string
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Range", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Range", valueList[0], &Range, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Range", Err: err})
+			return
+		}
+
+		params.Range = &Range
+
+	}
+
+	// ------------- Optional header parameter "If-None-Match" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("If-None-Match")]; found {
+		var IfNoneMatch string
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "If-None-Match", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "If-None-Match", valueList[0], &IfNoneMatch, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "If-None-Match", Err: err})
+			return
+		}
+
+		params.IfNoneMatch = &IfNoneMatch
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetMemoAudio(w, r, memoId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3193,6 +3559,32 @@ func (siw *ServerInterfaceWrapper) ListNoteBacklinks(w http.ResponseWriter, r *h
 	handler.ServeHTTP(w, r)
 }
 
+// GetNoteProvenance operation middleware
+func (siw *ServerInterfaceWrapper) GetNoteProvenance(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "ref" -------------
+	var ref NoteRef
+
+	err = runtime.BindStyledParameterWithOptions("simple", "ref", r.PathValue("ref"), &ref, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "ref", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetNoteProvenance(w, r, ref)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListNoteRevisions operation middleware
 func (siw *ServerInterfaceWrapper) ListNoteRevisions(w http.ResponseWriter, r *http.Request) {
 
@@ -3414,6 +3806,32 @@ func (siw *ServerInterfaceWrapper) ListTier1Pages(w http.ResponseWriter, r *http
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListTier1Pages(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetMemoTranscript operation middleware
+func (siw *ServerInterfaceWrapper) GetMemoTranscript(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "memo_id" -------------
+	var memoId MemoId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "memo_id", r.PathValue("memo_id"), &memoId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "memo_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetMemoTranscript(w, r, memoId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3671,6 +4089,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/memos/uploads/{id}", wrapper.AbandonUpload)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/memos/uploads/{id}", wrapper.GetUpload)
 	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/memos/uploads/{id}", wrapper.AppendChunk)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/transcripts/{memo_id}", wrapper.GetMemoTranscript)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/audio/{memo_id}", wrapper.GetMemoAudio)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/triage/batch", wrapper.GetTriageBatch)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/triage/accept", wrapper.AcceptTriage)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/triage/hold", wrapper.HoldMemo)
@@ -3686,6 +4106,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/notes/{ref}/revisions", wrapper.ListNoteRevisions)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/notes/{ref}/revisions", wrapper.AppendRevision)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/notes/{ref}/backlinks", wrapper.ListNoteBacklinks)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/notes/{ref}/provenance", wrapper.GetNoteProvenance)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/search", wrapper.Search)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/discussions", wrapper.ListDiscussions)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/discussions", wrapper.OpenDiscussion)

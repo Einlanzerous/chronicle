@@ -645,6 +645,12 @@ func runServe(args []string) error {
 	// key set's poller finally have a reader.
 	deps.Wiki = st
 	deps.Threads = st
+	// The recording behind a note (CHRN-107). HERE, beside Wiki, and NOT inside
+	// the CHRONICLE_AUDIO_DIR block where deps.Corpus lives: provenance and the
+	// transcript are pure tier-2 database reads and must answer on a host with
+	// no audio store at all. Only GET /audio/{memo_id} touches deps.Audio, and
+	// only that route answers audio_unconfigured.
+	deps.Memos = st
 	deps.Keys = keys
 	// Chronicle's own CHR- and DSC- references resolve against tier 2
 	// directly, on the main pool: they are notes and discussions, not derived

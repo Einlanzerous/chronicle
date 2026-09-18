@@ -368,6 +368,118 @@ export interface paths {
         patch: operations["appendChunk"];
         trace?: never;
     };
+    "/transcripts/{memo_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What a memo said, in full.
+         * @description **Tier 2, authored by nobody and rebuildable by nobody.** The audio is
+         *     pruned at thirty days and this outlives it — the asymmetry the whole
+         *     retention design rests on — which is also why nothing here carries a
+         *     retention state: a transcript does not prune.
+         *
+         *     **The row is `GetTranscript`'s**: the newest COMPLETE transcript, or the
+         *     newest partial one when no complete transcript exists yet. A memo can
+         *     hold several rows — a `retranscribe` with a different model writes
+         *     another — and `partial` says which kind this one is. It is a fact the
+         *     ASR service recorded about its own run, carried across unchanged and
+         *     never computed here.
+         *
+         *     **The words, so the memo's author and the owner only.** `search` is
+         *     owner-only in this document because "the transcript half spans every
+         *     author's memos"; the same sentence applies to one named transcript, and
+         *     the distinction is the document's own: *what a person decided to write
+         *     down and what they happened to say into a phone are different facts*.
+         *     Another account's memo answers `404`, byte-identical to an id that names
+         *     nothing. A member who may not read it can tell from
+         *     `MemoProvenance.transcript.readable` without making the request.
+         *
+         *     A readable memo with no transcript row yet answers `404` with code
+         *     `no_transcript` rather than `not_found`: the remedy is to wait, not to
+         *     correct the id.
+         */
+        get: operations["getMemoTranscript"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audio/{memo_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The recording itself, while it still exists.
+         * @description `http.ServeContent` serves it, so `Range`, `206`, `If-Range`,
+         *     `If-None-Match` and `If-Modified-Since` all work and the range
+         *     arithmetic is the standard library's rather than this handler's — the
+         *     last thing to hand-roll in the one operation that serves irreplaceable
+         *     bytes. Two of its inputs are chosen rather than defaulted:
+         *
+         *     - **the validator is the memo id**, quoted. `0003`'s `CH002` refuses any
+         *       UPDATE that moves `author_id`, `content_hash`, `byte_size` or
+         *       `captured_at`, so one id names one byte sequence for as long as the
+         *       row exists. The `content_hash` would buy no extra precision and would
+         *       publish half the storage path.
+         *     - **the modification time is `captured_at`**, not the file's mtime,
+         *       which moves when a finished upload is renamed into place, when a
+         *       restore from backup rewrites it, and when CHRN-68's drill runs. A
+         *       validator that changes without the content changing is a cache that
+         *       misses for no reason.
+         *
+         *     `Cache-Control: private, no-cache` is on the response and is load
+         *     bearing. The default is not "no caching" but HEURISTIC freshness: with a
+         *     strong validator and a `Last-Modified`, RFC 9111 §4.2.2 invites a
+         *     browser to treat a memo captured 25 days ago as fresh for two and a half
+         *     days, inside which a player serves cached bytes without asking — never
+         *     seeing the `410` after a sweep, or the `404` after an access change. One
+         *     conditional request buys a `304` instead.
+         *
+         *     **A pruned memo answers `410`, never `404`.** The recording was deleted
+         *     by policy and the transcript remains; a client holding a link must be
+         *     able to tell that from *no such memo*, which is the same distinction a
+         *     withdrawn note's `410` draws. The body is the shared `Error` with code
+         *     `audio_pruned` and nothing more: the date and the surviving transcript
+         *     are on `MemoProvenance`, which is what a client already holds and the
+         *     only thing an `<audio src>` element could ever render from.
+         *
+         *     **A memo whose row expects its audio and whose file is absent answers
+         *     `500`, code `audio_missing`, and leaves an `ERROR` line** whether or not
+         *     anybody reads the response. That is CHRN-23's `missing`: not an expected
+         *     absence, but the failure the reconciliation report exists to surface, and
+         *     `storage.go` already logs the same condition unconditionally.
+         *
+         *     **The bytes, so the memo's author and the owner only** —
+         *     `getMemoTranscript`'s rule and its reason. A member who may not ask can
+         *     tell from `MemoProvenance.audio_readable` rather than from a request that
+         *     fails. The comparison runs BEFORE any retention state is read and before
+         *     the file is stat'd, so neither a refusal nor a log line can say anything
+         *     about another account's recording.
+         *
+         *     A multi-range request is not served: a `Range` header containing a comma
+         *     is dropped before `ServeContent` sees it and the whole body is answered,
+         *     which RFC 9110 permits and which no media element asks for. So
+         *     `multipart/byteranges` is never produced and is not declared.
+         */
+        get: operations["getMemoAudio"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/triage/batch": {
         parameters: {
             query?: never;
@@ -733,6 +845,71 @@ export interface paths {
          *     soft-deleted target answers `410` as `getNote` does.
          */
         get: operations["listNoteBacklinks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/notes/{ref}/provenance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The memos this note's text came from, oldest revision first.
+         * @description Board `1c`'s `FROM MEMO 12:55 · 1:44 · ROUTED BY SCRIBE` line and the
+         *     `▶ PLAY SOURCE AUDIO · 1:44 · PRUNES 2026-09-20` control under the body,
+         *     from one request and with no date a client had to compute. (The third
+         *     part of that first line needs nothing from here: `RevisionMeta.verb` is
+         *     already on the wire and is non-null exactly when a person confirmed a
+         *     Scribe proposal.)
+         *
+         *     **A list, because `tier2.note_revisions.memo_id` is per revision.**
+         *     `0011` chose that shape over a single `notes.memo_id` deliberately and
+         *     gave the case: a vague memo in March, then a concrete one after a trade
+         *     show in June, are two memos feeding two revisions of one note. One entry
+         *     per revision that came from a memo, oldest first —
+         *     `listNoteRevisions`'s order, so a header renders `items[0]` and a
+         *     history view can zip the two lists by `revision_seq`. A note somebody
+         *     typed answers an empty list, not a `404`.
+         *
+         *     **A sibling of `getNote` rather than a field on it, for a stronger
+         *     version of `listNoteBacklinks`'s reason.** A note's `ETag` is its
+         *     current revision id, and `retention_status`, `prunes_at` and
+         *     `audio_pruned_at` all move while no revision is appended — the pruner
+         *     sweeps at 03:00 and nothing about the note has changed. Inline, an
+         *     unchanged note would answer `304` carrying a `PRUNES` date for audio
+         *     that went hours ago and a play control over nothing. This payload
+         *     carries no `ETag` and is re-fetched on its own, which is also what makes
+         *     it skippable: `Note.revision.memo_id` already tells a client whether
+         *     there is any provenance to ask for.
+         *
+         *     **It is not a `Memo`.** `content_hash` scoped by its author IS the
+         *     storage path, and `original_filename` is authored text arriving from a
+         *     client; neither is here, so a member reading a shared note learns about
+         *     the recording without being handed the layout of somebody else's.
+         *     Whether this caller may have the words or the bytes is
+         *     `transcript.readable` and `audio_readable` — a permission on the payload,
+         *     so a client renders the play control's absence rather than discovering it
+         *     through a failed request.
+         *
+         *     `retention_status` is `store.RetentionStatus` unchanged: the same clause
+         *     the pruner sweeps with, which is what makes the date rendered here the
+         *     date the job will use. There is no cursor — N is 1 for every note in the
+         *     live corpus, and a window no fixture crosses is an intention rather than
+         *     a contract.
+         *
+         *     A soft-deleted note answers `410` with the tombstone, the rule every
+         *     other note sub-resource follows. The two memo operations are unaffected
+         *     by a note's withdrawal: a memo is its own tier-2 fact and did not stop
+         *     having been said.
+         */
+        get: operations["getNoteProvenance"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1455,9 +1632,23 @@ export interface components {
             retention_status: string;
             /**
              * Format: date-time
-             * @description When, on that clause. Null when nothing will prune it.
+             * @description When, on that clause — and **null unless `retention_status` is
+             *     `scheduled`** (CHRN-107 ruling 7). It used to carry
+             *     `audio_pruned_at` on a pruned memo, because `store.RetentionStatus`
+             *     overloads one `at` across both cases and this field took it
+             *     unexamined: a field named `prunes_at` answering a date in the past,
+             *     on exactly the memo a person is most likely to be looking at when
+             *     they wonder what happened to it. The past date is `audio_pruned_at`
+             *     below; this one only ever names a future sweep.
              */
             prunes_at: string | null;
+            /**
+             * Format: date-time
+             * @description When the audio was deleted, and null until it is. Set exactly when
+             *     `retention_status` is `pruned`, which is also when `audio_pruned` is
+             *     true — the boolean says whether, this says when.
+             */
+            audio_pruned_at: string | null;
             /**
              * Format: int32
              * @description Null until something has decoded the file; a declaration is not a measurement.
@@ -1467,6 +1658,218 @@ export interface components {
             /** Format: int32 */
             sample_rate_hz: number | null;
             original_filename?: string;
+        };
+        /**
+         * @description One memo, and which revision it produced. **Metadata about a recording,
+         *     which every member who can read the note may have** — not the recording
+         *     and not its words: those are `getMemoAudio` and `getMemoTranscript`, and
+         *     they answer the author and the owner only.
+         *
+         *     Deliberately NOT a `Memo`. That payload carries `content_hash`, which
+         *     scoped by its author IS the storage path (`<author_id>/<hash[:2]>/<hash>`
+         *     and nothing else), and `original_filename`, which is authored text
+         *     arriving from a client that `internal/upload` already declines to log.
+         *     Neither is here.
+         */
+        MemoProvenance: {
+            /**
+             * @description Which revision of the note this memo's text became. Zips against
+             *     `listNoteRevisions`, whose `seq` is the same number.
+             */
+            revision_seq: number;
+            /** Format: uuid */
+            revision_id: string;
+            /**
+             * Format: uuid
+             * @description Pass it to `getMemoTranscript` or `getMemoAudio`.
+             */
+            memo_id: string;
+            /**
+             * Format: date-time
+             * @description When it was recorded. Immutable — `CH002` refuses an UPDATE that
+             *     moves it — which is also why it is what the audio stream's
+             *     `Last-Modified` is built from.
+             */
+            captured_at: string;
+            /**
+             * Format: int64
+             * @description How long the recording is. Null for a memo with neither a header
+             *     duration nor a transcript — the pre-transcription window, and
+             *     honest rather than a zero.
+             */
+            duration_ms: number | null;
+            /**
+             * @description WHICH COLUMN ANSWERED, because two hold a duration and they are
+             *     measured differently: `memos.duration_ms` is Ogg granule
+             *     arithmetic, exact, and populated for Ogg Opus only, while
+             *     `transcripts.audio_duration_ms` is measured off the normalised
+             *     16 kHz mono WAV and is populated for everything that transcribes.
+             *     Every memo in the live corpus arrives m4a with a NULL header
+             *     duration, so today this says `transcript` — and reading the header
+             *     column alone would render a blank where a number should be, for the
+             *     whole corpus, with no error anywhere.
+             *
+             *     Stating the source rather than quietly preferring one is what keeps
+             *     CHRN-85's question open: whichever of its three shapes wins, this
+             *     field collapses to a single value and the contract does not change.
+             *     Absent exactly when `duration_ms` is null.
+             * @enum {string}
+             */
+            duration_source?: "memo_header" | "transcript";
+            /**
+             * @description **A permission, and it says nothing about the disk.** True when this
+             *     caller may ask `getMemoAudio` for the bytes: the memo's author, or
+             *     the owner. Whether the bytes still EXIST is `retention_status`'s
+             *     job — `pruned` says they went by policy, and CHRN-23's `missing` is
+             *     a disk fact no query behind this payload performs. A field joining
+             *     the two would answer `true` for a memo whose file has gone astray,
+             *     which is the one state this contract must not describe
+             *     optimistically.
+             */
+            audio_readable: boolean;
+            /**
+             * @description What will happen to this memo's audio, from `store.RetentionStatus`
+             *     — the same clause the pruner sweeps with, which is what makes the
+             *     date rendered here the date the job will use rather than a second
+             *     calculation that can drift from it.
+             * @enum {string}
+             */
+            retention_status: "pruned" | "pinned" | "awaiting_transcript" | "discard_pending" | "scheduled";
+            /**
+             * Format: date-time
+             * @description When the audio is due to go. **Null on every status but
+             *     `scheduled`**, and never computable from `captured_at` by a client:
+             *     `awaiting_transcript` prunes WHEN TRANSCRIBED and has no date at
+             *     all, and rendering `captured_at + 30 days` in its place produces
+             *     exactly the label CHRN-22 §3 forbids — one that passes while
+             *     nothing happens.
+             */
+            prunes_at: string | null;
+            /**
+             * Format: date-time
+             * @description When the audio was deleted, and null until it is. Set exactly when
+             *     `retention_status` is `pruned`. **This and `transcript.present` are
+             *     what *transcript kept, audio pruned <date>* is rendered from** —
+             *     never the audio operation's refusal, which carries only a `code` and
+             *     a `message` and which an `<audio src>` element never sees at all.
+             */
+            audio_pruned_at: string | null;
+            transcript: components["schemas"]["ProvenanceTranscript"];
+        };
+        /**
+         * @description Whether this memo has been transcribed, and whether this caller may read
+         *     it. Two separate facts: `present` is about the corpus, `readable` is
+         *     about the caller, and splitting them is what lets a client render
+         *     *transcript kept* to somebody who may not read the words.
+         *
+         *     **It carries no durability claim of its own, on purpose.** `present`,
+         *     `model`, `transcribed_at` and `partial` describe `GetTranscript`'s row —
+         *     the newest complete transcript, or the newest partial when there is no
+         *     complete one — while `retention_status` above is computed from whether
+         *     ANY row passes the durability floor. The two can disagree, and the case
+         *     is real rather than theoretical: a later complete transcript from a
+         *     smaller model is what `GetTranscript` returns while an older
+         *     `small.en` row is what holds the audio back from the sweep. Durability
+         *     is read from `retention_status`, in the one place it is computed.
+         */
+        ProvenanceTranscript: {
+            /** @description A transcript row exists. Says nothing about whether this caller may read it. */
+            present: boolean;
+            /**
+             * @description This caller may ask `getMemoTranscript` for the words: the memo's
+             *     author, or the owner.
+             */
+            readable: boolean;
+            /**
+             * @description Runner-qualified, as the store holds it — `whisper.cpp/small.en`,
+             *     not `small.en`. Absent when no transcript exists.
+             */
+            model?: string;
+            /**
+             * Format: date-time
+             * @description Absent when no transcript exists.
+             */
+            transcribed_at?: string;
+            /**
+             * @description The ASR service recorded that its own run did not complete, and this
+             *     row is the fallback `GetTranscript` returned because no complete
+             *     transcript exists yet. A non-author holds `readable: false` and has
+             *     no other way to learn that a `present: true` memo has only an
+             *     incomplete transcript behind it. Never computed here, and never from
+             *     `covered_ms` against a duration.
+             */
+            partial?: boolean;
+        };
+        /**
+         * @description A note's memos, oldest revision first. No `next_cursor`: *N* is 1 for
+         *     every note in the live corpus, and an undriven cursor is a window no
+         *     fixture crosses — an intention rather than a contract. It arrives with
+         *     the note that needs it, and with a test that crosses a page.
+         */
+        ProvenanceList: {
+            /**
+             * @description One entry per revision that came from a memo. **Empty for a note
+             *     somebody typed**, which is not an error and not a 404.
+             */
+            items: components["schemas"]["MemoProvenance"][];
+        };
+        /**
+         * @description What a memo said. **Tier 2 and permanent**: the audio behind it is pruned
+         *     at thirty days and this is what remains.
+         *
+         *     Named `MemoTranscript` rather than `Transcript` deliberately.
+         *     `MemoProvenance.duration_source` takes the value `transcript`, and a
+         *     schema named for an enum value renames that enum's generated Go
+         *     constants package-wide.
+         */
+        MemoTranscript: {
+            /** Format: uuid */
+            memo_id: string;
+            /**
+             * @description Never null and MAY BE EMPTY. A memo that is forty seconds of silence
+             *     has a true and complete answer, and the answer is "no speech".
+             */
+            text: string;
+            /**
+             * @description The spans of speech, in order. Whole rather than bounded: the live
+             *     corpus averages under two minutes a memo, which is a few kilobytes
+             *     of segments, so a bounded-or-not ruling here would be a ruling about
+             *     nothing.
+             */
+            segments: components["schemas"]["TranscriptSegment"][];
+            /**
+             * @description The service recorded that its own run did not complete. A partial
+             *     transcript never satisfies the durability floor, so it never lets
+             *     the pruner take the audio.
+             */
+            partial: boolean;
+            /** @description Runner-qualified, as the store holds it — `whisper.cpp/small.en`. */
+            model: string;
+            /** @description What ran it — `vulkan`, `cpu`. */
+            backend: string;
+            /**
+             * Format: int64
+             * @description Measured off the normalised 16 kHz mono WAV. Evidence, not a
+             *     predicate.
+             */
+            audio_duration_ms: number | null;
+            /**
+             * Format: int64
+             * @description How much of the recording the segments span. Short of the duration
+             *     on any recording that ends in silence, which is most of them — so it
+             *     is evidence and never a completeness test.
+             */
+            covered_ms: number | null;
+            /** Format: date-time */
+            transcribed_at: string;
+        };
+        /** @description One span of speech. */
+        TranscriptSegment: {
+            /** Format: int64 */
+            start_ms: number;
+            /** Format: int64 */
+            end_ms: number;
+            text: string;
         };
         TriageBatch: {
             items: components["schemas"]["BatchItem"][];
@@ -2620,6 +3023,39 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
+        /**
+         * @description this router was assembled with no memo store behind it. `serve` always
+         *     supplies one, so no deployment reaches this; declared because the
+         *     handler answers it, and driven by the test that builds the router
+         *     without one — `WikiUnconfigured`'s pattern and its reason. It is also
+         *     what lets the `memos` tag join `groupGuard`: a group guard with no code
+         *     to answer is a group guard that cannot be declared.
+         */
+        MemosUnconfigured: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /**
+         * @description **Two codes, because this is the one operation that needs two stores.**
+         *     `memos_unconfigured` when the router was assembled with no memo store,
+         *     and `audio_unconfigured` when this deployment has no
+         *     `CHRONICLE_AUDIO_DIR` — the code the storage report has answered since
+         *     CHRN-23, here with a shared component rather than an inline one. 503 and
+         *     not 404, on the rule this API states in four places: "not configured
+         *     here" and "wrong URL" are different facts.
+         */
+        AudioUnavailable: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
         /** @description no session, or one this deployment does not know */
         Unauthorized: {
             headers: {
@@ -2693,6 +3129,13 @@ export interface components {
         SessionId: string;
         UserId: string;
         UploadId: string;
+        /**
+         * @description A memo's id. `RevisionMeta.memo_id` is where a client gets one, and for
+         *     a member who is not the author it is the ONLY place: `SearchHit.memo_id`
+         *     and the transcription report are owner-only, and `BatchItem.memo_id` is
+         *     scoped to the author.
+         */
+        MemoId: string;
     };
     requestBodies: never;
     headers: {
@@ -2709,6 +3152,33 @@ export interface components {
          *     carry it rather than only the successful ones.
          */
         UploadOffset: number;
+        /**
+         * @description `bytes`. What tells a player it may seek rather than fetch a whole
+         *     recording to hear the end of it.
+         */
+        AcceptRanges: string;
+        /**
+         * @description THE MEMO ID, quoted — a strong validator with nothing derived in it.
+         *     `CH002` refuses any UPDATE that moves `author_id`, `content_hash`,
+         *     `byte_size` or `captured_at`, so one memo id names one byte sequence for
+         *     as long as the row exists. The same idea as a note's `ETag` being its
+         *     revision id.
+         */
+        AudioETag: string;
+        /**
+         * @description `private, no-cache`. Not "do not cache": it caches and revalidates, so a
+         *     `304` stays cheap while a pruned recording can never be played out of a
+         *     browser's heuristic freshness window. `private` says the tunnel's proxy
+         *     may not keep a copy, rather than leaving that to a default that reasons
+         *     about file extensions.
+         */
+        AudioCacheControl: string;
+        /**
+         * @description Which bytes these are, on a `206` — and `bytes *\/<size>` on the `416`,
+         *     which `ServeContent` sets for a range starting past the end of the file
+         *     and not for a malformed header, so this is not required.
+         */
+        ContentRange: string;
     };
     pathItems: never;
 }
@@ -3329,6 +3799,167 @@ export interface operations {
             503: components["responses"]["UploadsUnconfigured"];
         };
     };
+    getMemoTranscript: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description A memo's id. `RevisionMeta.memo_id` is where a client gets one, and for
+                 *     a member who is not the author it is the ONLY place: `SearchHit.memo_id`
+                 *     and the transcription report are owner-only, and `BatchItem.memo_id` is
+                 *     scoped to the author.
+                 */
+                memo_id: components["parameters"]["MemoId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description the transcript */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoTranscript"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["MemosUnconfigured"];
+        };
+    };
+    getMemoAudio: {
+        parameters: {
+            query?: never;
+            header?: {
+                /**
+                 * @description One byte range, `bytes=0-65535`. A header naming more than one — a
+                 *     comma — is IGNORED and the whole body answered, so no response here
+                 *     is `multipart/byteranges`.
+                 */
+                Range?: string;
+                /** @description The `ETag` of a previous read — the memo id, quoted. A match answers `304`. */
+                "If-None-Match"?: string;
+            };
+            path: {
+                /**
+                 * @description A memo's id. `RevisionMeta.memo_id` is where a client gets one, and for
+                 *     a member who is not the author it is the ONLY place: `SearchHit.memo_id`
+                 *     and the transcription report are owner-only, and `BatchItem.memo_id` is
+                 *     scoped to the author.
+                 */
+                memo_id: components["parameters"]["MemoId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /**
+             * @description the whole recording. The type is what the recording IS —
+             *     `audio/mp4`, `audio/ogg`, `audio/webm`, `audio/mpeg`, `audio/wav` —
+             *     resolved by `audio.MediaType` from `codec` and then the original
+             *     filename's extension, which is the same function the ASR submission
+             *     uses, so the type a browser is told and the type the service is told
+             *     cannot disagree. Declared as one `audio/*` key rather than five,
+             *     because five would have to be kept in step with that function
+             *     forever.
+             */
+            200: {
+                headers: {
+                    "Accept-Ranges": components["headers"]["AcceptRanges"];
+                    ETag: components["headers"]["AudioETag"];
+                    "Cache-Control": components["headers"]["AudioCacheControl"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "audio/*": unknown;
+                };
+            };
+            /** @description the range asked for */
+            206: {
+                headers: {
+                    "Accept-Ranges": components["headers"]["AcceptRanges"];
+                    ETag: components["headers"]["AudioETag"];
+                    "Cache-Control": components["headers"]["AudioCacheControl"];
+                    "Content-Range": components["headers"]["ContentRange"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "audio/*": unknown;
+                };
+            };
+            /**
+             * @description unchanged since the `ETag` `If-None-Match` named. `Accept-Ranges` is
+             *     deliberately absent: `ServeContent` answers the precondition before
+             *     it sets that header, and declaring a header the response does not
+             *     carry would be the document describing a different server.
+             */
+            304: {
+                headers: {
+                    ETag: components["headers"]["AudioETag"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            /**
+             * @description the recording was deleted by policy and the transcript remains. The
+             *     body is the shared `Error` with `audio_pruned` and nothing else —
+             *     there is deliberately no details bag, for the reason `apierr.go`
+             *     gives: "a details bag is where a handler leaks the shape of the id
+             *     space one convenience at a time". What renders *transcript kept,
+             *     audio pruned <date>* is `MemoProvenance`.
+             */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /**
+             * @description an `If-Match` or `If-Unmodified-Since` this recording does not
+             *     satisfy, code `precondition_failed`. `ServeContent`'s
+             *     `checkPreconditions` answers it whether or not a document mentions
+             *     it, so it is declared and driven: an undeclared status a client can
+             *     provoke with one header is exactly what `Conform` exists to catch.
+             */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /**
+             * @description the `Range` header names bytes this recording does not have, code
+             *     `range_not_satisfiable`. In this API's envelope rather than
+             *     `http.Error`'s `text/plain` — one document, one error shape.
+             *     `Content-Range: bytes *\/<size>` is kept where `ServeContent` set it,
+             *     which is the range-starting-past-the-end case and not a malformed
+             *     header.
+             */
+            416: {
+                headers: {
+                    "Content-Range": components["headers"]["ContentRange"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["AudioUnavailable"];
+        };
+    };
     getTriageBatch: {
         parameters: {
             query?: {
@@ -3900,6 +4531,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BacklinkList"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            410: components["responses"]["Gone"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["WikiUnconfigured"];
+        };
+    };
+    getNoteProvenance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description A note reference, parsed leniently — `CHR-0311`, `chr-311` and
+                 *     `CHR-00311` all name note 311 — because people quote these by hand.
+                 *     Rendered strictly everywhere in a payload, as `CHR-0311`.
+                 */
+                ref: components["parameters"]["NoteRef"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description the memos behind this note's revisions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProvenanceList"];
                 };
             };
             400: components["responses"]["BadRequest"];

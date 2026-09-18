@@ -138,6 +138,17 @@ type Deps struct {
 	// assembled without one, and the nine routes then answer 503.
 	Threads Threads
 
+	// Memos is the recording behind a note (CHRN-107): the memo row, its
+	// retention status and its transcript.
+	//
+	// WIRED LIKE Wiki AND NOT LIKE Corpus, and that is what scopes the 503.
+	// setup() sets deps.Corpus inside `if cfg.AudioDir != ""`, because the
+	// storage report is a report about a disk; deps.Wiki is unconditional,
+	// because a note is a database read. These are database reads too:
+	// provenance and the transcript must answer on a host with no audio
+	// directory at all, and only GET /audio/{memo_id} touches Audio.
+	Memos Memos
+
 	// EstateWiki is the tier-1 corpus mount (CHRN-100): SERV-101's generated
 	// wiki, read from files. serve refuses to boot without one; nil only on a
 	// router assembled without it, and the two /tier1 routes then answer 503.
@@ -199,6 +210,7 @@ type api struct {
 	now           func() time.Time
 	wiki          Wiki
 	threads       Threads
+	memos         Memos
 	estate        *estatewiki.Corpus
 	keys          *resolve.Keys
 	renderer      *markdown.Renderer
@@ -254,6 +266,7 @@ func NewRouter(d Deps) http.Handler {
 		now:           d.Now,
 		wiki:          d.Wiki,
 		threads:       d.Threads,
+		memos:         d.Memos,
 		estate:        d.EstateWiki,
 		keys:          d.Keys,
 	}
