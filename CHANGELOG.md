@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.17.0](https://github.com/Einlanzerous/chronicle/compare/v1.16.0...v1.17.0) (2026-09-18)
+
+
+### Features
+
+* **api:** a note's provenance over HTTP — the memo, its transcript, and whether the audio still exists (CHRN-107) ([#104](https://github.com/Einlanzerous/chronicle/issues/104)) ([c53f351](https://github.com/Einlanzerous/chronicle/commit/c53f351479a5e1136309b34e230b56b8c4fbdd1d))
+
 ## [1.16.0](https://github.com/Einlanzerous/chronicle/compare/v1.15.0...v1.16.0) (2026-09-17)
 
 
