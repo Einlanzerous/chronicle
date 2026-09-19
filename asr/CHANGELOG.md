@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/Einlanzerous/chronicle/compare/asr-v0.1.1...asr-v0.1.2) (2026-09-19)
+
+
+### Maintenance
+
+* **asr:** drop the last in-repo compose copy — its healthcheck could not fail (CHRN-90) ([#107](https://github.com/Einlanzerous/chronicle/issues/107)) ([e5a203b](https://github.com/Einlanzerous/chronicle/commit/e5a203b1ab7ebaaa94f27073a0548e0d0480a045))
+
 ## [0.1.1](https://github.com/Einlanzerous/chronicle/compare/asr-v0.1.0...asr-v0.1.1) (2026-08-30)
 
 
