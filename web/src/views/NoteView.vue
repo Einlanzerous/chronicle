@@ -8,11 +8,12 @@
 // for the discussions embedded under it).
 //
 // PROVENANCE (the memo it came from, its transcript, its audio and
-// `PRUNES <date>`) IS DELIBERATELY NOT HERE. CHRN-107 is the contract for
-// reading any of that over HTTP and it does not exist yet -- see this
-// ticket's own comment thread. The placeholder below is the only trace of
-// it: no memo id, no duration, no prune date is fabricated anywhere in this
-// file.
+// `PRUNES <date>`) LANDED HERE IN CHRN-109, against the contract CHRN-107
+// shipped. The rule the placeholder existed to protect did not change -- it
+// moved a layer down and got a test: every state is read off a
+// `MemoProvenance` entry, and no memo id, duration or prune date is computed
+// in this file. provenanceBlock.ts holds the rules and its own vitest; this
+// view fetches and renders what it is handed.
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import Tier1Pane from '@/components/Tier1Pane.vue'
@@ -29,6 +30,13 @@ import {
   sortRevisionsNewestFirst,
   type Revision,
 } from '@/lib/noteRevisions'
+import {
+  leadProvenance,
+  provenanceBlock,
+  type AudioControl,
+  type MemoProvenance,
+  type RevisionMeta,
+} from '@/lib/provenanceBlock'
 import type { components } from '@/api/schema.d.ts'
 
 type Note = components['schemas']['Note']
@@ -93,6 +101,7 @@ async function loadNote(ref_: string, opts: { silent?: boolean } = {}): Promise<
     loadReferences(note.value.references)
     loadBacklinks(ref_)
     loadTier1(note.value.page)
+    loadProvenance(ref_)
     return
   }
   note.value = null
@@ -136,6 +145,107 @@ onUnmounted(() => {
 })
 
 const revisionsCount = computed(() => (note.value ? revisionsCountLabel(note.value.revision.seq) : ''))
+
+// ── Provenance: the memo behind the text (CHRN-109) ─────────────────────
+//
+// The region CHRN-56 left marked and unrendered. `getNoteProvenance` is a
+// SIBLING of `getNote` and is fetched on its own, for the reason openapi.yaml
+// gives: `retention_status`, `prunes_at` and `audio_pruned_at` all move while
+// no revision is appended -- the pruner sweeps at 03:00 and nothing about the
+// note has changed -- so folding this into the note's own ETag'd payload
+// would answer `304` carrying a `PRUNES` date for audio that went hours ago.
+const provenance = ref<MemoProvenance[]>([])
+
+// The player is revealed by the control rather than mounted with the note: an
+// `<audio>` carrying a `src` fetches on mount, and that would pull the
+// irreplaceable bytes of every memo on the page for a reader who never asked
+// to hear one.
+const playingMemoId = ref<string | null>(null)
+
+const transcriptFor = ref<string | null>(null)
+const transcriptText = ref<string | null>(null)
+const transcriptLoading = ref(false)
+const transcriptError = ref<string | null>(null)
+
+function closeTranscript(): void {
+  transcriptFor.value = null
+  transcriptText.value = null
+  transcriptError.value = null
+  transcriptLoading.value = false
+}
+
+// `ROUTED BY SCRIBE` is `RevisionMeta.verb`, which sits on the REVISION and
+// not on the provenance entry, so the two lists are zipped by `revision_seq`
+// -- openapi.yaml's own instruction. `note.revision` is the current revision
+// and answers the ordinary note (one memo, one revision) without a second
+// request; a note whose first revision came from a memo and whose latest is a
+// hand edit is the case that needs the history page, and that page is
+// oldest-first, so it leads with exactly the revisions the entries name. A
+// revision this map does not hold contributes no verb, which renders as
+// nothing rather than as a guess.
+const provenanceRevisions = ref<Map<number, RevisionMeta>>(new Map())
+
+async function loadProvenance(ref_: string): Promise<void> {
+  provenance.value = []
+  provenanceRevisions.value = new Map()
+  playingMemoId.value = null
+  closeTranscript()
+  const res = await api.GET('/notes/{ref}/provenance', { params: { path: { ref: ref_ } } })
+  // No error surface, deliberately. This block is supplementary to a note
+  // that has already rendered, and the one thing it must never do is say
+  // something about a recording it could not read. Absent is the honest
+  // failure, and it is the same render a typed note gets.
+  if (!res.data) return
+  provenance.value = res.data.items
+  const current = note.value?.revision
+  if (current) provenanceRevisions.value = new Map([[current.seq, current]])
+  if (!res.data.items.some((entry) => entry.revision_seq !== current?.seq)) return
+  const page = await api.GET('/notes/{ref}/revisions', { params: { path: { ref: ref_ } } })
+  if (!page.data) return
+  const zipped = new Map(provenanceRevisions.value)
+  for (const rev of page.data.items) zipped.set(rev.seq, rev)
+  provenanceRevisions.value = zipped
+}
+
+/** One block per memo, oldest first -- the list's own order. */
+const provenanceBlocks = computed(() =>
+  provenance.value.map((entry) => provenanceBlock(entry, provenanceRevisions.value.get(entry.revision_seq))),
+)
+
+// The header renders `items[0]`: the memo that STARTED the note.
+const leadBlock = computed(() => {
+  const entry = leadProvenance({ items: provenance.value })
+  return entry ? provenanceBlock(entry, provenanceRevisions.value.get(entry.revision_seq)) : null
+})
+
+// `▶ PLAY SOURCE AUDIO 1:44`. The board keeps the label and the duration in
+// ONE span separated by a single space -- the `·` separators either side of it
+// divide the label from the retention date, not the label from its own length
+// -- and `audioControlFor` hands them over separately precisely so that a memo
+// nobody has measured yet renders the label alone rather than `0:00`.
+function audioControlLabel(audio: Extract<AudioControl, { state: 'playable' }>): string {
+  return audio.duration ? `${audio.label} ${audio.duration}` : audio.label
+}
+
+function toggleAudio(memoId: string): void {
+  playingMemoId.value = playingMemoId.value === memoId ? null : memoId
+}
+
+async function toggleTranscript(memoId: string): Promise<void> {
+  const reopening = transcriptFor.value !== memoId
+  closeTranscript()
+  if (!reopening) return
+  transcriptFor.value = memoId
+  transcriptLoading.value = true
+  const res = await api.GET('/transcripts/{memo_id}', { params: { path: { memo_id: memoId } } })
+  if (transcriptFor.value !== memoId) return // closed or switched while in flight
+  transcriptLoading.value = false
+  if (res.data) {
+    transcriptText.value = res.data.text
+    return
+  }
+  transcriptError.value = errorMessage(res.error, 'The transcript could not be read.')
+}
 
 // ── References, resolved live (CLAUDE.md invariant 2) ──────────────────
 const resolutions = ref<Map<string, Resolution>>(new Map())
@@ -379,10 +489,11 @@ async function restoreRevision(): Promise<void> {
         <template v-if="mode === 'read'">
           <div class="ch-note-header">
             <span class="ch-note-handle">A NOTE · {{ note.ref }}</span>
-            <!-- CHRN-107: the memo/transcript/audio provenance block (board
-                 1c's "FROM MEMO 12:55 · 1:44 · ROUTED BY SCRIBE") lands here
-                 once that contract exists. Nothing renders in its place --
-                 no memo id, no duration, no ROUTED BY marker is fabricated. -->
+            <!-- CHRN-109: board 1c's "FROM MEMO 12:55 · 1:44 · ROUTED BY
+                 SCRIBE", composed by provenanceBlock.ts from `items[0]` and
+                 that revision's `verb`. A note somebody typed has no entry
+                 and renders nothing here, which is not an error. -->
+            <span v-if="leadBlock" class="ch-note-provenance-from">{{ leadBlock.header }}</span>
           </div>
           <h1 class="ch-note-title">{{ note.title }}</h1>
 
@@ -399,8 +510,53 @@ async function restoreRevision(): Promise<void> {
           </div>
 
           <div class="ch-note-footer">
-            <!-- CHRN-107: `▶ PLAY SOURCE AUDIO · PRUNES <date>` lands here.
-                 No prune date, no duration is invented in its absence. -->
+            <!-- CHRN-109: one row per memo, oldest first. Every state is the
+                 entry's own -- nothing here computes a date, and nothing is
+                 read off a failed request, because an `<audio>` element never
+                 sees the body of the 410 that would say the bytes are gone. -->
+            <div v-if="provenanceBlocks.length > 0" class="ch-note-provenance">
+              <div v-for="block in provenanceBlocks" :key="block.memoId" class="ch-note-provenance-entry">
+                <div class="ch-note-provenance-row">
+                  <template v-if="block.audio.state === 'playable'">
+                    <button type="button" class="ch-note-provenance-control" @click="toggleAudio(block.memoId)">
+                      {{ audioControlLabel(block.audio) }}
+                    </button>
+                    <span class="ch-note-provenance-sep">·</span>
+                    <span class="ch-note-provenance-meta">{{ block.audio.retention }}</span>
+                  </template>
+                  <!-- `absent` draws NOTHING -- not a disabled control. A
+                       control somebody can see but not use tells them a
+                       recording they may not hear exists, which is a fact
+                       about another account's activity. -->
+                  <span v-else-if="block.audio.state === 'pruned'" class="ch-note-provenance-meta">{{
+                    block.audio.label
+                  }}</span>
+                  <template v-if="block.transcript.state === 'readable'">
+                    <span v-if="block.audio.state !== 'absent'" class="ch-note-provenance-sep">·</span>
+                    <button type="button" class="ch-note-provenance-control" @click="toggleTranscript(block.memoId)">
+                      {{ transcriptFor === block.memoId ? 'HIDE TRANSCRIPT' : 'READ TRANSCRIPT' }}
+                    </button>
+                  </template>
+                </div>
+                <audio
+                  v-if="block.audio.state === 'playable' && playingMemoId === block.memoId"
+                  class="ch-note-provenance-audio"
+                  controls
+                  autoplay
+                  :src="block.audio.href"
+                ></audio>
+                <div v-if="transcriptFor === block.memoId" class="ch-note-transcript">
+                  <p class="ch-note-transcript-label">{{ block.transcript.label }}</p>
+                  <p v-if="transcriptLoading" class="ch-note-provenance-meta">Loading…</p>
+                  <p v-else-if="transcriptError" class="ch-note-provenance-meta">{{ transcriptError }}</p>
+                  <!-- Empty is a TRUE and complete answer, not a failure:
+                       "a memo that is forty seconds of silence has a true and
+                       complete answer, and the answer is no speech". -->
+                  <p v-else-if="transcriptText === ''" class="ch-note-provenance-meta">NO SPEECH</p>
+                  <p v-else class="ch-note-transcript-text">{{ transcriptText }}</p>
+                </div>
+              </div>
+            </div>
             <span class="ch-note-footer-revisions">{{ revisionsCount }}</span>
           </div>
         </template>
@@ -678,7 +834,12 @@ async function restoreRevision(): Promise<void> {
   border-top: 1px solid var(--ch-line);
   max-width: 66ch;
   display: flex;
-  align-items: center;
+  /* Not `center`: CHRN-109's player and transcript disclosure grow DOWNWARD
+   * out of this row, and centring would drag `N REVISIONS` into the middle of
+   * an opened transcript. In the board's own case -- one line, one memo --
+   * both children are one line tall and this is indistinguishable. */
+  align-items: flex-start;
+  gap: 12px;
 }
 
 .ch-note-footer-revisions {
@@ -686,6 +847,106 @@ async function restoreRevision(): Promise<void> {
   font-family: var(--ch-font-mono);
   font-size: var(--ch-size-xs);
   color: var(--ch-text-meta);
+}
+
+/* CHRN-109 · board 1c's provenance block. The row the board draws IS
+ * `.ch-note-footer` above -- CHRN-56 built it at the board's own margin,
+ * padding, rule and max-width with only `N REVISIONS` in it -- so the block
+ * lands inside it, and the ordinary note (one memo, one revision) renders as
+ * the board's single line: control at the left, revisions count at the right.
+ * Several memos stack instead of crowding one line. */
+.ch-note-provenance {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ch-space-2);
+}
+
+.ch-note-provenance-entry {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ch-space-1);
+}
+
+.ch-note-provenance-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  /* 12px, matching `.ch-note-header` above and the board's own row gap. */
+  gap: 12px;
+  font-family: var(--ch-font-mono);
+  font-size: var(--ch-size-xs);
+  letter-spacing: var(--ch-track-mid);
+}
+
+/* The header line, beside `A NOTE · CHR-0311`. */
+.ch-note-provenance-from {
+  font-family: var(--ch-font-mono);
+  font-size: var(--ch-size-xs);
+  color: var(--ch-text-meta);
+}
+
+.ch-note-provenance-meta {
+  margin: 0;
+  color: var(--ch-text-meta);
+}
+
+.ch-note-provenance-sep {
+  color: var(--ch-line);
+}
+
+/* Vellum, per the ticket: the play control and the transcript disclosure are
+ * the only things in this row a reader can act on, and vellum is Chronicle's
+ * own signal. Deliberately NOT steel -- a Scribe-routed memo is authored tier
+ * 2, and steel means regenerated tier 1 (DiscussionThread.vue took the same
+ * decision about the same board's Scribe avatar). */
+.ch-note-provenance-control {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  letter-spacing: inherit;
+  color: var(--ch-signal);
+  cursor: pointer;
+}
+
+.ch-note-provenance-control:hover {
+  color: var(--ch-text);
+}
+
+/* The NATIVE control, deliberately: it is the accessible, keyboard-operable,
+ * range-request-aware player every browser already ships, and a hand-drawn
+ * one would be a worse version of it. `color-scheme` is the one thing set --
+ * it asks the browser for the dark variant of its own widget, rather than
+ * trying to restyle shadow-DOM internals that differ per engine. */
+.ch-note-provenance-audio {
+  width: 100%;
+  max-width: 420px;
+  height: 32px;
+  color-scheme: dark;
+}
+
+.ch-note-transcript {
+  max-width: 66ch;
+}
+
+.ch-note-transcript-label {
+  margin: 0 0 var(--ch-space-1);
+  font-family: var(--ch-font-mono);
+  font-size: var(--ch-size-2xs);
+  letter-spacing: var(--ch-track-wide);
+  color: var(--ch-text-meta);
+}
+
+/* `pre-wrap`: a transcript's own line breaks are what the ASR service
+ * recorded, and reflowing them would be this view editing tier-2 text. */
+.ch-note-transcript-text {
+  margin: 0;
+  font-size: var(--ch-size-body);
+  line-height: 1.6;
+  color: var(--ch-text-2);
+  white-space: pre-wrap;
 }
 
 /* ── Editor ── */
