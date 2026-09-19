@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.18.0](https://github.com/Einlanzerous/chronicle/compare/v1.17.0...v1.18.0) (2026-09-19)
+
+
+### Features
+
+* **web:** render a note's provenance — FROM MEMO, the source audio with its PRUNES date, and the pruned state (CHRN-109) ([#108](https://github.com/Einlanzerous/chronicle/issues/108)) ([9ae2e64](https://github.com/Einlanzerous/chronicle/commit/9ae2e64f8f9b1e9fdce0cee4e3e7e9d20941d065))
+
+
+### Bug Fixes
+
+* **switchyard:** refuse a base URL carrying a query or a fragment ([#106](https://github.com/Einlanzerous/chronicle/issues/106)) ([d1d742e](https://github.com/Einlanzerous/chronicle/commit/d1d742efb8384cdb2eaf763c34e12964a04cf33f))
+
+
+### Maintenance
+
+* **asr:** drop the last in-repo compose copy — its healthcheck could not fail (CHRN-90) ([#107](https://github.com/Einlanzerous/chronicle/issues/107)) ([e5a203b](https://github.com/Einlanzerous/chronicle/commit/e5a203b1ab7ebaaa94f27073a0548e0d0480a045))
+* **main:** release asr 0.1.2 ([#110](https://github.com/Einlanzerous/chronicle/issues/110)) ([0aab0b3](https://github.com/Einlanzerous/chronicle/commit/0aab0b39dceb3fd936ae81ebbc4781be59d5a827))
+
 ## [1.17.0](https://github.com/Einlanzerous/chronicle/compare/v1.16.0...v1.17.0) (2026-09-18)
 
 
