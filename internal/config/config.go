@@ -683,6 +683,16 @@ func LoadScribe() (Scribe, error) {
 		if err != nil || !u.IsAbs() || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 			return s, fmt.Errorf("config: CHRONICLE_SWITCHYARD_URL %q is not an absolute http(s) URL", s.SwitchyardURL)
 		}
+		// Same failure switchyard.New refuses, one layer up: a config that
+		// boots beside a client that refuses is a service that starts and then
+		// cannot reach the tracker. A path prefix stays accepted — see
+		// internal/amber's identical guard (CHRN-50) and CHRN-103.
+		if u.RawQuery != "" || u.ForceQuery {
+			return s, fmt.Errorf("config: CHRONICLE_SWITCHYARD_URL %q must not carry a query string", s.SwitchyardURL)
+		}
+		if u.Fragment != "" {
+			return s, fmt.Errorf("config: CHRONICLE_SWITCHYARD_URL %q must not carry a fragment", s.SwitchyardURL)
+		}
 	}
 	if (s.SwitchyardURL == "") != (s.SwitchyardToken == "") {
 		return s, fmt.Errorf("config: set both CHRONICLE_SWITCHYARD_URL and CHRONICLE_SWITCHYARD_TOKEN, or neither")
