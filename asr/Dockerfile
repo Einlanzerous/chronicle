@@ -231,5 +231,6 @@ EXPOSE 4011
 # the measurement path in the same commit that adds a service to the image,
 # which is how a benchmark stops comparing to anything.
 #
-# compose.asr.yml overrides it for the service, in one visible line.
+# construct-server's docker-compose.yml overrides it for the service, in one
+# visible line.
 ENTRYPOINT ["/usr/local/bin/whisper-cli"]

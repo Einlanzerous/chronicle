@@ -271,7 +271,7 @@ func announceGGMLBackend(logger *slog.Logger, stderr string) {
 	switch {
 	case device == "":
 		logger.Warn("whisper-server named no Vulkan device; this may be running on the CPU",
-			"remedy", "check the render node is passed through (asr/deploy/compose.asr.yml)")
+			"remedy", "check the render node is passed through (the asr service's devices: block in construct-server's docker-compose.yml)")
 	case strings.Contains(device, "Device type is CPU") || strings.Contains(device, "(llvmpipe)"):
 		logger.Warn("THE GPU IS NOT BEING USED: ggml selected a software rasteriser. "+
 			"Transcription will be correct and roughly twenty times slower",

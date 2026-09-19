@@ -8,9 +8,7 @@ Lyceum's (SERV-60), and the database is provisioned the way Purser's is.
 
 ## The deploy configuration is not in this repo
 
-`construct-server` is the source of truth. It declares every service inline in `docker-compose.yml` and every router in `config/traefik/dynamic/routers.yml`; nothing is assembled from service-repo fragments at deploy time.
-
-**One in-repo copy remains, and it is not this directory's:** `asr/deploy/compose.asr.yml`, in the sealed ASR subtree. It carries the same rationale these files did, and it has drifted the dangerous way — its healthcheck is still `["CMD", "/usr/local/bin/asrd", "version"]` under a comment arguing for `/healthz`, while the deployed block runs an actual `/healthz` GET asserting a 200. construct-server's own comment on that block explains the change: `asrd version` *"prints a string and exits 0 from a bare container with no GPU, no database, no config and no server — verified — so it reports healthy for a wedged process for ever."* Its models-volume default is `~/tools/...` where the deployment pins an absolute path, because prod compose runs from `/opt/construct-server` and `~` expands to the wrong home. **Do not deploy ASR from that file.** CHRN-90 removes it; `asr/` is a sealed subtree with its own release, so it is a ticket of its own rather than a reach from this one.
+`construct-server` is the source of truth. It declares every service inline in `docker-compose.yml` and every router in `config/traefik/dynamic/routers.yml`; nothing is assembled from service-repo fragments at deploy time — **no exception.**
 
 This directory used to carry `compose.chronicle.yml` and `traefik-chronicle.yml` — copies of both, kept so Chronicle's deploy shape was reviewable in Chronicle's own repo. The intent was right and the mechanism was not. **Nothing checked that the copies agreed with the deployment, and by the time they were removed (CHRN-89) both had diverged, in opposite directions:**
 

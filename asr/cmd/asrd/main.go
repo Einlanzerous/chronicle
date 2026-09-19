@@ -156,7 +156,7 @@ func runServe(args []string) error {
 	if len(models) == 0 {
 		logger.Warn("no models found: every submit will be refused",
 			"model_dir", cfg.ModelDir,
-			"remedy", "mount the ggml-*.bin store at ASR_MODEL_DIR (asr/deploy/compose.asr.yml)")
+			"remedy", "mount the ggml-*.bin store at ASR_MODEL_DIR (the asr service's volumes: block in construct-server's docker-compose.yml)")
 	} else {
 		logger.Info("models available", "models", models, "default", cfg.DefaultModel)
 	}
