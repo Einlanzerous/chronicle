@@ -515,6 +515,48 @@ func TestAmberCredentialsAreBothOrNeither(t *testing.T) {
 	})
 }
 
+// CHRN-103. switchyard.New refuses the identical shape (see its own test);
+// this is the other half — a config that boots beside a client that refuses
+// is a service that starts and then cannot reach the tracker. Tested against
+// LoadScribe directly, not Load, because LoadScribe is the one `chronicle
+// eval` calls with no database configured at all.
+func TestLoadScribeSwitchyardURLRejectsQueryAndFragment(t *testing.T) {
+	t.Setenv("CHRONICLE_SWITCHYARD_TOKEN", "a-perfectly-good-token")
+
+	// Each of these parses and would boot: the client concatenates
+	// "/v1/tickets/…" onto the base, so a query or a fragment leaves the PATH
+	// EMPTY and every call asks Switchyard about `/` — configured, reported as
+	// configured, and unusable.
+	for _, bad := range []string{
+		"http://switchyard:4001?x=1", "http://switchyard:4001?", "http://switchyard:4001#frag",
+	} {
+		t.Run(bad, func(t *testing.T) {
+			t.Setenv("CHRONICLE_SWITCHYARD_URL", bad)
+			_, err := LoadScribe()
+			if err == nil {
+				t.Fatalf("CHRONICLE_SWITCHYARD_URL=%q booted", bad)
+			}
+			if !strings.Contains(err.Error(), "CHRONICLE_SWITCHYARD_URL") {
+				t.Fatalf("the error does not name the variable: %v", err)
+			}
+		})
+	}
+
+	// A PATH IS NOT A MALFORMATION. Switchyard behind a reverse proxy under a
+	// prefix concatenates correctly, and refusing it would reject a real
+	// deployment.
+	t.Run("a path prefix is allowed", func(t *testing.T) {
+		t.Setenv("CHRONICLE_SWITCHYARD_URL", "http://switchyard:4001/tracker")
+		s, err := LoadScribe()
+		if err != nil {
+			t.Fatalf("LoadScribe with a path prefix: %v", err)
+		}
+		if s.SwitchyardURL != "http://switchyard:4001/tracker" {
+			t.Fatalf("SwitchyardURL = %q", s.SwitchyardURL)
+		}
+	})
+}
+
 // CHRN-100: the tier-1 corpus mount. Absolute or nothing, like the audio
 // root. Unset is accepted HERE — Load has no opinion about which subcommand
 // is running — and refused by serve, which is where the refusal has a

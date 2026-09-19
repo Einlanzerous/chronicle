@@ -77,6 +77,18 @@ func New(baseURL, token string) (*Client, error) {
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return nil, fmt.Errorf("switchyard: CHRONICLE_SWITCHYARD_URL %q is not an absolute http(s) URL", baseURL)
 	}
+	// A query or a fragment parses, boots, and reports itself configured — but
+	// do concatenates a path onto c.base.String(), so the path lands EMPTY and
+	// every call asks Switchyard about "/". internal/invite/url.go and
+	// internal/amber refuse the identical shape for the identical reason
+	// (CHRN-50, CHRN-103). A path prefix is not this: Switchyard behind a
+	// reverse proxy under one concatenates correctly, and stays accepted.
+	if u.RawQuery != "" || u.ForceQuery {
+		return nil, fmt.Errorf("switchyard: CHRONICLE_SWITCHYARD_URL %q must not carry a query string", baseURL)
+	}
+	if u.Fragment != "" {
+		return nil, fmt.Errorf("switchyard: CHRONICLE_SWITCHYARD_URL %q must not carry a fragment", baseURL)
+	}
 	if strings.TrimSpace(token) == "" {
 		return nil, fmt.Errorf("switchyard: CHRONICLE_SWITCHYARD_TOKEN is not set — every /v1 route answers 401 without it")
 	}

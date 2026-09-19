@@ -142,6 +142,16 @@ func TestNewRefusesAHalfConfiguration(t *testing.T) {
 		{"bad url", "nope", "t", "absolute http(s) URL"},
 		{"wrong scheme", "ftp://x", "t", "absolute http(s) URL"},
 		{"no token", "http://x:1", "", "CHRONICLE_SWITCHYARD_TOKEN"},
+
+		// Each of these parses, boots, and reports itself configured — and then
+		// asks Switchyard about "/" forever, because do concatenates a path
+		// onto the base and leaves it EMPTY:
+		//
+		//	http://x:1#frag  +  /v1/tickets/CHRN-50
+		//	  -> path="" fragment="frag/v1/tickets/CHRN-50"
+		{"a query string", "http://x:1?a=b", "t", "query"},
+		{"a forced query", "http://x:1?", "t", "query"},
+		{"a fragment", "http://x:1#frag", "t", "fragment"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := New(tc.url, tc.token); err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -149,4 +159,21 @@ func TestNewRefusesAHalfConfiguration(t *testing.T) {
 			}
 		})
 	}
+
+	// A PATH IS NOT A MALFORMATION. Switchyard behind a reverse proxy under a
+	// prefix concatenates correctly, and refusing it would reject a real
+	// deployment.
+	t.Run("a path prefix is allowed and reaches the right endpoint", func(t *testing.T) {
+		c, asked := server(t, onePage(proj("AAA", "A", "", nil)))
+		prefixed, err := New(c.BaseURL()+"/tracker", "tok")
+		if err != nil {
+			t.Fatalf("New with a path prefix: %v", err)
+		}
+		if _, err := prefixed.Projects(context.Background()); err != nil {
+			t.Fatalf("Projects: %v", err)
+		}
+		if len(*asked) != 1 || !strings.HasPrefix((*asked)[0], "/tracker/v1/projects") {
+			t.Fatalf("asked = %v, want a request under /tracker/v1/projects", *asked)
+		}
+	})
 }
