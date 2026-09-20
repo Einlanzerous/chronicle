@@ -8,10 +8,44 @@
          so nothing prompts on first launch. -->
     <uses-permission android:name="android.permission.CAMERA"/>
 
+    <!-- CHRN-60. Recording, and keeping it running when the screen locks or the
+         app backgrounds. Without FOREGROUND_SERVICE_MICROPHONE and a service
+         declaring that type, Android mutes the microphone the moment the app
+         leaves the foreground, and the ticket's "survives screen-off and
+         backgrounding" is not achievable at all. Asked for at the first tap,
+         never at launch. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
+
+    <!-- The recording notification. A foreground service runs whether or not
+         this is granted — only the visible indicator is lost — so a refusal
+         must never stop a recording. Gating capture on a notification
+         permission would reintroduce, in a different costume, the dependency
+         this epic exists to remove. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+
+    <!-- A foreground service is not a CPU guarantee. The capture service holds a
+         partial wake lock for the life of a recording, which is what Argosy
+         declares this for too. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+
     <application
         android:label="Chronicle"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:allowBackup="false">
+        <!-- allowBackup is OFF, and the default is the wrong one here (CHRN-60).
+             Android's auto-backup includes an app's internal files, so leaving it
+             alone would replicate the memo corpus to the holder's cloud backup —
+             the opposite of what this system is for. The app holds nothing worth
+             restoring anyway: the server address is a preference and the session
+             token is in keystore-backed storage, neither of which survives a
+             restore usefully. The consequence, taken deliberately: a
+             device-to-device transfer drops captures the server has not yet
+             acknowledged, which is the same exposure as uninstalling with a
+             queue still draining. -->
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -34,6 +68,21 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- CHRN-60's recorder. It owns MediaRecorder and the file descriptor,
+             and its lifetime IS the recording's: the notification is the
+             affordance for stopping, so swiping the app out of Recents leaves it
+             running rather than ending a thought mid-sentence.
+
+             No android:process, and that is load-bearing rather than incidental.
+             Running in the app's own process is what lets recovery read the
+             service's registry of held captures directly — no IPC, no deadline,
+             and a force-stopped process comes back with an empty registry, which
+             is exactly the classification recovery needs. -->
+        <service
+            android:name=".capture.CaptureService"
+            android:foregroundServiceType="microphone"
+            android:exported="false"/>
+
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
