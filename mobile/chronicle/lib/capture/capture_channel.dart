@@ -28,6 +28,7 @@ class RecorderSnapshot {
     required this.byteSize,
     required this.silenced,
     required this.micOpen,
+    required this.hasConfig,
     required this.amplitude,
   });
 
@@ -63,6 +64,15 @@ class RecorderSnapshot {
 
   final int amplitude;
 
+  /// Whether the recorder reports a recording configuration at all.
+  ///
+  /// Distinct from [micOpen], and the distinction is one the person can act on:
+  /// `hasConfig` with [silenced] means **something else took the microphone**,
+  /// while no configuration at all means the recorder is not capturing. Measured
+  /// on device: a PAUSED recorder still reports a configuration, which is what
+  /// makes an automatic resume possible at all.
+  final bool hasConfig;
+
   static const idle = RecorderSnapshot(
     captureId: null,
     state: RecorderState.idle,
@@ -70,6 +80,7 @@ class RecorderSnapshot {
     byteSize: 0,
     silenced: false,
     micOpen: false,
+    hasConfig: false,
     amplitude: 0,
   );
 
@@ -83,6 +94,7 @@ class RecorderSnapshot {
         byteSize: (map['byteSize'] as int?) ?? 0,
         silenced: (map['silenced'] as bool?) ?? false,
         micOpen: (map['micOpen'] as bool?) ?? false,
+        hasConfig: (map['hasConfig'] as bool?) ?? false,
         amplitude: (map['amplitude'] as int?) ?? 0,
       );
 }

@@ -170,7 +170,9 @@ class _CaptureScreenState extends ConsumerState<CaptureScreen> {
           Text(
             recorder.silenced
                 ? 'Something else has taken the microphone.'
-                : 'No sound is reaching the recorder.',
+                : recorder.hasConfig
+                    ? 'No sound is reaching the recorder.'
+                    : 'The recorder is not capturing.',
             style: const TextStyle(fontSize: sizeBody, color: chText2),
           ),
         ],

@@ -191,6 +191,7 @@ class CaptureChannel(private val activity: Activity) {
         "byteSize" to byteSize,
         "silenced" to silenced,
         "micOpen" to micOpen,
+        "hasConfig" to hasConfig,
         "amplitude" to amplitude,
     )
 }

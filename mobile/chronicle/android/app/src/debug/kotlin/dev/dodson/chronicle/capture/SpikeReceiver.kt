@@ -66,7 +66,7 @@ class SpikeReceiver : BroadcastReceiver() {
             TAG,
             "RESULT state id=${s.captureId} state=${s.state} elapsedMs=${s.elapsedMs} " +
                 "bytes=${s.byteSize} silenced=${s.silenced} micOpen=${s.micOpen} " +
-                "amp=${s.amplitude} held=${CaptureRegistry.heldIds()} " +
+                "amp=${s.amplitude} hasConfig=${s.hasConfig} held=${CaptureRegistry.heldIds()} " +
                 "instance=${CaptureRegistry.instanceId}",
         )
     }

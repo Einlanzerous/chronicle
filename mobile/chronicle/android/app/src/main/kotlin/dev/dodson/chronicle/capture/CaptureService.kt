@@ -94,6 +94,15 @@ class CaptureService : Service() {
         val silenced: Boolean,
         val micOpen: Boolean,
         val amplitude: Int,
+        /**
+         * Whether the recorder reports an active recording configuration at all.
+         *
+         * Distinct from [micOpen] on purpose: "no configuration" and "a
+         * configuration that is silenced" are different facts, and a PAUSED
+         * recorder that reports nothing is the case that decides whether there
+         * is any signal to resume on.
+         */
+        val hasConfig: Boolean = false,
     )
 
     companion object {
@@ -515,15 +524,31 @@ class CaptureService : Service() {
         super.onDestroy()
     }
 
-    private fun snapshotNow(): Snapshot = Snapshot(
-        captureId = captureId,
-        state = state,
-        elapsedMs = elapsedMs(),
-        byteSize = audioFile?.length() ?: 0L,
-        silenced = silenced,
-        micOpen = micOpen,
-        amplitude = lastAmplitude,
-    )
+    private fun snapshotNow(): Snapshot {
+        // Read the configuration LIVE rather than reporting what the callback
+        // last cached. The callback fires on CHANGES, so a cached "not open" is
+        // indistinguishable from "nothing has happened yet" -- which is exactly
+        // the ambiguity that made the first attempt to measure a paused
+        // recorder unreadable. A snapshot should say what is true now.
+        val config = try {
+            recorder?.activeRecordingConfiguration
+        } catch (e: Exception) {
+            null
+        }
+        val liveSilenced = config?.isClientSilenced ?: false
+        val liveOpen = config != null && !liveSilenced
+
+        return Snapshot(
+            captureId = captureId,
+            state = state,
+            elapsedMs = elapsedMs(),
+            byteSize = audioFile?.length() ?: 0L,
+            silenced = liveSilenced,
+            micOpen = liveOpen,
+            amplitude = lastAmplitude,
+            hasConfig = config != null,
+        )
+    }
 
     private fun elapsedMs(): Long {
         if (state == State.IDLE) return 0
