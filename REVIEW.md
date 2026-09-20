@@ -26,9 +26,9 @@ from, and is the fallback when `review_mode` is null:
 | **C · full diff** | the five below | a human reads every line too |
 
 Mode C is exactly **CHRN-22** (retention pruner), **CHRN-39** (revisions),
-**CHRN-52** (tier isolation), **CHRN-65** (auth surface), **CHRN-67** (MCP write
-scopes) — the tickets that can destroy authored data or hand an agent write
-access to it.
+**CHRN-52** (tier isolation), **CHRN-65** (MCP transport), **CHRN-67** (MCP
+write scopes) — the tickets that can destroy authored data or hand an agent
+write access to it.
 
 ## What CI already proves — and where it doesn't
 
@@ -370,11 +370,6 @@ package to `sensitive_paths` in the same PR.** If it does not, that is a 🔴
 Important finding — every subsequent PR touching Chronicle's MCP surface, the
 Access-facing transport included, would otherwise be reviewed at the cheap tier,
 silently, which is the whole cost of the omission.
-
-CLAUDE.md's Mode C list calls CHRN-65 *"auth surface"*, which reads like the
-`internal/api/session` and `internal/invite/` code that already exists. It is
-not: the ticket is the MCP transport. Do not let the label talk you out of the
-check.
 
 **Two tickets this section used to name are now covered, and finding them
 uncovered is a false 🔴** — check the pattern before raising one:

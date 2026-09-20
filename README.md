@@ -124,5 +124,6 @@ See `docs/decisions/chrn-71-accounts-and-sessions.md`.
 
 ## Status
 
-Tracked in Switchyard under **CHRN** — 10 epics, 60 tickets, graduated from
+Tracked in Switchyard under **CHRN** — 11 epics (`CHRN-1`…`CHRN-10` plus
+`CHRN-96`, keyed `E7.5`), tickets numbered from `CHRN-11` on, graduated from
 `IDEA-21`. The board is the status surface; this file does not duplicate it.
