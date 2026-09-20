@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:chronicle/api/reachability.dart';
 import 'package:chronicle/api/server_url.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
