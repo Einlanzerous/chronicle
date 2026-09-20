@@ -1,0 +1,55 @@
+name: chronicle
+description: "Chronicle — voice-note capture and the evening triage pass (Android client)."
+# Not published, and not versioned by release-please either: the repo's release
+# pipeline ships a server image, and an APK release is its own workflow nobody
+# has asked for yet (CHRN-59 builds a debug APK in CI and stops there). When a
+# release track exists, this line gets the `# x-release-please-version` marker
+# Argosy's carries.
+publish_to: "none"
+version: 0.1.0
+
+# Pinned toolchain, matching the estate: Flutter 3.44.2 (stable) / Dart 3.12.2,
+# installed user-local under ~/dev-tools. `source ~/dev-tools/env.sh` and the
+# toolchain is on PATH -- there is nothing to install and nothing needs sudo.
+# The CI pins in .github/workflows/mobile.yml are the same two versions.
+environment:
+  sdk: ^3.12.2
+  flutter: ">=3.44.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State and routing: Riverpod + go_router, which is the Argosy/Lyceum stack.
+  # Lyceum's README states the lineage outright ("built to match the Argosy
+  # mobile stack"), so this is the estate's third copy of one decision rather
+  # than a fourth opinion.
+  flutter_riverpod: ^3.3.2
+  go_router: ^17.3.0
+
+  # The generated client and the transport under it. `http` is a direct
+  # dependency because lib/api/transport.dart implements a BaseClient.
+  http: ^1.6.0
+  chronicle_api:
+    path: packages/chronicle_api
+
+  # The server address is a preference; the session token is a credential. They
+  # are stored in different places on purpose -- see lib/api/session.dart.
+  shared_preferences: ^2.5.5
+  flutter_secure_storage: ^10.3.1
+
+  # Onboarding scans the QR CHRN-106 renders. mobile_scanner asks for the camera
+  # permission on first use, so nothing prompts until the scanner opens.
+  mobile_scanner: ^7.2.0
+
+  # `device_label` on the sign-in request: what this device is called in the
+  # session list its holder reads, so "Pixel 8" beats "Android".
+  device_info_plus: ^13.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
