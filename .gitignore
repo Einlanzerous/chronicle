@@ -34,3 +34,11 @@ coverage.*
 web/node_modules
 web/dist/*
 !web/dist/.gitkeep
+
+# The Android client (CHRN-59). node_modules here is not an app dependency: it
+# is the openapi-generator launcher that scripts/gen-dartapi.sh runs, plus the
+# generator JAR it downloads on demand, both reproducible from mobile/bun.lock
+# and mobile/openapitools.json. The generated Dart package under
+# mobile/chronicle/packages/ IS committed, and CI byte-compares it against
+# openapi.yaml -- same reasoning as internal/api/wire and web/src/api.
+mobile/node_modules
