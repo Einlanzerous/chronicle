@@ -44,23 +44,28 @@ class CaptureScreen extends ConsumerStatefulWidget {
 class _CaptureScreenState extends ConsumerState<CaptureScreen> {
   final List<int> _wave = [];
   int _silentMs = 0;
+  int _lastElapsedMs = 0;
 
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(captureControllerProvider);
     ref.listen(captureControllerProvider, (previous, next) {
       if (next.recorder.state == RecorderState.recording) {
+        // The gap is taken from the recorder's own clock rather than assumed
+        // from a tick length, so a change in the service's cadence cannot make
+        // this quietly over- or under-count.
+        final delta = (next.recorder.elapsedMs - _lastElapsedMs).clamp(0, 5000);
         setState(() {
+          _lastElapsedMs = next.recorder.elapsedMs;
           _wave.add(next.recorder.amplitude);
           if (_wave.length > _waveSamples) _wave.removeAt(0);
-          _silentMs = next.recorder.amplitude == 0
-              ? _silentMs + CaptureHeartbeat.ms
-              : 0;
+          _silentMs = next.recorder.amplitude == 0 ? _silentMs + delta : 0;
         });
       } else if (_wave.isNotEmpty) {
         setState(() {
           _wave.clear();
           _silentMs = 0;
+          _lastElapsedMs = 0;
         });
       }
     });
@@ -239,13 +244,6 @@ class _CaptureScreenState extends ConsumerState<CaptureScreen> {
   static String _bytes(int b) => b < 1024 * 1024
       ? '${(b / 1024).round()} KB'
       : '${(b / (1024 * 1024)).toStringAsFixed(1)} MB';
-}
-
-/// The heartbeat the service ticks on, mirrored so the silence counter can
-/// convert ticks into milliseconds without guessing.
-class CaptureHeartbeat {
-  const CaptureHeartbeat._();
-  static const int ms = 5000;
 }
 
 class _Waveform extends StatelessWidget {

@@ -125,6 +125,19 @@ class CaptureService : Service() {
         const val HEARTBEAT_MS = 5_000L
 
         /**
+         * How often the amplitude is sampled and state pushed to the UI.
+         *
+         * Deliberately NOT the heartbeat. Measured on device: sampling the
+         * amplitude once per heartbeat gives the waveform one bar every five
+         * seconds and makes consecutive reads report an identical value, which
+         * looks exactly like a stuck meter. `getMaxAmplitude()` is also a
+         * max-since-last-call, so a slow cadence flattens every peak into one
+         * number. The durable work (fsync, lease) stays on the slow timer where
+         * it belongs; only the display runs fast.
+         */
+        const val TICK_MS = 100L
+
+        /**
          * Mono voice Opus.
          *
          * Measured on device rather than taken from the bitrate: a 13.2 s
@@ -255,6 +268,16 @@ class CaptureService : Service() {
         }
     }
 
+    /** Drives the waveform and the on-screen state. Display only. */
+    private val tick = object : Runnable {
+        override fun run() {
+            if (state == State.IDLE) return
+            sampleAmplitude()
+            emit()
+            handler.postDelayed(this, TICK_MS)
+        }
+    }
+
     private val heartbeat = object : Runnable {
         override fun run() {
             if (state == State.IDLE) return
@@ -270,8 +293,6 @@ class CaptureService : Service() {
             }
 
             writeLease()
-            sampleAmplitude()
-            emit()
             handler.postDelayed(this, HEARTBEAT_MS)
         }
     }
@@ -341,6 +362,7 @@ class CaptureService : Service() {
         acquireWakeLock()
         writeLease()
         handler.postDelayed(heartbeat, HEARTBEAT_MS)
+        handler.post(tick)
         emit()
     }
 
@@ -506,6 +528,7 @@ class CaptureService : Service() {
 
     private fun teardown() {
         handler.removeCallbacks(heartbeat)
+        handler.removeCallbacks(tick)
         runCatching { recorder?.release() }
         recorder = null
         runCatching { output?.close() }

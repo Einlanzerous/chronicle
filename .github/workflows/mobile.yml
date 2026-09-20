@@ -8,11 +8,19 @@ name: mobile
 # that edits the contract alone -- touching nothing under mobile/ -- is exactly
 # the PR that makes the committed client stale. Filtering on mobile/** alone
 # would let that land green.
+#
+# internal/audio/testdata is in for the same reason, one layer further out
+# (CHRN-60). The Dart trim tests read those device-recorded fixtures ACROSS the
+# repository rather than keeping a copy, so that one set of bytes is checked
+# from both sides -- Dart reproduces the trim, Go probes the result. A PR that
+# edits only the fixtures touches nothing under mobile/, and is precisely the
+# PR that would break that pin while showing green here.
 on:
   pull_request:
     paths:
       - "mobile/**"
       - "openapi.yaml"
+      - "internal/audio/testdata/**"
       - "scripts/gen-dartapi.sh"
       - ".github/workflows/mobile.yml"
   push:
@@ -20,6 +28,7 @@ on:
     paths:
       - "mobile/**"
       - "openapi.yaml"
+      - "internal/audio/testdata/**"
       - "scripts/gen-dartapi.sh"
       - ".github/workflows/mobile.yml"
 
