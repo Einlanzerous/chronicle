@@ -126,11 +126,22 @@ It is wrong for three reasons, in increasing order of severity:
 **The first draft of §1 said "Scribe runs as `chronicle_tier1` and writes
 proposals all day." That sentence was false twice, and review caught it.**
 
-`migrations/0001_init.up.sql:36` is `REVOKE ALL ON SCHEMA tier2 FROM
+`migrations/0001_init.up.sql:52` is `REVOKE ALL ON SCHEMA tier2 FROM
 chronicle_tier1`, and the comment above it says the role "cannot see tier 2 at
 all." Scribe's *input* is `tier2.transcripts`, joined to `tier2.memos` to know
 which memos are `transcribed` and untriaged. **A role with no `USAGE` on schema
 tier2 cannot `SELECT` either one.** As designed, the role cannot run Scribe.
+
+> **[rev 2] This analysis is why `0007` exists, and it is kept for that reason
+> rather than corrected.** R4 below was accepted on 2026-08-30 and shipped as
+> `0007_proposals.up.sql` part 1 — option (a) of §1.1 verbatim: `USAGE ON SCHEMA
+> tier2`, `SELECT` on `tier2.memos` and `tier2.transcripts`, and no `ALTER
+> DEFAULT PRIVILEGES`. So *"a role with no `USAGE` on schema tier2 cannot
+> `SELECT` either one"* is true of `0001` and false from `0007` onward, and **the
+> role can run Scribe today.** Rewriting the paragraph to say so would delete the
+> reasoning that produced the grant, which is the one thing this section is for.
+> `0001`'s comment was corrected in the same spirit by CHRN-88, which is also why
+> the statement cited above is now at `:52` rather than `:36`.
 
 And nothing runs as it today. `internal/config/config.go` carries exactly one
 DSN, `CHRONICLE_DATABASE_URL`; `CHRONICLE_TEST_TIER1_DATABASE_URL` exists only

@@ -429,6 +429,29 @@ tier 2, and that is precisely what the role is guaranteed not to see. The
 invariant above does not depend on the answer. CHRN-52 should take the Scribe's
 role from E4 rather than from a premise stated here in passing.
 
+> **[rev 2] `0007` granted the `USAGE` both paragraphs above rely on not
+> existing, and neither conclusion falls with it.** Left standing rather than
+> rewritten, per the same pattern as the amendments elsewhere in this document: a
+> record that quietly repairs its own reasoning is worth less than one that shows
+> the correction.
+>
+> `0007_proposals.up.sql` part 1 gives `chronicle_tier1` `USAGE ON SCHEMA tier2`
+> plus `SELECT` on `tier2.memos` and `tier2.transcripts` — CHRN-32 ruling R4,
+> accepted 2026-08-30. So two claims here are true of `0001` and false from `0007`
+> onward: *"0001 leaves that role no `USAGE` on schema `tier2`, so a memo row is
+> not reachable from it at all"*, and *"transcripts are tier 2, and that is
+> precisely what the role is guaranteed not to see."* Both rows are readable from
+> the role today.
+>
+> **What survives is the invariant and both conclusions drawn from it.** Only
+> `chronicle` writes `state`: no `INSERT`, `UPDATE` or `DELETE` was granted on any
+> tier-2 table and `0007` deliberately added no `ALTER DEFAULT PRIVILEGES` on
+> schema `tier2`, so nothing running as `chronicle_tier1` can move a memo — the
+> guarantee now rests on table privileges rather than on the schema being
+> invisible, which is the stronger and the correct footing. The Scribe's role was
+> still E4's question to answer, and it answered it the other way round: that is
+> why `0007` exists. CHRN-88 put `0001`'s own comment on this footing too.
+
 ### [rev] Two consequences of review that E3 and E4 inherit
 
 **`AdvanceMemoState` is a compare-and-swap, not a setter.** The caller states the
@@ -572,6 +595,17 @@ and **CHRN-79** corrected `REVIEW.md` §1, which turned out to be the last place
 in the repo still stating the claim — and worse, it cited the very comment that
 refutes it. Closing the loop here so the trail does not end at a forward
 reference.
+
+`[rev 2]` **And the premise of this section's first paragraph is false from
+`0007` onward.** `chronicle_tier1` does hold `USAGE` on schema `tier2` now, and
+`SELECT` on `tier2.memos` — CHRN-32 ruling R4, shipped as `0007_proposals.up.sql`
+part 1. The `REVOKE` above still revokes nothing at the moment it runs, because
+`0003` precedes `0007` and the role holds nothing to revoke then; what stopped
+being true is the sentence's present tense, and the end state it implies. Read
+that off `schema.sql` instead: `tier2.memos` is readable by the tier-1 role,
+`tier2.memo_arrivals` is not, and no grant has ever named the second. Keeping the
+statement is still right for the reason given above — only the word *redundant*
+needs reading as of 2026-08-25.
 
 ### The functions
 
