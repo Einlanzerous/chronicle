@@ -1,0 +1,8 @@
+{
+  "name": "chronicle-mobile-tooling",
+  "private": true,
+  "description": "Generator tooling for the Android client's API package. Not a JS project: the only thing here is the pinned openapi-generator that scripts/gen-dartapi.sh runs. The app itself is mobile/chronicle (Flutter).",
+  "devDependencies": {
+    "@openapitools/openapi-generator-cli": "^2.25.0"
+  }
+}

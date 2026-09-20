@@ -1,0 +1,39 @@
+# openapi-generator config for the Android client's API package (CHRN-59).
+#
+# Generator `dart`: plain http-based, no build_runner, which is the same choice
+# Argosy made for the same reason -- a code-generating build step inside a
+# code-generated package is two generators to keep in step instead of one.
+#
+# Paths are relative to mobile/, which is where scripts/gen-dartapi.sh runs it.
+# The script passes -o, so outputDir here is the default rather than the law.
+generatorName: dart
+inputSpec: ../openapi.yaml
+outputDir: chronicle/packages/chronicle_api
+
+# No generated tests or docs. The tests are stubs that assert nothing, and the
+# docs are a second copy of openapi.yaml that drifts silently because nothing
+# reads it. Chronicle's own tests live in mobile/chronicle/test.
+globalProperties:
+  apiTests: "false"
+  modelTests: "false"
+  apiDocs: "false"
+  modelDocs: "false"
+
+# `override` is a property name on TriageDecision, and in Dart a field called
+# `override` SHADOWS dart:core's `@override` annotation inside its own class --
+# so the generated model's `@override bool operator ==` stops resolving and the
+# package fails `dart analyze` with three errors. This renames the DART FIELD
+# only: the wire key stays `override` (verified -- the generated toJson still
+# writes `json[r'override']`), so the contract every other client reads is
+# untouched.
+#
+# The fix belongs here rather than in openapi.yaml. Renaming the property would
+# change a shipped contract that the Go server, the web client and CHRN-32's
+# proposal decision all use, to work around one language's scoping rule.
+nameMappings:
+  override: proposalOverride
+
+additionalProperties:
+  pubName: chronicle_api
+  pubVersion: 0.1.0
+  pubDescription: "Generated Chronicle API client. Do not edit by hand -- run scripts/gen-dartapi.sh."
