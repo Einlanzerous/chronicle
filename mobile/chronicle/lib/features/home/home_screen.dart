@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../api/reachability.dart';
 import '../../api/server_url.dart';
 import '../../auth/auth_controller.dart';
+import '../../router/router.dart';
 import '../../theme/theme.dart';
 import '../../theme/tokens.dart';
 
@@ -57,9 +59,12 @@ class HomeScreen extends ConsumerWidget {
               const SizedBox(height: space4),
               Text('CAPTURE', style: microLabel()),
               const SizedBox(height: space2),
-              const Text(
-                'Recording is not built yet.',
-                style: TextStyle(fontSize: sizeBody, color: chText2),
+              // Capture lives outside the sign-in redirect (see router.dart),
+              // so this is a convenience rather than the only way in: a device
+              // with no credential can still reach /capture and record.
+              FilledButton(
+                onPressed: () => context.go(captureRoute),
+                child: const Text('Record a memo'),
               ),
 
               const SizedBox(height: space4),

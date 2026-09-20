@@ -42,6 +42,11 @@ dependencies:
   # permission on first use, so nothing prompts until the scanner opens.
   mobile_scanner: ^7.2.0
 
+  # SHA-256 of the bytes that will be sent. CHRN-20 makes the content hash a
+  # memo's identity, so this is not a place to hand-roll anything: `crypto` is
+  # the canonical Dart implementation and is already in the resolved tree.
+  crypto: ^3.0.6
+
   # `device_label` on the sign-in request: what this device is called in the
   # session list its holder reads, so "Pixel 8" beats "Android".
   device_info_plus: ^13.2.0
