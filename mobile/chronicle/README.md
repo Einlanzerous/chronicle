@@ -121,27 +121,68 @@ from it. The split, agreed before the code was written:
 
 ### The device pass
 
+Wireless debugging is enough, and the connect port is not the pairing port --
+let mDNS find it rather than reading it off the phone twice:
+
 ```sh
 source ~/dev-tools/env.sh
-adb devices                 # the device is listed and authorized
-flutter run -d <device-id>  # or: flutter install
+adb pair <host>:<pairing-port> <code>   # from the phone's Wireless debugging screen
+adb mdns services                        # _adb-tls-connect._tcp -> the connect port
+adb devices                              # auto-connects
+flutter install --debug                  # --debug: `flutter install` defaults to release
 ```
+
+The app logs nothing on purpose (`avoid_print`), so **screenshots are the
+observability**: `adb exec-out screencap -p > shot.png`.
 
 1. **Onboard.** On a signed-in device open *Account → Add device* and scan the
    QR. The app should land on the home screen showing the account and a green
-   `Connected`, with a `CHECKED hh:mm` under it.
-2. **At home, on the tailnet.** Pull to refresh. Expect `Connected`.
-3. **Outside, on mobile data** (Wi-Fi off, Tailscale off). Same address, now
-   resolving to the WAN A record. Pull to refresh. Expect `Connected`.
-4. **Unreachable, and recovery.** Airplane mode on: expect
-   `Cannot reach the server` with its timestamp, **not** a spinner. Airplane mode
-   off, pull to refresh: back to `Connected` **without restarting the app** and
-   without signing in again. That is the "recovers cleanly" clause.
+   `Connected`, with a `CHECKED hh:mm` under it. Camera permission is asked for
+   when the scanner opens, not at launch.
+2. **On the home network.** Pull to refresh. Expect `Connected` and a newer
+   `CHECKED`. **Not necessarily over Tailscale** -- see the note below.
+3. **Off the home network** (Wi-Fi off, on cellular). Same address, now resolving
+   to the WAN A record from outside. Pull to refresh. Expect `Connected`.
+4. **Unreachable, and recovery.** Take the network away entirely -- airplane
+   mode, or `svc wifi disable` **and** `svc data disable`, because either alone
+   leaves a path open. Expect `Cannot reach the server` with its timestamp and a
+   **Try again** button, **not** a spinner. Restore the network and pull to
+   refresh: back to `Connected` **without restarting the app** and without
+   signing in again, and **Try again** disappears. That is the "recovers cleanly"
+   clause.
 5. **The wrong host, once, on purpose.** Sign out, then paste the *tunneled*
    host's sign-in link. Expect *"That address is behind Cloudflare Access…"* and
    — the part worth checking — that the invite is **not** spent, because the app
    probes `/healthz` before it POSTs. The same code should still redeem against
-   the direct host.
+   the direct host. (Cheaper alternative, since an invite is single-use: `curl`
+   the tunneled host and check the `Location` against
+   `NotChronicleException.isAccessGated`.)
+
+### Two things that will mislead you, both learned the hard way
+
+**"At home" does not mean "over Tailscale."** On the 2026-09-19 pass Tailscale
+was installed but **inactive**, and the phone still reached the API: it sat on
+the LAN, resolved `chronicle-direct…` to the **public WAN address**, and got
+there in 24 ms by NAT hairpin. The clause is about reaching the API from each
+network, and the app holds one address and does not care which path carries it
+-- so do not record "Tailscale" unless you checked for a `100.x` address.
+
+**`OUT_OF_SERVICE` on cellular does not mean there is no cellular.** While on
+Wi-Fi the phone registers over Wi-Fi calling -- `getRilDataRadioTechnology=
+18(IWLAN)`, `transportType=WLAN` -- and `dumpsys telephony.registry` reports
+`mVoiceRegState=1` / `mDataRegState=1`. Drop Wi-Fi and it comes up on 5G within
+seconds. Reading that as "no mobile-data path" once turned a run meant to test
+step 4 into an accidental test of step 3.
+
+### Result, 2026-09-19
+
+Run on a **Pixel 9 Pro / Android 17** against the shipped `v1.19.0` debug APK.
+Steps 1-4 **pass**: onboarded by QR; `Connected` on the home network; `Connected`
+on 5G with Wi-Fi off; and `Cannot reach the server` + **Try again** with both
+radios down, returning to `Connected` on one running instance with the session
+intact. Step 5 was evidenced by the `curl` alternative rather than by spending a
+second invite. The session list showed the device as **Pixel 9 Pro**, which is
+`deviceLabel()` reading `ro.product.model`.
 
 Note what step 4 is and is not. **The app never uses the Cloudflare tunnel**: it
 talks to the direct host, which has no tunnel ingress, so the tunnel going down

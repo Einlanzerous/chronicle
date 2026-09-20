@@ -31,6 +31,12 @@ own note IDs are `CHR-####` and the two namespaces would collide.
   `user.go` and CHRN-18 put `Memo` in `memo.go`, and a types-only package
   with two files in it earns nothing.
 - `internal/api/` — HTTP surface.
+- `web/` — the web client (E8). Vue + Vite; its API types are generated from
+  `openapi.yaml` by `scripts/gen-webapi.sh`.
+- `mobile/chronicle/` — the Android client (E9). Flutter, on the Argosy/Lyceum
+  stack; its API package is generated from the same `openapi.yaml` by
+  `scripts/gen-dartapi.sh`, and its checks are `.github/workflows/mobile.yml`
+  rather than `verify.sh`, which is every check that needs no hardware.
 - `migrations/` — `NNNN_name.up.sql` / `.down.sql`, embedded, auto-applied on boot.
 - `deploy/` — `Dockerfile`, database provisioning, and the deploy **decisions**. The configuration itself is not here: `construct-server` declares the service block and every router, and CHRN-89 removed this repo's copies after they drifted from it.
 - `docs/` — architecture, plus `docs/salvage/` and `docs/benchmarks/`, which are
