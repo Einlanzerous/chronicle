@@ -227,7 +227,14 @@ class CaptureDir {
   /// same audio.
   Future<void> writeMeta(CaptureRecord record) async {
     await dir.create(recursive: true);
-    final tmp = File('${meta.path}.tmp');
+    // Unique per write, not a fixed `meta.json.tmp`. Two writers sharing one
+    // temp path is a race with a very bad worst case: one renames the file the
+    // other is still filling, `readMeta` then fails to decode, and `recoverAll`
+    // skips that capture forever while `refresh` never lists it — the audio is
+    // on disk and the app cannot reach it. Cheap insurance against ever having
+    // two passes again.
+    final tmp = File('${meta.path}.${_tempSeq++}-'
+        '${DateTime.now().microsecondsSinceEpoch}.tmp');
     await tmp.writeAsString(
       const JsonEncoder.withIndent('  ').convert(record.toJson()),
       flush: true,
@@ -235,6 +242,8 @@ class CaptureDir {
     await tmp.rename(meta.path);
   }
 }
+
+int _tempSeq = 0;
 
 /// A capture id and the key derived from it, minted together and never apart.
 class CaptureIdentity {

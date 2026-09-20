@@ -38,6 +38,12 @@ class CaptureChannel(private val activity: Activity) {
          *
          * A recorder that fills the last block of a phone takes the rest of the
          * system down with it, and the memo it was saving is not worth that.
+         *
+         * **The Dart side declares this too**, as `_reserveBytes` in
+         * `capture_controller.dart`, where it refuses the start and is the
+         * number a person is shown. This one sizes `setMaxFileSize` and is what
+         * actually stops a running recording. They are one policy in two
+         * languages: move one and move the other.
          */
         private const val FREE_SPACE_RESERVE = 256L * 1024 * 1024
 

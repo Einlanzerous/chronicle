@@ -14,6 +14,13 @@ import 'recovery.dart';
 ///
 /// A recorder that fills the last block takes the rest of the system down with
 /// it, and the memo it was saving is not worth that.
+///
+/// **Declared twice, deliberately, and the two must move together.** This one
+/// refuses the start and is the number a person is shown;
+/// `CaptureChannel.FREE_SPACE_RESERVE` sizes the recorder's `setMaxFileSize`
+/// budget and is the number that actually stops a running recording. Change one
+/// without the other and the app refuses at one threshold while the recorder
+/// stops at a different one.
 const int _reserveBytes = 256 * 1024 * 1024;
 
 /// Plus an hour of headroom, so a refusal means "not enough for a memo" rather
@@ -94,6 +101,15 @@ class CaptureController extends Notifier<CaptureUiState> {
   /// rule exists to catch. Found on device.
   bool _holdPending = false;
 
+  /// A start is in flight.
+  ///
+  /// `state.isRecording` cannot serve: it is the asynchronous fact this whole
+  /// gesture path already learned not to trust. Without this, two pointers on
+  /// the control both pass the guard and mint two captures -- the second gets a
+  /// `meta.json` and no audio, which recovery then marks `empty`, the state
+  /// reserved for a memo whose audio never left the encoder.
+  bool _starting = false;
+
   /// Resolved once at build, never through `ref` after an await.
   ///
   /// `recover()` is deliberately started unawaited and does real I/O, so it can
@@ -113,12 +129,62 @@ class CaptureController extends Notifier<CaptureUiState> {
     // The UI reads the recorder's state rather than remembering its own, which
     // is what lets a recreated UI re-attach to a recording already in flight
     // instead of showing idle over the top of one.
-    _sub = _platform.watch().listen((snapshot) {
-      if (!ref.mounted) return;
-      state = state.copyWith(recorder: snapshot);
-    });
-    unawaited(recover());
+    _sub = _platform.watch().listen(_onSnapshot);
+    // Recovery is NOT kicked off here. `main()` does it, once, at launch --
+    // and reading `.notifier` there is what builds this, so a call in both
+    // places ran two concurrent passes over the same directory microseconds
+    // apart, each reaching `salvage()` for the same capture.
     return const CaptureUiState();
+  }
+
+  /// The last capture the recorder reported, so a stop can be attributed.
+  ///
+  /// An idle snapshot carries no id, and `state.current` is only ever set by
+  /// this UI's own `_start` — so neither can name the capture when a recording
+  /// ends some other way.
+  String? _lastSeenCaptureId;
+
+  /// Captures a finalise is already running for.
+  final Set<String> _finalising = {};
+
+  /// Watches the recorder and finalises whatever stops, however it stopped.
+  ///
+  /// **Every stop has to come through here, not just the in-app button.** The
+  /// notification's Stop action exists precisely for when the UI is gone, and a
+  /// STOP pressed after a swipe-away relaunch runs in a process where
+  /// `state.current` is null. Both used to leave `meta.json` reading
+  /// `recording`, which meant `refresh()` skipped it and the memo was missing
+  /// from RECENT the instant somebody pressed Stop — then reappeared next
+  /// launch as a `SALVAGED` duplicate, a label that says the recording was torn
+  /// when it was not.
+  void _onSnapshot(RecorderSnapshot snapshot) {
+    if (!ref.mounted) return;
+    final was = state.recorder.state;
+    if (snapshot.captureId != null) _lastSeenCaptureId = snapshot.captureId;
+    state = state.copyWith(recorder: snapshot);
+
+    if (was != RecorderState.idle && snapshot.state == RecorderState.idle) {
+      unawaited(_finaliseStopped());
+    }
+  }
+
+  /// Finalises the capture that just stopped, if nobody else already has.
+  Future<void> _finaliseStopped() async {
+    final id = _lastSeenCaptureId;
+    if (id == null || !_finalising.add(id)) return;
+    try {
+      final root = await _platform.capturesRoot();
+      final capture = CaptureDir(root, id);
+      final record = await capture.readMeta();
+      // Only a capture still marked `recording` needs finishing. This makes the
+      // call idempotent, so the button path and this path cannot double up.
+      if (record == null || record.state != CaptureState.recording) return;
+      await finalise(capture, record);
+      if (!ref.mounted) return;
+      await refresh();
+    } finally {
+      _finalising.remove(id);
+    }
   }
 
   /// Finishes anything a previous run left behind, then refreshes the list.
@@ -213,8 +279,20 @@ class CaptureController extends Notifier<CaptureUiState> {
   }
 
   Future<void> _start({required bool latched}) async {
-    if (state.isRecording) return;
-    state = state.copyWith(clearRefusal: true);
+    if (state.isRecording || _starting) return;
+    _starting = true;
+    try {
+      await _startInner(latched: latched);
+    } finally {
+      _starting = false;
+    }
+  }
+
+  Future<void> _startInner({required bool latched}) async {
+    // Set BEFORE the awaits, never after. Written at the end it would land
+    // after a quick tap's `endHold` had already latched, and overwrite the
+    // gesture's own decision with the value the gesture started with.
+    state = state.copyWith(clearRefusal: true, latched: latched);
 
     if (!await _platform.requestPermissions()) {
       state = state.copyWith(
@@ -252,18 +330,19 @@ class CaptureController extends Notifier<CaptureUiState> {
     await capture.writeMeta(record);
 
     await _platform.start(identity.captureId);
-    state = state.copyWith(current: record, latched: latched);
+    if (!ref.mounted) return;
+    _lastSeenCaptureId = identity.captureId;
+    state = state.copyWith(current: record);
   }
 
   Future<void> stop() async {
     if (!state.isRecording) return;
-    final record = state.current;
     await _platform.stop();
-
-    if (record != null) {
-      final root = await _platform.capturesRoot();
-      await finalise(CaptureDir(root, record.captureId), record);
-    }
+    // Finalising happens in one place for every stop -- this one, the
+    // notification's Stop action, and a stop after a re-attach -- so it is
+    // awaited here rather than duplicated. `_finaliseStopped` is idempotent.
+    await _finaliseStopped();
+    if (!ref.mounted) return;
     _holdPending = false;
     state = state.copyWith(clearCurrent: true, latched: false);
     await refresh();
