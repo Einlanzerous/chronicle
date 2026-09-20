@@ -31,7 +31,15 @@ ThemeData chronicleTheme() {
     outline: chLine,
     primary: chSignal,
     onPrimary: chBase,
-    error: refSwitchyard,
+    // `error` is deliberately LEFT TO fromSeed. It is what every Material
+    // widget reaches for when it renders a failure -- an InputDecorator's error
+    // border, a SnackBar styled from the scheme -- and binding a reserved
+    // colour to it would put Switchyard's coral on a form validation error.
+    // tokens.dart states the rule and CLAUDE.md invariant 2 is the rule: coral
+    // is Switchyard and gold is Amber, anywhere either resolves, and neither
+    // goes on a warning unrelated to that system. sign_in_screen.dart builds
+    // its own error box from chRaised/chLine for the same reason; a theme that
+    // handed out coral here would contradict it app-wide.
   );
 
   return ThemeData(

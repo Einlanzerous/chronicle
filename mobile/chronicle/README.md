@@ -102,7 +102,7 @@ body is a login page, which the generated client reports as a parse error —
 blaming the server for the one thing that is actually wrong. So the transport
 turns redirect-following off and refuses, and names Access when the redirect
 target is Access. Refusing every redirect is safe by construction: `openapi.yaml`
-declares **no 3xx on any of its 47 operations** (the two `304`s are cache
+declares **no 3xx on any of its 50 operations** (the two `304`s are cache
 validators).
 
 ## Verifying it on a device

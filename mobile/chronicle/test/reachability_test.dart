@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:chronicle/api/reachability.dart';
 import 'package:chronicle/api/server_url.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -186,6 +188,51 @@ void main() {
       up = false;
       expect((await container.read(reachabilityProvider.notifier).check()).reach,
           Reach.unreachable);
+    });
+
+    test('a slow EARLIER probe does not overwrite a fast later one', () async {
+      // The reviewer's scenario on #116, and it needs no unusual input: main.dart
+      // fires a probe at startup without awaiting it, and against an unreachable
+      // server that probe runs for its full deadline. Inside that window the
+      // operator pulls to refresh, the network is back, and the banner says
+      // Connected -- then the startup probe finally answers.
+      final firstEntered = Completer<void>();
+      final releaseFirst = Completer<void>();
+      var calls = 0;
+      final container = await containerWith(MockClient((_) async {
+        calls++;
+        if (calls == 1) {
+          firstEntered.complete();
+          await releaseFirst.future;
+          throw http.ClientException('no route to host');
+        }
+        return http.Response('{"status":"ok"}', 200);
+      }));
+      addTearDown(container.dispose);
+
+      // Probe one: started, in flight, deliberately not awaited.
+      final first = container.read(reachabilityProvider.notifier).check();
+      await firstEntered.future;
+
+      // Probe two: started later, finishes first, and is the current truth.
+      final second = await container.read(reachabilityProvider.notifier).check();
+      expect(second.isOk, isTrue);
+      expect(container.read(reachabilityProvider).isOk, isTrue);
+
+      // Now the earlier one answers. Without the sequence guard this publishes
+      // `unreachable` over a good state -- and its checkedAt is NEWER, because
+      // the timestamp is stamped at completion, so nothing downstream could tell
+      // it was stale.
+      releaseFirst.complete();
+      final stale = await first;
+
+      expect(stale.reach, Reach.unreachable,
+          reason: 'the superseded probe still returns its own answer');
+      expect(
+        container.read(reachabilityProvider).isOk,
+        isTrue,
+        reason: 'a superseded probe must not become the app state',
+      );
     });
 
     test('says so rather than probing when no address is configured', () async {

@@ -122,10 +122,15 @@ class ServerStatus {
       };
 }
 
-/// Probes one base URL. Separate from the controller so a test can call it
-/// directly with a stubbed client, and so the sign-in screen can check an
-/// address **before** storing it — the address is only worth keeping if a
-/// Chronicle answered on it.
+/// Probes one base URL. Separate from the controller so a test can drive it
+/// directly with a stubbed client, and so one probe can be run against an
+/// address that is not the stored one.
+///
+/// Note it is NOT used to vet an address before storing it, and cannot be:
+/// [AuthController.signIn] stores the address first because the probe reads the
+/// stored value and the generated client is built from it. The consequence is
+/// small and worth knowing — a scanned host that turns out to be Access-gated is
+/// persisted even though the app refused it, and the next scan overwrites it.
 Future<ServerStatus> probeServer(
   String baseUrl, {
   http.Client? client,
@@ -181,8 +186,10 @@ Future<ServerStatus> probeServer(
       detail: e.toString(),
     );
   } finally {
-    // Only closes a client this call created; an injected one belongs to the
-    // caller, which matters because the app reuses one across probes.
+    // Only closes a client this call created. An injected one belongs to its
+    // caller -- which is a test, since probeClientProvider gives the app null
+    // and the app therefore makes one per probe. Closing a client the caller
+    // still holds would break the next stubbed request.
     probe.close();
   }
 }
@@ -194,11 +201,29 @@ final probeClientProvider = Provider<http.Client?>((ref) => null);
 
 /// The app's live view of the server it is pointed at.
 class ReachabilityController extends Notifier<ServerStatus> {
+  /// Bumped per probe, captured before the await, and compared after: the
+  /// answer to the LATEST probe wins, rather than whichever probe happens to
+  /// finish last. This is the same guard, for the same reason, that
+  /// `NoteView.vue` puts on its loaders (CHRN-110) -- and without it the
+  /// failure is reachable with no unusual input:
+  ///
+  /// `main.dart` fires a probe at startup without awaiting it, and an
+  /// unreachable server makes that probe run for its full 6 s deadline. Inside
+  /// that window the operator pulls to refresh or taps Try again, the network is
+  /// back, and the banner correctly says Connected at half a second. Then the
+  /// startup probe times out and — with no guard — overwrites it with "did not
+  /// answer in time", carrying a NEWER `checkedAt` because the timestamp is
+  /// stamped at completion. The banner would flip back to an error with no user
+  /// action, on the one screen the recovery clause is demonstrated on.
+  int _seq = 0;
+
   @override
   ServerStatus build() => const ServerStatus.unknown();
 
-  /// Re-probe. Safe to call repeatedly; the newest answer wins.
+  /// Re-probe. Safe to call repeatedly and concurrently: the answer to the most
+  /// recently STARTED probe is the one that reaches [state].
   Future<ServerStatus> check() async {
+    final seq = ++_seq;
     final base = ref.read(serverUrlProvider);
     if (base.isEmpty) {
       final status = ServerStatus(
@@ -206,11 +231,17 @@ class ReachabilityController extends Notifier<ServerStatus> {
         checkedAt: DateTime.now(),
         detail: 'no server address configured',
       );
-      state = status;
+      if (seq == _seq) state = status;
       return status;
     }
-    final status = await probeServer(base, client: ref.read(probeClientProvider));
-    state = status;
+    final status =
+        await probeServer(base, client: ref.read(probeClientProvider));
+
+    // Superseded: a later probe has started, so this answer is about a moment
+    // that has passed and must not become the app's state. It is still RETURNED
+    // — the caller asked for this probe specifically, and AuthController.signIn
+    // needs its own verdict about the address it just set.
+    if (seq == _seq) state = status;
     return status;
   }
 }

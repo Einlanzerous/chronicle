@@ -2,7 +2,7 @@
 /// refusal.
 ///
 /// The generated `chronicle_api` package takes any `http.Client`, so everything
-/// that is true of *every* request lives here rather than at 47 call sites.
+/// that is true of *every* request lives here rather than at 50 call sites.
 library;
 
 import 'dart:async';
@@ -26,7 +26,7 @@ import 'package:http/http.dart' as http;
 /// [ChronicleClient] turns redirect-following off and refuses instead.
 ///
 /// Refusing every redirect is safe rather than merely convenient: `openapi.yaml`
-/// declares **no 3xx response on any of its 47 operations** (the two `304`s are
+/// declares **no 3xx response on any of its 50 operations** (the two `304`s are
 /// cache validators, not redirects), so a redirect is by construction not
 /// Chronicle's own answer.
 class NotChronicleException implements Exception {
