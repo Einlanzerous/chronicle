@@ -1,16 +1,13 @@
 name: mobile
 
-# The Android client's generated API package (CHRN-59, E9). Scoped to the paths
-# that can invalidate it so a server-only PR does not pay for a JDK.
+# The Android client (CHRN-59, E9). Scoped to the app so a server-only PR does
+# not pay for a Flutter toolchain, mirroring how ci.yml splits its jobs by area.
 #
 # openapi.yaml IS IN THE PATH FILTER, and that is load-bearing rather than
 # cautious: mobile/chronicle/packages/chronicle_api is generated from it, so a PR
 # that edits the contract alone -- touching nothing under mobile/ -- is exactly
 # the PR that makes the committed client stale. Filtering on mobile/** alone
 # would let that land green.
-#
-# The app itself, and the `android` job that analyzes, tests and builds it,
-# arrive in the PR stacked on this one. This PR is the client and its guard.
 on:
   pull_request:
     paths:
@@ -30,19 +27,57 @@ permissions:
   contents: read
 
 env:
-  # The same JDK the local toolchain pins (~/dev-tools/env.sh) and the same one
-  # the Flutter side will use: Temurin 17. A version skew between CI and the box
-  # is a class of "works here, fails there" nobody should debug twice.
+  # The same two versions the local toolchain pins (~/dev-tools/env.sh): Temurin
+  # 17 and Flutter 3.44.2 stable. A version skew between CI and the box is a
+  # class of "works here, fails there" nobody should have to debug twice.
+  FLUTTER_VERSION: "3.44.2"
   JAVA_VERSION: "17"
 
 jobs:
+  android:
+    name: android
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile/chronicle
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+
+      # `flutter analyze` is the gate, not `dart format`: the analyzer runs the
+      # project's own lint rules, and the generated API package is excluded from
+      # them by analysis_options.yaml because linting a generated file means
+      # either editing it or carrying ignores the generator would overwrite.
+      - run: flutter analyze
+
+      - run: flutter test
+
+      # A DEBUG apk, not a release one. It proves the Android half compiles --
+      # the plugin manifests merge, the camera permission resolves, Gradle is
+      # happy -- without needing a signing key, which this repo does not have
+      # and which an APK release track (not this ticket) would own.
+      - run: flutter build apk --debug
+
   # mobile/chronicle/packages/chronicle_api is GENERATED from openapi.yaml by
   # scripts/gen-dartapi.sh (openapi-generator, pinned twice -- the npm launcher
   # in mobile/package.json and the JAR version in mobile/openapitools.json).
   # Regenerated into a temp directory and compared, so the check never rewrites
   # what it is checking.
   #
-  # The reason is the one ci.yml gives three times over: a generated artefact
+  # Its own job because it needs bun and a JDK but no Flutter, and because the
+  # reason is the same one ci.yml gives three times over: a generated artefact
   # with no guard is a generated artefact somebody hand-edits. This document has
   # three OTHER clients besides this one.
   #
