@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.19.0](https://github.com/Einlanzerous/chronicle/compare/v1.18.0...v1.19.0) (2026-09-20)
+
+
+### Features
+
+* **mobile:** generate the Android client's API package from openapi.yaml (CHRN-59) ([#115](https://github.com/Einlanzerous/chronicle/issues/115)) ([3fc94d7](https://github.com/Einlanzerous/chronicle/commit/3fc94d77f19892cddc8110cbb7d43b7902e0ef27))
+* **mobile:** the Android app — auth against Chronicle's own tokens, and networking that says what is wrong (CHRN-59) ([#116](https://github.com/Einlanzerous/chronicle/issues/116)) ([d46a2f7](https://github.com/Einlanzerous/chronicle/commit/d46a2f72f1d88e543eaaef967534f4d65fc8a1e7))
+
+
+### Bug Fixes
+
+* **web:** guard NoteView's secondary loaders against loadSeq races (CHRN-110) ([#112](https://github.com/Einlanzerous/chronicle/issues/112)) ([b7bc8e7](https://github.com/Einlanzerous/chronicle/commit/b7bc8e7819f059ac84721e4883834e2463fd083e))
+
 ## [1.18.0](https://github.com/Einlanzerous/chronicle/compare/v1.17.0...v1.18.0) (2026-09-19)
 
 
