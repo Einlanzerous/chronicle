@@ -212,9 +212,11 @@ class _CaptureScreenState extends ConsumerState<CaptureScreen> {
         if (!state.isRecording) controller.beginHold();
       },
       onPointerUp: (_) {
-        if (state.isRecording) {
-          state.latched ? controller.stop() : controller.endHold();
-        }
+        // Always reported. The controller decides what a release means,
+        // because only it knows whether a start is still in flight.
+        state.latched && state.isRecording
+            ? controller.stop()
+            : controller.endHold();
       },
       // A cancel is NOT a release. The system cancels a pointer for reasons
       // that have nothing to do with the finger -- a system gesture, palm

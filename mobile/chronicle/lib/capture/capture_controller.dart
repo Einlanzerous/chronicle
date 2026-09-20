@@ -84,6 +84,16 @@ class CaptureController extends Notifier<CaptureUiState> {
   StreamSubscription<RecorderSnapshot>? _sub;
   Timer? _reLook;
 
+  /// A finger is down on the capture control and a start is in flight.
+  ///
+  /// **The gesture cannot key off `isRecording`.** Starting is asynchronous --
+  /// permission, a free-space check, writing `meta.json`, then the service --
+  /// and a quick tap's pointer-up lands long before any of that reports back.
+  /// Gating the release on "are we recording yet" therefore dropped the release
+  /// entirely for exactly the shortest gestures, which are the ones the latch
+  /// rule exists to catch. Found on device.
+  bool _holdPending = false;
+
   CapturePlatform get _platform => ref.read(capturePlatformProvider);
 
   @override
@@ -144,7 +154,10 @@ class CaptureController extends Notifier<CaptureUiState> {
   }
 
   /// Finger down on the capture control.
-  Future<void> beginHold() => _start(latched: false);
+  Future<void> beginHold() {
+    _holdPending = true;
+    return _start(latched: false);
+  }
 
   /// Finger lifted.
   ///
@@ -152,7 +165,21 @@ class CaptureController extends Notifier<CaptureUiState> {
   /// stopping, so a brush against the control cannot produce a 200 ms memo that
   /// then needs triaging.
   Future<void> endHold() async {
-    if (!state.isRecording || state.latched) return;
+    if (state.latched) return;
+
+    // The finger lifted before the recorder even reported in. That is by
+    // definition less than the threshold, so it latches -- and it must be
+    // handled here rather than ignored, or the shortest gestures fall through
+    // every rule and leave the controller believing a finger is still down.
+    if (!state.isRecording) {
+      if (_holdPending) {
+        _holdPending = false;
+        state = state.copyWith(latched: true);
+      }
+      return;
+    }
+
+    _holdPending = false;
     if (state.recorder.elapsedMs < _latchBelowMs) {
       state = state.copyWith(latched: true);
       return;
@@ -169,7 +196,8 @@ class CaptureController extends Notifier<CaptureUiState> {
   /// ringing. Every one of those would otherwise end a memo mid-thought, so a
   /// cancel keeps recording and latches.
   void cancelHold() {
-    if (!state.isRecording) return;
+    if (!state.isRecording && !_holdPending) return;
+    _holdPending = false;
     state = state.copyWith(latched: true);
   }
 
@@ -225,6 +253,7 @@ class CaptureController extends Notifier<CaptureUiState> {
       final root = await _platform.capturesRoot();
       await finalise(CaptureDir(root, record.captureId), record);
     }
+    _holdPending = false;
     state = state.copyWith(clearCurrent: true, latched: false);
     await refresh();
   }
