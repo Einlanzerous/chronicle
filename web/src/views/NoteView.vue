@@ -98,10 +98,14 @@ async function loadNote(ref_: string, opts: { silent?: boolean } = {}): Promise<
   if (res.data) {
     note.value = res.data
     mode.value = 'read'
-    loadReferences(note.value.references)
-    loadBacklinks(ref_)
-    loadTier1(note.value.page)
-    loadProvenance(ref_)
+    // `seq` -- the SAME captured value this function just checked -- is
+    // passed down rather than let each loader capture its own (CHRN-110):
+    // one guard to keep consistent instead of four, and the next loader
+    // added to this fan-out inherits it instead of a chance to forget it.
+    loadReferences(note.value.references, seq)
+    loadBacklinks(ref_, seq)
+    loadTier1(note.value.page, seq)
+    loadProvenance(ref_, seq)
     return
   }
   note.value = null
@@ -185,12 +189,13 @@ function closeTranscript(): void {
 // nothing rather than as a guess.
 const provenanceRevisions = ref<Map<number, RevisionMeta>>(new Map())
 
-async function loadProvenance(ref_: string): Promise<void> {
+async function loadProvenance(ref_: string, seq: number): Promise<void> {
   provenance.value = []
   provenanceRevisions.value = new Map()
   playingMemoId.value = null
   closeTranscript()
   const res = await api.GET('/notes/{ref}/provenance', { params: { path: { ref: ref_ } } })
+  if (seq !== loadSeq) return // superseded by a later navigation
   // No error surface, deliberately. This block is supplementary to a note
   // that has already rendered, and the one thing it must never do is say
   // something about a recording it could not read. Absent is the honest
@@ -201,6 +206,7 @@ async function loadProvenance(ref_: string): Promise<void> {
   if (current) provenanceRevisions.value = new Map([[current.seq, current]])
   if (!res.data.items.some((entry) => entry.revision_seq !== current?.seq)) return
   const page = await api.GET('/notes/{ref}/revisions', { params: { path: { ref: ref_ } } })
+  if (seq !== loadSeq) return // superseded by a later navigation (second await)
   if (!page.data) return
   const zipped = new Map(provenanceRevisions.value)
   for (const rev of page.data.items) zipped.set(rev.seq, rev)
@@ -252,7 +258,7 @@ const resolutions = ref<Map<string, Resolution>>(new Map())
 const referencesLoading = ref(false)
 const referencesError = ref<string | null>(null)
 
-async function loadReferences(descriptors: Note['references']): Promise<void> {
+async function loadReferences(descriptors: Note['references'], seq: number): Promise<void> {
   const deduped = dedupeReferences(descriptors)
   resolutions.value = new Map()
   referencesError.value = null
@@ -261,6 +267,7 @@ async function loadReferences(descriptors: Note['references']): Promise<void> {
   const res = await api.POST('/references/resolve', {
     body: { references: deduped.slice(0, MAX_RESOLVE_BATCH) },
   })
+  if (seq !== loadSeq) return // superseded by a later navigation
   referencesLoading.value = false
   if (res.data) {
     resolutions.value = new Map(res.data.resolutions.map((r) => [r.token, r]))
@@ -282,7 +289,7 @@ const tier1Loading = ref(false)
 const tier1NotFound = ref(false)
 const tier1NoticeError = ref<string | null>(null)
 
-async function loadTier1(pagePath: string): Promise<void> {
+async function loadTier1(pagePath: string, seq: number): Promise<void> {
   tier1Page.value = null
   tier1NotFound.value = false
   tier1NoticeError.value = null
@@ -293,6 +300,7 @@ async function loadTier1(pagePath: string): Promise<void> {
   }
   tier1Loading.value = true
   const res = await api.GET('/tier1/page', { params: { query: { path } } })
+  if (seq !== loadSeq) return // superseded by a later navigation
   tier1Loading.value = false
   if (res.data) {
     tier1Page.value = res.data
@@ -312,12 +320,13 @@ const backlinksLoading = ref(false)
 const backlinksError = ref<string | null>(null)
 const backlinksCursor = ref<string | undefined>(undefined)
 
-async function loadBacklinks(ref_: string, cursor?: string): Promise<void> {
+async function loadBacklinks(ref_: string, seq: number, cursor?: string): Promise<void> {
   backlinksLoading.value = true
   backlinksError.value = null
   const res = await api.GET('/notes/{ref}/backlinks', {
     params: { path: { ref: ref_ }, query: cursor ? { cursor } : {} },
   })
+  if (seq !== loadSeq) return // superseded by a later navigation
   backlinksLoading.value = false
   if (res.data) {
     backlinks.value = cursor ? [...(backlinks.value ?? []), ...res.data.items] : res.data.items
@@ -329,8 +338,14 @@ async function loadBacklinks(ref_: string, cursor?: string): Promise<void> {
   backlinksError.value = errorMessage(res.error, 'Backlinks could not be read.')
 }
 
+// `loadMoreBacklinks` is a user click on a "Load more" button, not part of
+// `loadNote`'s own fan-out -- there is no freshly-captured `seq` to inherit.
+// It reads the LIVE `loadSeq` at click time instead, which is exactly the
+// sequence number of the note currently on screen (nothing else bumps it),
+// so the same guard still drops the page if a navigation lands while this
+// page is in flight.
 function loadMoreBacklinks(): void {
-  if (backlinksCursor.value) loadBacklinks(noteRef.value, backlinksCursor.value)
+  if (backlinksCursor.value) loadBacklinks(noteRef.value, loadSeq, backlinksCursor.value)
 }
 
 // ── Discussions this note resolved from ─────────────────────────────────
@@ -395,12 +410,19 @@ const selectedRevision = ref<Revision | null>(null)
 const restoring = ref(false)
 const restoreError = ref<string | null>(null)
 
-async function loadRevisions(cursor?: string): Promise<void> {
+// Not part of `loadNote`'s fan-out either -- opened and paginated entirely
+// by user clicks on the note already on screen (CHRN-110). Same reasoning as
+// `loadMoreBacklinks` above: the caller hands down the LIVE `loadSeq` at
+// click time rather than a value captured from `loadNote`, because there is
+// no such capture to inherit here, and the live counter still names exactly
+// the note currently displayed.
+async function loadRevisions(seq: number, cursor?: string): Promise<void> {
   revisionsLoading.value = true
   revisionsError.value = null
   const res = await api.GET('/notes/{ref}/revisions', {
     params: { path: { ref: noteRef.value }, query: cursor ? { cursor } : {} },
   })
+  if (seq !== loadSeq) return // superseded by a later navigation
   revisionsLoading.value = false
   if (res.data) {
     const page = sortRevisionsNewestFirst(res.data.items)
@@ -415,11 +437,11 @@ function openHistory(): void {
   mode.value = 'history'
   revisions.value = []
   revisionsNextCursor.value = undefined
-  loadRevisions()
+  loadRevisions(loadSeq)
 }
 
 function loadMoreRevisions(): void {
-  if (revisionsNextCursor.value) loadRevisions(revisionsNextCursor.value)
+  if (revisionsNextCursor.value) loadRevisions(loadSeq, revisionsNextCursor.value)
 }
 
 function readRevision(rev: Revision): void {
