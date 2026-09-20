@@ -115,7 +115,15 @@ class CaptureService : Service() {
         /** How often the lease is refreshed and the audio fsync'd. */
         const val HEARTBEAT_MS = 5_000L
 
-        /** Mono voice Opus. About 10 MB an hour; a 20-minute memo is ~3.5 MB. */
+        /**
+         * Mono voice Opus.
+         *
+         * Measured on device rather than taken from the bitrate: a 13.2 s
+         * recording came to 53,769 bytes, which is ~4.1 kB/s -- about 15 MB an
+         * hour and a ~5 MB twenty-minute memo, once Ogg page overhead and VBR
+         * are in. CHRN-20's 1 GiB cap is therefore ~68 hours and is not a real
+         * bound on anything.
+         */
         private const val SAMPLE_RATE = 48_000
         private const val BIT_RATE = 24_000
 
@@ -605,11 +613,27 @@ class CaptureService : Service() {
             },
             PendingIntent.FLAG_IMMUTABLE,
         )
+        // A STOP action, and it is not decoration. This service deliberately
+        // outlives the UI -- swiping the app out of Recents leaves a recording
+        // running rather than ending a thought mid-sentence -- which only works
+        // if the notification is a real way to end it. Without this, a
+        // recording whose UI is gone can be stopped only by force-stopping the
+        // app, and a person who does not know that will believe they have lost
+        // control of their own microphone.
+        val stop = PendingIntent.getService(
+            this,
+            1,
+            Intent(this, CaptureService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("Recording")
             .setContentText("Chronicle is capturing a memo.")
             .setSmallIcon(android.R.drawable.presence_audio_online)
             .setContentIntent(open)
+            .addAction(
+                Notification.Action.Builder(null, "Stop", stop).build(),
+            )
             .setOngoing(true)
             .build()
     }
