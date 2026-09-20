@@ -4,6 +4,7 @@ library;
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'capture_channel.dart';
@@ -164,7 +165,14 @@ class CaptureController extends Notifier<CaptureUiState> {
     state = state.copyWith(recorder: snapshot);
 
     if (was != RecorderState.idle && snapshot.state == RecorderState.idle) {
-      unawaited(_finaliseStopped());
+      // Guarded for the same reason `recoverAll` is: this is unawaited, so
+      // anything thrown lands in a zone with nobody to catch it and takes the
+      // rest of the app's error handling with it. A capture that could not be
+      // finalised now is one the next launch recovers -- the bytes are on disk
+      // either way, which is the whole point of finalising being idempotent.
+      unawaited(_finaliseStopped().catchError((Object e, StackTrace s) {
+        debugPrint('chronicle: finalising a stopped capture failed: $e');
+      }));
     }
   }
 

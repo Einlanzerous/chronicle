@@ -70,8 +70,30 @@ class _NoOwner implements CaptureOwner {
   Future<bool> isHeld(String captureId) async => false;
 }
 
-RecorderSnapshot _recording({required int elapsedMs}) => RecorderSnapshot(
-      captureId: 'c',
+
+/// Waits for [condition], rather than sleeping a guessed number of milliseconds.
+///
+/// The finalise this file exercises is deliberately unawaited in production --
+/// it is triggered by a snapshot arriving, not by a call -- so a test has to
+/// wait for its effect. A fixed delay is a race: it passed locally and failed
+/// on CI, which is the worst way to find that out. It also left the work
+/// running past teardown, where it threw on a deleted directory.
+Future<void> _until(
+  Future<bool> Function() condition, {
+  Duration timeout = const Duration(seconds: 10),
+  String? reason,
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (DateTime.now().isBefore(deadline)) {
+    if (await condition()) return;
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+  fail(reason ?? 'condition not met within $timeout');
+}
+
+RecorderSnapshot _recording({required int elapsedMs, String captureId = 'c'}) =>
+    RecorderSnapshot(
+      captureId: captureId,
       state: RecorderState.recording,
       elapsedMs: elapsedMs,
       byteSize: 1024,
@@ -161,35 +183,32 @@ void main() {
       await ctl().toggle();
       final id = platform.started.single;
 
-      platform.emit(RecorderSnapshot(
-        captureId: id,
-        state: RecorderState.recording,
-        elapsedMs: 4000,
-        byteSize: 2048,
-        silenced: false,
-        micOpen: true,
-        hasConfig: true,
-        amplitude: 300,
-      ));
+      platform.emit(_recording(elapsedMs: 4000, captureId: id));
       await Future<void>.delayed(Duration.zero);
 
       // The recorder stops without anybody calling controller.stop().
       platform.emit(RecorderSnapshot.idle);
-      await Future<void>.delayed(const Duration(milliseconds: 50));
 
-      final record = await CaptureDir(root, id).readMeta();
-      expect(record!.state, isNot(CaptureState.recording),
-          reason: 'a capture left as `recording` is invisible in RECENT and '
-              'comes back next launch mislabelled SALVAGED');
+      await _until(
+        () async =>
+            (await CaptureDir(root, id).readMeta())!.state !=
+            CaptureState.recording,
+        reason: 'a capture left as `recording` is invisible in RECENT and '
+            'comes back next launch mislabelled SALVAGED',
+      );
     });
 
     test('finalising twice is harmless', () async {
       await ctl().toggle();
       final id = platform.started.single;
-      platform.emit(_recording(elapsedMs: 1000));
+      platform.emit(_recording(elapsedMs: 1000, captureId: id));
       await Future<void>.delayed(Duration.zero);
       platform.emit(RecorderSnapshot.idle);
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await _until(
+        () async =>
+            (await CaptureDir(root, id).readMeta())!.state !=
+            CaptureState.recording,
+      );
       final first = await CaptureDir(root, id).readMeta();
 
       await ctl().stop();
