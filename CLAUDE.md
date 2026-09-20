@@ -6,10 +6,10 @@ into a **note**, a **ticket** or a **discussion**, and lands in a corpus that
 links out to Switchyard and Amber rather than absorbing them. Single static Go
 binary, sibling to the other construct-server Go services.
 
-Tracked in Switchyard under the **CHRN** project — 10 epics (`CHRN-1`…`CHRN-10`),
-60 tickets (`CHRN-11`…`CHRN-70`). It graduated there from `IDEA-21`. The key is
-`CHRN` and not `CHR` because the estate wiki's own note IDs are `CHR-####` and
-the two namespaces would collide.
+Tracked in Switchyard under the **CHRN** project — 11 epics (`CHRN-1`…`CHRN-10`
+plus `CHRN-96`, keyed `E7.5`), tickets numbered from `CHRN-11` on. It graduated
+there from `IDEA-21`. The key is `CHRN` and not `CHR` because the estate wiki's
+own note IDs are `CHR-####` and the two namespaces would collide.
 
 ## Layout
 
@@ -113,7 +113,7 @@ happen, never batched to the end of an epic.
 
 **Mode C is exactly five tickets, and the list does not grow by habit:**
 CHRN-22 (retention pruner), CHRN-39 (revisions), CHRN-52 (tier isolation),
-CHRN-65 (auth surface), CHRN-67 (MCP write scopes). The rule that generates that
+CHRN-65 (MCP transport), CHRN-67 (MCP write scopes). The rule that generates that
 list: *anything that can destroy authored data, or hand an agent write access to
 it.* CHRN-68's restore drill is reviewed as a result rather than as a diff.
 
