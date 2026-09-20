@@ -99,7 +99,7 @@ or the app    small.en       DISCUSSION                     discussion
 |---|---|
 | `cmd/chronicle/` | entrypoint and subcommands |
 | `asr/` | the estate ASR service: the whisper.cpp image, the job contract, and `asrd` over it — its own database, its own role, its own release (`asr-v*`), and a sealed subtree that imports nothing outside itself |
-| `internal/` | config, model, store, api, the transcription pump |
+| `internal/` | config, store, api, the transcription pump |
 | `internal/asrclient/` | generated from `asr/openapi.yaml`; do not hand-edit |
 | `openapi.yaml` | Chronicle's own HTTP contract. The source three clients generate from — a route that is not here does not exist |
 | `internal/api/wire/` | generated from `openapi.yaml` by `scripts/gen-api.sh`; do not hand-edit |

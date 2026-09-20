@@ -158,6 +158,13 @@ observability**: `adb exec-out screencap -p > shot.png`.
    the tunneled host and check the `Location` against
    `NotChronicleException.isAccessGated`.)
 
+Note what step 4 is and is not. **The app never uses the Cloudflare tunnel**: it
+talks to the direct host, which has no tunnel ingress, so the tunnel going down
+cannot affect it. `Done when`'s *"recovers cleanly when the tunnel is down"* is
+therefore exercised as *the server is unreachable* (step 4) plus *pointed at the
+Access-gated host* (step 5), which are the two ways this app can actually lose
+the server.
+
 ### Two things that will mislead you, both learned the hard way
 
 **"At home" does not mean "over Tailscale."** On the 2026-09-19 pass Tailscale
@@ -183,13 +190,6 @@ radios down, returning to `Connected` on one running instance with the session
 intact. Step 5 was evidenced by the `curl` alternative rather than by spending a
 second invite. The session list showed the device as **Pixel 9 Pro**, which is
 `deviceLabel()` reading `ro.product.model`.
-
-Note what step 4 is and is not. **The app never uses the Cloudflare tunnel**: it
-talks to the direct host, which has no tunnel ingress, so the tunnel going down
-cannot affect it. `Done when`'s *"recovers cleanly when the tunnel is down"* is
-therefore exercised as *the server is unreachable* (step 4) plus *pointed at the
-Access-gated host* (step 5), which are the two ways this app can actually lose
-the server.
 
 ## Named deferrals
 
