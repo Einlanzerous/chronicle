@@ -94,7 +94,15 @@ class CaptureController extends Notifier<CaptureUiState> {
   /// rule exists to catch. Found on device.
   bool _holdPending = false;
 
-  CapturePlatform get _platform => ref.read(capturePlatformProvider);
+  /// Resolved once at build, never through `ref` after an await.
+  ///
+  /// `recover()` is deliberately started unawaited and does real I/O, so it can
+  /// still be running when the provider is disposed. Reaching back through
+  /// `ref` at that point throws — and because nobody is awaiting it, that lands
+  /// in a zone with no handler. Holding the dependencies directly makes the
+  /// late work harmless; [ref.mounted] guards the state writes.
+  late final CapturePlatform _platform = ref.read(capturePlatformProvider);
+  late final CaptureOwner _owner = ref.read(captureOwnerProvider);
 
   @override
   CaptureUiState build() {
@@ -106,6 +114,7 @@ class CaptureController extends Notifier<CaptureUiState> {
     // is what lets a recreated UI re-attach to a recording already in flight
     // instead of showing idle over the top of one.
     _sub = _platform.watch().listen((snapshot) {
+      if (!ref.mounted) return;
       state = state.copyWith(recorder: snapshot);
     });
     unawaited(recover());
@@ -115,7 +124,8 @@ class CaptureController extends Notifier<CaptureUiState> {
   /// Finishes anything a previous run left behind, then refreshes the list.
   Future<void> recover() async {
     final root = await _platform.capturesRoot();
-    final outcome = await recoverAll(root, const PlatformCaptureOwner());
+    final outcome = await recoverAll(root, _owner);
+    if (!ref.mounted) return;
 
     _reLook?.cancel();
     final wait = outcome.retryAfter;
@@ -130,7 +140,7 @@ class CaptureController extends Notifier<CaptureUiState> {
   /// Reloads the finished captures on disk, newest first.
   Future<void> refresh() async {
     final root = await _platform.capturesRoot();
-    if (!await root.exists()) return;
+    if (!await root.exists() || !ref.mounted) return;
     final records = <CaptureRecord>[];
     await for (final entry in root.list()) {
       if (entry is! Directory) continue;
@@ -141,6 +151,7 @@ class CaptureController extends Notifier<CaptureUiState> {
       }
     }
     records.sort((a, b) => b.startedAt.compareTo(a.startedAt));
+    if (!ref.mounted) return;
     state = state.copyWith(recent: records);
   }
 
@@ -267,6 +278,14 @@ class CaptureController extends Notifier<CaptureUiState> {
 
 final capturePlatformProvider =
     Provider<CapturePlatform>((ref) => const CapturePlatform());
+
+/// Who can say whether a recorder still holds a capture.
+///
+/// Injectable so the classification can be tested without a platform channel —
+/// and because "the owner could not be asked" is a distinct answer that the
+/// tests have to be able to produce on demand.
+final captureOwnerProvider =
+    Provider<CaptureOwner>((ref) => const PlatformCaptureOwner());
 
 final captureControllerProvider =
     NotifierProvider<CaptureController, CaptureUiState>(CaptureController.new);

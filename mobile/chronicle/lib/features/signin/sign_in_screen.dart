@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../auth/auth_controller.dart';
 import '../../auth/sign_in_link.dart';
+import '../../router/router.dart';
 import '../../theme/theme.dart';
 import '../../theme/tokens.dart';
 import 'scan_screen.dart';
@@ -121,6 +123,27 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
                     const SizedBox(height: space4),
                     const Center(child: CircularProgressIndicator()),
                   ],
+                  // CHRN-60. Capture is outside the sign-in gate in the
+                  // router, and without this it would be outside it only in
+                  // theory: a device whose session was revoked would be sent
+                  // here and find no way to reach the one screen it is still
+                  // allowed to use. Sign-in gates SENDING, never capturing, and
+                  // that has to be true of the app and not just the redirect.
+                  const SizedBox(height: space4),
+                  const Divider(color: chLine),
+                  const SizedBox(height: space2),
+                  Text('NO CREDENTIAL NEEDED', style: microLabel()),
+                  const SizedBox(height: space1),
+                  const Text(
+                    'You can record now and sign in later. Memos are held on '
+                    'this device until there is somewhere to send them.',
+                    style: TextStyle(fontSize: sizeBody, color: chText2),
+                  ),
+                  const SizedBox(height: space2),
+                  TextButton(
+                    onPressed: () => context.go(captureRoute),
+                    child: const Text('Record a memo'),
+                  ),
                   if (_error != null) ...[
                     const SizedBox(height: space4),
                     // Not coral and not gold: CLAUDE.md invariant 2 reserves

@@ -39,16 +39,10 @@ final routerProvider = Provider<GoRouter>((ref) {
     // Rebuilt when either fact changes, so clearing the token on a 401 bounces
     // the app to the front door without any screen having to navigate.
     refreshListenable: _Refresh(ref),
-    redirect: (context, state) {
-      final ready = ref.read(hasServerProvider) && ref.read(isSignedInProvider);
-      final atSignIn = state.matchedLocation == '/sign-in';
-      // Capture is outside the gate, in both directions: a signed-out device
-      // may reach it, and a signed-in one is never bounced off it.
-      if (state.matchedLocation == captureRoute) return null;
-      if (!ready) return atSignIn ? null : '/sign-in';
-      if (atSignIn) return '/';
-      return null;
-    },
+    redirect: (context, state) => redirectFor(
+      location: state.matchedLocation,
+      ready: ref.read(hasServerProvider) && ref.read(isSignedInProvider),
+    ),
     routes: [
       GoRoute(path: '/', builder: (_, _) => const HomeScreen()),
       GoRoute(path: '/sign-in', builder: (_, _) => const SignInScreen()),
@@ -56,6 +50,24 @@ final routerProvider = Provider<GoRouter>((ref) {
     ],
   );
 });
+
+/// Where a request for [location] should actually go.
+///
+/// Pulled out of the [GoRouter] so it can be tested as the rule it is. The one
+/// clause worth reading twice is the capture escape: it comes FIRST and returns
+/// null in both directions, so a device with no credential may reach capture
+/// and a device that loses its credential mid-recording is never bounced off
+/// it. A 401 on a background upload clears the token, and without this that
+/// would throw somebody off the RECORDING screen in the middle of a memo.
+///
+/// [ready] means the device has both a server address and a session token.
+String? redirectFor({required String location, required bool ready}) {
+  if (location == captureRoute) return null;
+  final atSignIn = location == '/sign-in';
+  if (!ready) return atSignIn ? null : '/sign-in';
+  if (atSignIn) return '/';
+  return null;
+}
 
 /// Bridges Riverpod's two providers to go_router's [Listenable].
 class _Refresh extends ChangeNotifier {

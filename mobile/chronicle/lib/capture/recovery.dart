@@ -97,7 +97,24 @@ Future<RecoveryOutcome> recoverAll(
     );
   }
 
-  await for (final entry in root.list()) {
+  // Listed defensively. Recovery runs UNAWAITED at launch, so anything thrown
+  // here lands in a zone with nobody to catch it -- and the directory really
+  // can go away underneath the walk (an uninstall, the OS reclaiming storage,
+  // a test tearing down). A capture we could not look at is one we look at next
+  // time; it is never a reason to take the app down.
+  final List<FileSystemEntity> entries;
+  try {
+    entries = await root.list().toList();
+  } on FileSystemException {
+    return const RecoveryOutcome(
+      salvaged: [],
+      empty: [],
+      stillRecording: [],
+      retryAfter: null,
+    );
+  }
+
+  for (final entry in entries) {
     if (entry is! Directory) continue;
     final captureId = entry.path.split(Platform.pathSeparator).last;
     final capture = CaptureDir(root, captureId);
