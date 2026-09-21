@@ -56,12 +56,22 @@ abstract class CaptureOwner {
 /// What one recovery pass did.
 class RecoveryOutcome {
   const RecoveryOutcome({
-    required this.salvaged,
-    required this.empty,
-    required this.stillRecording,
-    required this.retryAfter,
+    this.ready = const [],
+    this.salvaged = const [],
+    this.empty = const [],
+    this.stillRecording = const [],
+    this.retryAfter,
   });
 
+  /// Recovered and structurally complete: one file, nothing trimmed.
+  ///
+  /// **Bucketed by the state each capture ended in, not by which function ran.**
+  /// Before CHRN-114 every recovered capture was reported under `salvaged`,
+  /// which made a field named for a trim list captures no trim had touched —
+  /// the same lie as the chip, one level down.
+  final List<String> ready;
+
+  /// Recovered and genuinely torn: `audio.trimmed` written.
   final List<String> salvaged;
 
   /// Captures whose audio never reached the file. Kept, never sent.
@@ -73,7 +83,10 @@ class RecoveryOutcome {
   final Duration? retryAfter;
 
   bool get isQuiet =>
-      salvaged.isEmpty && empty.isEmpty && retryAfter == null;
+      ready.isEmpty &&
+      salvaged.isEmpty &&
+      empty.isEmpty &&
+      retryAfter == null;
 }
 
 /// Scans every capture under [root] and finishes the ones nobody is writing.
@@ -83,19 +96,13 @@ Future<RecoveryOutcome> recoverAll(
   DateTime? now,
 }) async {
   final at = now ?? DateTime.now();
+  final ready = <String>[];
   final salvaged = <String>[];
   final empty = <String>[];
   final live = <String>[];
   Duration? retryAfter;
 
-  if (!await root.exists()) {
-    return const RecoveryOutcome(
-      salvaged: [],
-      empty: [],
-      stillRecording: [],
-      retryAfter: null,
-    );
-  }
+  if (!await root.exists()) return const RecoveryOutcome();
 
   // Listed defensively. Recovery runs UNAWAITED at launch, so anything thrown
   // here lands in a zone with nobody to catch it -- and the directory really
@@ -106,12 +113,7 @@ Future<RecoveryOutcome> recoverAll(
   try {
     entries = await root.list().toList();
   } on FileSystemException {
-    return const RecoveryOutcome(
-      salvaged: [],
-      empty: [],
-      stillRecording: [],
-      retryAfter: null,
-    );
+    return const RecoveryOutcome();
   }
 
   for (final entry in entries) {
@@ -151,11 +153,26 @@ Future<RecoveryOutcome> recoverAll(
       }
     }
 
-    final outcome = await salvage(capture, record);
-    (outcome.state == CaptureState.empty ? empty : salvaged).add(captureId);
+    // `recoveredAt` is what marks this as recovery's work rather than a stop
+    // the app watched. It is the only durable trace that this capture was found
+    // on disk instead of finished in front of somebody.
+    final outcome = await classify(capture, record, recoveredAt: at);
+    switch (outcome.state) {
+      case CaptureState.ready:
+        ready.add(captureId);
+      case CaptureState.salvaged:
+        salvaged.add(captureId);
+      case CaptureState.empty:
+        empty.add(captureId);
+      case CaptureState.recording:
+        // classify never returns this; listed so a new state cannot be added
+        // without the compiler pointing here.
+        live.add(captureId);
+    }
   }
 
   return RecoveryOutcome(
+    ready: ready,
     salvaged: salvaged,
     empty: empty,
     stillRecording: live,
@@ -169,77 +186,87 @@ Duration? _soonest(Duration? a, Duration b) {
   return floor < a ? floor : a;
 }
 
-/// Trims a torn capture to its last sound page and records what it found.
+/// Reads a capture's bytes, decides what it is, and writes the record.
 ///
-/// Writes `audio.trimmed`; never touches `audio.opus`.
-Future<CaptureRecord> salvage(CaptureDir capture, CaptureRecord record) async {
+/// **The one classifier, shared by both paths.** Before CHRN-114 the clean-stop
+/// path carried this branch inline while recovery called the trim
+/// unconditionally — which is how a whole file recovered after a crash came to
+/// be written out a second time and labelled as though a trim had shortened it.
+/// One function means the two paths cannot drift again.
+///
+/// [recoveredAt] is the only thing that differs between them: set when this
+/// capture was found on disk, null when the app watched it stop. It changes no
+/// branch here — it is recorded, not acted on.
+Future<CaptureRecord> classify(
+  CaptureDir capture,
+  CaptureRecord record, {
+  DateTime? recoveredAt,
+}) async {
   final bytes = await capture.audio.exists()
       ? Uint8List.fromList(await capture.audio.readAsBytes())
       : Uint8List(0);
   final scan = scanOgg(bytes);
 
+  // Nothing readable at all. Somebody spoke and none of it left the encoder.
+  // The remnant stays, and carries no hash, so nothing can try to send it.
   if (scan.isEmpty) {
-    // Somebody spoke and none of it left the encoder. The remnant stays, and it
-    // is shown with what IS known -- started_at and the last heartbeat bound the
-    // duration -- so the person reads "recording of about 3 s, nothing
-    // recovered" rather than finding that a memo they remember making is simply
-    // not there.
-    final updated = record.copyWith(
-      state: CaptureState.empty,
-      byteSize: bytes.length,
-      trimOffset: scan.trimOffset,
+    return _write(
+      capture,
+      record.copyWith(
+        state: CaptureState.empty,
+        byteSize: bytes.length,
+        trimOffset: scan.trimOffset,
+        recoveredAt: recoveredAt,
+      ),
     );
-    await capture.writeMeta(updated);
-    return updated;
   }
 
-  final keep = Uint8List.sublistView(bytes, 0, scan.trimOffset);
-  await capture.trimmed.writeAsBytes(keep, flush: true);
+  // Torn: the last complete page does not end at EOF, so the server would
+  // refuse it a duration. The valid prefix goes to a NEW file and `audio.opus`
+  // keeps every byte, including the ones past the cut.
+  if (!scan.endsAtEof) {
+    final keep = Uint8List.sublistView(bytes, 0, scan.trimOffset);
+    await capture.trimmed.writeAsBytes(keep, flush: true);
+    return _write(
+      capture,
+      record.copyWith(
+        state: CaptureState.salvaged,
+        contentHash: sha256.convert(keep).toString(),
+        byteSize: keep.length,
+        durationMs: scan.durationMs,
+        trimOffset: scan.trimOffset,
+        recoveredAt: recoveredAt,
+      ),
+    );
+  }
 
-  final updated = record.copyWith(
-    state: CaptureState.salvaged,
-    contentHash: sha256.convert(keep).toString(),
-    byteSize: keep.length,
-    durationMs: scan.durationMs,
-    trimOffset: scan.trimOffset,
+  // Structurally complete. No second file: there is nothing to trim, and on
+  // this platform this is the ORDINARY outcome of a kill, because the media
+  // server finalises the file when the client dies. Writing a byte-for-byte
+  // duplicate here is what CHRN-114 exists to stop.
+  return _write(
+    capture,
+    record.copyWith(
+      state: CaptureState.ready,
+      contentHash: sha256.convert(bytes).toString(),
+      byteSize: bytes.length,
+      durationMs: scan.durationMs,
+      recoveredAt: recoveredAt,
+    ),
   );
-  await capture.writeMeta(updated);
-  return updated;
 }
 
-/// Finishes a capture the recorder stopped cleanly.
+Future<CaptureRecord> _write(CaptureDir capture, CaptureRecord record) async {
+  await capture.writeMeta(record);
+  return record;
+}
+
+/// Finishes a capture whose stop the app watched.
 ///
-/// A clean stop still goes through the page scan rather than trusting the file,
-/// because the hash the server checks has to be taken over exactly the bytes
-/// that will be sent, and because a recorder that failed at `stop()` can leave a
-/// file that looks finished and is not.
-Future<CaptureRecord> finalise(CaptureDir capture, CaptureRecord record) async {
-  final bytes = await capture.audio.exists()
-      ? Uint8List.fromList(await capture.audio.readAsBytes())
-      : Uint8List(0);
-  final scan = scanOgg(bytes);
-
-  if (scan.isEmpty) {
-    final updated = record.copyWith(
-      state: CaptureState.empty,
-      byteSize: bytes.length,
-      trimOffset: scan.trimOffset,
-    );
-    await capture.writeMeta(updated);
-    return updated;
-  }
-
-  // A clean stop that did not end on a page boundary is a torn file wearing a
-  // finished file's clothes, and it takes the salvage path rather than being
-  // sent as-is: the server would refuse a duration for it.
-  if (!scan.endsAtEof) return salvage(capture, record);
-
-  final updated = record.copyWith(
-    state: CaptureState.ready,
-    contentHash: sha256.convert(bytes).toString(),
-    byteSize: bytes.length,
-    durationMs: scan.durationMs,
-  );
-  await capture.writeMeta(updated);
-  return updated;
-}
+/// A thin call through to [classify] with no `recoveredAt`, which is the whole
+/// of the difference. It still goes through the page scan rather than trusting
+/// the file: the hash the server checks has to cover exactly the bytes that
+/// will be sent, and a recorder that failed at `stop()` can leave a file that
+/// looks finished and is not.
+Future<CaptureRecord> finalise(CaptureDir capture, CaptureRecord record) =>
+    classify(capture, record);
