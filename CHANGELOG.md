@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.20.0](https://github.com/Einlanzerous/chronicle/compare/v1.19.0...v1.20.0) (2026-09-21)
+
+
+### Features
+
+* **mobile:** one-tap capture — Ogg/Opus into a foreground service, and a salvage that destroys nothing (CHRN-60) ([#119](https://github.com/Einlanzerous/chronicle/issues/119)) ([4dc6a84](https://github.com/Einlanzerous/chronicle/commit/4dc6a8401a439165777bc0b0c3a06c7db6b6c76b))
+* **web:** ship mark 2a as the favicon and touch icon (CHRN-115) ([#122](https://github.com/Einlanzerous/chronicle/issues/122)) ([80b9379](https://github.com/Einlanzerous/chronicle/commit/80b93790020ff2819257f14127019fe53afb07be))
+
+
+### Bug Fixes
+
+* **mobile:** a recovered whole capture is ready, marked recovered, and stored once (CHRN-114) ([#121](https://github.com/Einlanzerous/chronicle/issues/121)) ([ca14aa9](https://github.com/Einlanzerous/chronicle/commit/ca14aa931fa3526b9ddcb2290d8d0b6053263492))
+
 ## [1.19.0](https://github.com/Einlanzerous/chronicle/compare/v1.18.0...v1.19.0) (2026-09-20)
 
 
