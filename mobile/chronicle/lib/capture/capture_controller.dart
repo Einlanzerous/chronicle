@@ -134,7 +134,7 @@ class CaptureController extends Notifier<CaptureUiState> {
     // Recovery is NOT kicked off here. `main()` does it, once, at launch --
     // and reading `.notifier` there is what builds this, so a call in both
     // places ran two concurrent passes over the same directory microseconds
-    // apart, each reaching `salvage()` for the same capture.
+    // apart, each reaching `classify()` for the same capture.
     return const CaptureUiState();
   }
 
