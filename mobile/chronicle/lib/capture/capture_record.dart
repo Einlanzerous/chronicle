@@ -38,11 +38,28 @@ enum CaptureState {
   /// a swipe-away, and acting on it alone would trim a live file.
   recording,
 
-  /// Finished cleanly. `audio.opus` is what gets sent.
+  /// Structurally complete: every page present and CRC-valid, ending on a page
+  /// boundary. `audio.opus` is what gets sent.
+  ///
+  /// **This does NOT mean the recorder stopped cleanly.** A capture recovered
+  /// after a crash lands here too, whenever its stream turned out to be whole —
+  /// which, measured on device, is the ordinary outcome of a kill, because the
+  /// media server finalises the file when the client dies. What tells the two
+  /// apart is [CaptureRecord.recoveredAt], not this state.
+  ///
+  /// It is also not a claim that nothing was lost. A recording cut at an fsync
+  /// boundary by a flat battery is page-aligned and CRC-clean and lands here as
+  /// well; nothing in the container distinguishes it, because Android's Ogg
+  /// writer never sets the EOS flag on any file it produces, finished or not.
   ready,
 
-  /// Recovered from an interruption. `audio.trimmed` is what gets sent, and
+  /// A trim actually shortened this. `audio.trimmed` is what gets sent, and
   /// `audio.opus` keeps every byte that ever reached the disk.
+  ///
+  /// **Narrower than it used to be**, and deliberately: this used to mean
+  /// "recovered from an interruption", which put the chip on the commonest case
+  /// and spent a byte-for-byte duplicate to say it. A signal that fires when
+  /// nothing is wrong is not read when something is. CHRN-114.
   salvaged,
 
   /// Recovered, but no audio page ever reached the file.
@@ -71,6 +88,7 @@ class CaptureRecord {
     this.byteSize,
     this.durationMs,
     this.trimOffset,
+    this.recoveredAt,
   });
 
   final String captureId;
@@ -99,6 +117,22 @@ class CaptureRecord {
   /// holds every byte past it.
   final int? trimOffset;
 
+  /// When recovery finished this capture, if recovery did.
+  ///
+  /// Null for a capture the app watched stop. Set for one it found already on
+  /// disk — a crash, a force-stop, a process the system reclaimed.
+  ///
+  /// **This field is the only durable record that any of that happened.** A
+  /// recovered whole capture is otherwise field-for-field identical to a clean
+  /// stop: same state, same hash, same duration, one file. The Kotlin side logs
+  /// the recorder's life to logcat, which is a ring buffer and is gone long
+  /// before anybody asks. So this is not a nicety — without it the fact is not
+  /// hidden, it is destroyed.
+  ///
+  /// It records **provenance, not completeness**: see [CaptureState.ready] for
+  /// why "structurally complete" is the strongest claim available.
+  final DateTime? recoveredAt;
+
   CaptureRecord copyWith({
     CaptureState? state,
     String? retention,
@@ -106,6 +140,7 @@ class CaptureRecord {
     int? byteSize,
     int? durationMs,
     int? trimOffset,
+    DateTime? recoveredAt,
   }) =>
       CaptureRecord(
         captureId: captureId,
@@ -117,6 +152,7 @@ class CaptureRecord {
         byteSize: byteSize ?? this.byteSize,
         durationMs: durationMs ?? this.durationMs,
         trimOffset: trimOffset ?? this.trimOffset,
+        recoveredAt: recoveredAt ?? this.recoveredAt,
       );
 
   Map<String, Object?> toJson() => {
@@ -129,6 +165,7 @@ class CaptureRecord {
         'byte_size': byteSize,
         'duration_ms': durationMs,
         'trim_offset': trimOffset,
+        'recovered_at': recoveredAt?.toIso8601String(),
       };
 
   static CaptureRecord fromJson(Map<String, Object?> json) => CaptureRecord(
@@ -141,6 +178,11 @@ class CaptureRecord {
         byteSize: json['byte_size'] as int?,
         durationMs: json['duration_ms'] as int?,
         trimOffset: json['trim_offset'] as int?,
+        // Absent in records written before CHRN-114, which is exactly what a
+        // capture the app watched stop should read as.
+        recoveredAt: json['recovered_at'] == null
+            ? null
+            : DateTime.tryParse(json['recovered_at']! as String),
       );
 }
 

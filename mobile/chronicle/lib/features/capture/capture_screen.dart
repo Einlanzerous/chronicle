@@ -349,15 +349,27 @@ class _RecentRow extends StatelessWidget {
               style: const TextStyle(fontSize: sizeBody, color: chText),
             ),
           ),
-          if (record.state != CaptureState.ready)
-            Text(
-              record.state.name.toUpperCase(),
-              style: microLabel(size: sizeXxs),
-            ),
+          if (_chip(record) != null)
+            Text(_chip(record)!, style: microLabel(size: sizeXxs)),
         ],
       ),
     );
   }
+
+  /// What this capture's chip says, or nothing.
+  ///
+  /// `SALVAGED` is reserved for a capture a trim actually shortened. It used to
+  /// fire on anything recovered, which on this platform is the ordinary outcome
+  /// of a crash — so it fired constantly and meant nothing when it fired on the
+  /// real thing. `RECOVERED` carries the softer fact: the app did not see this
+  /// one stop. A capture the app watched stop wears no chip at all.
+  static String? _chip(CaptureRecord record) => switch (record.state) {
+        CaptureState.salvaged => 'SALVAGED',
+        CaptureState.empty => 'EMPTY',
+        CaptureState.recording => null,
+        CaptureState.ready =>
+          record.recoveredAt != null ? 'RECOVERED' : null,
+      };
 
   static String _duration(int ms) {
     final total = ms ~/ 1000;

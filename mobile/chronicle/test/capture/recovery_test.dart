@@ -29,6 +29,30 @@ class _Owner implements CaptureOwner {
   }
 }
 
+/// A stream cut mid-page, so a test that is about something else does not
+/// accidentally assert a label.
+///
+/// The two lease-arbitration tests below used a WHOLE stream and asserted
+/// `salvaged`. That was incidental to their subject and became wrong under
+/// CHRN-114, where a recovered whole file is `ready`. They take this instead.
+Uint8List _torn({int audioPages = 20}) {
+  final whole = oggStream(audioPages: audioPages);
+  return Uint8List.sublistView(whole, 0, whole.length - 7);
+}
+
+/// The device-written fixtures, shared with `internal/audio` and read across
+/// the repository rather than copied — see `device_fixture_test.dart`.
+///
+/// `chrn60_trimmed.opus` is a COMPLETE stream a phone actually wrote, which is
+/// the case CHRN-114 is about and the case a hand-built stream can only contain
+/// what we already believed about. `chrn60_torn.opus` is that recording cut
+/// host-side: a real tear cannot be produced over adb, since the media server
+/// finalises the file when the client dies — which is the measurement this
+/// whole ticket rests on.
+Uint8List _fixture(String name) => Uint8List.fromList(
+      File('../../internal/audio/testdata/$name').readAsBytesSync(),
+    );
+
 late Directory _root;
 
 CaptureDir _capture(String id) => CaptureDir(_root, id);
@@ -81,6 +105,7 @@ void main() {
       final outcome = await recoverAll(_root, _Owner.holds({'live'}));
 
       expect(outcome.stillRecording, ['live']);
+      expect(outcome.ready, isEmpty);
       expect(outcome.salvaged, isEmpty);
       expect(outcome.empty, isEmpty);
       final record = await _capture('live').readMeta();
@@ -122,6 +147,7 @@ void main() {
       final outcome = await recoverAll(_root, _Owner.unreachable());
 
       expect(outcome.salvaged, isEmpty);
+      expect(outcome.ready, isEmpty);
       expect(outcome.retryAfter, isNotNull,
           reason: 'it must look again rather than wait for the next launch');
       expect((await _capture('young').readMeta())!.state, CaptureState.recording);
@@ -130,7 +156,7 @@ void main() {
     test('a lease older than three heartbeats means the recorder is gone',
         () async {
       await _seed('stale',
-          audio: oggStream(audioPages: 20), leaseAge: const Duration(seconds: 60));
+          audio: _torn(), leaseAge: const Duration(seconds: 60));
 
       final outcome = await recoverAll(_root, _Owner.unreachable());
 
@@ -140,7 +166,7 @@ void main() {
 
     test('no lease at all, and no owner, is not a reason to refuse a salvage',
         () async {
-      await _seed('noleese', audio: oggStream(audioPages: 20));
+      await _seed('noleese', audio: _torn());
       final outcome = await recoverAll(_root, _Owner.unreachable());
       expect(outcome.salvaged, ['noleese']);
     });
@@ -208,6 +234,7 @@ void main() {
 
       expect(outcome.empty, ['nothing']);
       expect(outcome.salvaged, isEmpty);
+      expect(outcome.ready, isEmpty);
       final capture = _capture('nothing');
       expect(await capture.dir.exists(), isTrue);
       expect(await capture.audio.exists(), isTrue);
@@ -277,6 +304,98 @@ void main() {
       expect(record.retention, isNull);
       final done = await finalise(_capture('ret'), record);
       expect(done.retention, isNull);
+    });
+  });
+
+  group('CHRN-114: a recovered WHOLE capture is ready, not salvaged', () {
+    test('a device-written complete stream recovers to ready, with one file',
+        () async {
+      await _seed('whole', audio: _fixture('chrn60_trimmed.opus'));
+
+      final outcome = await recoverAll(_root, _Owner.holdsNothing());
+      final record = (await _capture('whole').readMeta())!;
+
+      expect(record.state, CaptureState.ready);
+      expect(await _capture('whole').trimmed.exists(), isFalse,
+          reason: 'there is nothing to trim, so writing a byte-for-byte '
+              'duplicate is pure waste against the free-space floor');
+      expect(_capture('whole').sendable(record.state).path,
+          _capture('whole').audio.path,
+          reason: 'sendable must name the file that exists');
+      expect(outcome.ready, ['whole']);
+      expect(outcome.salvaged, isEmpty,
+          reason: 'a field named salvaged must not list captures no trim '
+              'touched');
+    });
+
+    test('but it is marked as recovered, which is the only record that it was',
+        () async {
+      // Without this the capture is field-for-field identical to a clean stop:
+      // same state, same hash, same duration, one file. The Kotlin logs are
+      // logcat, a ring buffer, and are gone long before anybody asks.
+      await _seed('whole', audio: _fixture('chrn60_trimmed.opus'));
+      await recoverAll(_root, _Owner.holdsNothing());
+
+      final record = (await _capture('whole').readMeta())!;
+      expect(record.recoveredAt, isNotNull);
+    });
+
+    test('a capture the app watched stop is ready with NO recovered mark',
+        () async {
+      final record = await _seed('clean2', audio: _fixture('chrn60_trimmed.opus'));
+      final done = await finalise(_capture('clean2'), record);
+
+      expect(done.state, CaptureState.ready);
+      expect(done.recoveredAt, isNull,
+          reason: 'the mark is what separates the two, so it must not be set '
+              'by the path the app watched');
+    });
+
+    test('a device-written TORN stream still salvages, and still destroys nothing',
+        () async {
+      await _seed('torn', audio: _fixture('chrn60_torn.opus'));
+      final before = await _capture('torn').audio.readAsBytes();
+
+      final outcome = await recoverAll(_root, _Owner.holdsNothing());
+      final record = (await _capture('torn').readMeta())!;
+
+      expect(record.state, CaptureState.salvaged);
+      expect(record.recoveredAt, isNotNull);
+      expect(await _capture('torn').trimmed.exists(), isTrue);
+      expect(await _capture('torn').audio.readAsBytes(), equals(before));
+      expect(outcome.salvaged, ['torn']);
+      expect(outcome.ready, isEmpty);
+      // The number the Go side pins independently.
+      expect(record.trimOffset, 20076);
+      expect(record.durationMs, 4514);
+    });
+
+    test('one pass over a mixed directory buckets each by what it became',
+        () async {
+      await _seed('a-whole', audio: _fixture('chrn60_trimmed.opus'));
+      await _seed('b-torn', audio: _fixture('chrn60_torn.opus'));
+      await _seed('c-void', audio: Uint8List(0));
+
+      final outcome = await recoverAll(_root, _Owner.holdsNothing());
+
+      expect(outcome.ready, ['a-whole']);
+      expect(outcome.salvaged, ['b-torn']);
+      expect(outcome.empty, ['c-void']);
+      expect(outcome.isQuiet, isFalse);
+    });
+
+    test('the empty path is untouched by any of this', () async {
+      await _seed('still-empty', audio: Uint8List(0));
+      await recoverAll(_root, _Owner.holdsNothing());
+
+      final record = (await _capture('still-empty').readMeta())!;
+      expect(record.state, CaptureState.empty);
+      expect(record.contentHash, isNull,
+          reason: 'nothing may try to send a capture with no audio');
+      expect(await _capture('still-empty').audio.exists(), isTrue,
+          reason: 'the remnant is the only visible trace that a memo was '
+              'attempted at all');
+      expect(record.recoveredAt, isNotNull);
     });
   });
 }
