@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Chronicle's favicon (CHRN-115): mark 2a, "the interrupted rule", at the
+       canvas's "22 PX · FAVICON" size, the five-bar glyph that Mark.vue also
+       draws. Chronicle.dc.html, pass 02 · identity.
+
+       Laid out on a 32-unit grid with 2-unit strokes so that at 16 px the rules
+       land on whole pixels, and at 32 px (a 16 px tab on a 2x display) it is
+       drawn 1:1. Mark.vue's own strokes are 1.5 on a 24 grid, which would
+       smear to under a pixel here. The plate exists because a tab can be light
+       or dark and a bare vellum glyph vanishes on the light ones.
+
+       The five bars sit on even x so each is a whole pixel wide at 16 px; centred
+       on the plate (x=7) they landed on half-pixels and blurred into one grey
+       band, which loses the waveform, the part that says voice. That leaves them
+       a unit left of centre, which suits rules that are left-aligned and ragged
+       on the right.
+
+       An SVG document cannot read the page's custom properties, so its two
+       colours are literals: the plate is the base token and the glyph the signal
+       token from src/styles/tokens.css, and src/lib/favicon.test.ts fails if
+       either drifts. scripts/check-tokens.sh only scans web/src, so it would not.
+
+       The plate is an arc path, not a rect with rx, so the same file rasterises
+       identically in the PNG fallbacks. -->
+  <path fill="#08090a"
+        d="M6 0 H26 A6 6 0 0 1 32 6 V26 A6 6 0 0 1 26 32 H6 A6 6 0 0 1 0 26 V6 A6 6 0 0 1 6 0 Z"/>
+  <g fill="#e0d5be">
+    <rect x="4"  y="4"  width="24"    height="2"/>
+    <rect x="4"  y="8"  width="21.12" height="2"/>
+    <rect x="6"  y="14" width="2" height="4"/>
+    <rect x="10" y="12" width="2" height="8"/>
+    <rect x="14" y="13" width="2" height="6"/>
+    <rect x="18" y="12" width="2" height="8"/>
+    <rect x="22" y="14" width="2" height="4"/>
+    <rect x="4"  y="22" width="17.28" height="2"/>
+    <rect x="4"  y="26" width="22.56" height="2"/>
+  </g>
+</svg>

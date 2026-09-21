@@ -2,9 +2,49 @@ package web
 
 import (
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"testing/fstest"
 )
+
+// TestHandlerFSServesTheUnhashedFavicon (CHRN-115). web/public is copied to the
+// bundle root without a hash, so the favicon is a real file the handler must
+// answer as itself. Getting that wrong is silent in the worst way: an unknown
+// path falls back to index.html with a 200, so a favicon that did not ship
+// would not 404, it would hand the tab an HTML document and show a blank icon
+// with nothing anywhere to say why. And it must not be cached immutably like
+// assets/, because its name carries no hash -- a redrawn mark under the same
+// name has to reach a browser that already holds the old one.
+func TestHandlerFSServesTheUnhashedFavicon(t *testing.T) {
+	root := fstest.MapFS{
+		"index.html":           {Data: []byte("<!doctype html><title>t</title>")},
+		"favicon.svg":          {Data: []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`)},
+		"favicon-32.png":       {Data: []byte("\x89PNG\r\n\x1a\n")},
+		"apple-touch-icon.png": {Data: []byte("\x89PNG\r\n\x1a\n")},
+	}
+	h := HandlerFS(root)
+
+	for path, wantType := range map[string]string{
+		"/app/favicon.svg":          "image/svg+xml",
+		"/app/favicon-32.png":       "image/png",
+		"/app/apple-touch-icon.png": "image/png",
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		if rec.Code != 200 {
+			t.Fatalf("GET %s = %d, want 200", path, rec.Code)
+		}
+		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, wantType) {
+			t.Errorf("GET %s Content-Type = %q, want %s -- the index.html fallback would say text/html", path, ct, wantType)
+		}
+		if strings.Contains(rec.Body.String(), "<!doctype html>") {
+			t.Errorf("GET %s answered the SPA fallback, not the file", path)
+		}
+		if cc := rec.Header().Get("Cache-Control"); strings.Contains(cc, "immutable") {
+			t.Errorf("GET %s Cache-Control = %q: an unhashed name must not be cached immutably", path, cc)
+		}
+	}
+}
 
 // TestHandlerFSServesKnownFiles proves the two real-file paths: the entry
 // document and a hashed asset, both fetched by their exact embedded path.
