@@ -3,9 +3,16 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- A favicon built from mark 2a is later work; this skeleton ships
-         without a <link rel="icon"> rather than pointing one at a file that
-         does not exist yet. -->
+    <!-- Mark 2a as the favicon (CHRN-115). Files live in web/public and are
+         copied to the bundle root unhashed, so Vite prefixes the base and they
+         are served at /app/favicon.svg and so on. The SVG is what current
+         browsers use; `sizes="any"` stops Chrome preferring the PNG beside it.
+         The PNG is for the ones that do not take an SVG, and the touch icon is
+         full-bleed because iOS rounds it itself. src/lib/favicon.test.ts fails
+         if a link here points at a file that is not in public/. -->
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>Chronicle</title>
   </head>
   <body>
