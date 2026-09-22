@@ -1,15 +1,17 @@
 /// Foreground wiring for CHRN-61's upload queue: WHEN the engine runs, never
 /// HOW -- that is `engine.dart`'s job, exercised end to end against a fake
 /// server in `test/queue/engine_test.dart`. This controller answers the
-/// plan's "who wakes the queue" for the IN-APP triggers only (launch, a
-/// capture reaching `ready`, app resume, backoff, and a manual retry); the
-/// process-dead trigger is build step 5 (WorkManager), a headless isolate
-/// that does not go through Riverpod at all.
+/// plan's "who wakes the queue" for the IN-APP triggers (launch, a capture
+/// reaching `ready`, app resume, backoff, and a manual retry), and also
+/// registers the foreground's half of the isolate-presence check
+/// `background.dart`'s headless dispatcher reads before draining.
 library;
 
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
+import 'dart:ui';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/widgets.dart';
@@ -23,6 +25,7 @@ import '../capture/capture_channel.dart';
 import '../capture/capture_controller.dart';
 import '../capture/capture_record.dart';
 import 'backoff.dart';
+import 'background.dart' show queueForegroundPortName;
 import 'device_block.dart';
 import 'engine.dart';
 import 'queue_record.dart';
@@ -78,14 +81,28 @@ class QueueController extends Notifier<QueueUiState> {
   Timer? _retryTimer;
   AppLifecycleListener? _lifecycle;
   Future<void>? _inFlight;
+  ReceivePort? _presencePort;
 
   late final CapturePlatform _platform = ref.read(capturePlatformProvider);
 
   @override
   QueueUiState build() {
+    // The foreground half of `background.dart`'s isolate-presence check:
+    // registering ANY port under this name is the signal, and nothing is
+    // ever sent through it -- the headless dispatcher only asks whether
+    // the name resolves at all. Unregistered on dispose, which is the
+    // ordinary Riverpod-controller-torn-down case (the app process dying
+    // outright, which is what the headless check exists for, unregisters
+    // nothing -- but also needs nothing unregistered, since a dead
+    // process's registrations do not survive it either).
+    _presencePort = ReceivePort();
+    IsolateNameServer.registerPortWithName(_presencePort!.sendPort, queueForegroundPortName);
+
     ref.onDispose(() {
       _retryTimer?.cancel();
       _lifecycle?.dispose();
+      IsolateNameServer.removePortNameMapping(queueForegroundPortName);
+      _presencePort?.close();
     });
 
     // A capture reaching `ready`/`salvaged`, or recovery resolving one, is

@@ -51,6 +51,12 @@ dependencies:
   # session list its holder reads, so "Pixel 8" beats "Android".
   device_info_plus: ^13.2.0
 
+  # CHRN-61 ruling 1: the process-dead trigger for the upload queue. Wakes a
+  # headless engine under `NetworkType.connected`, on the same Dart
+  # entrypoint the foreground uses -- one protocol implementation, not a
+  # second one in Kotlin. See lib/queue/background.dart.
+  workmanager: ^0.10.10
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

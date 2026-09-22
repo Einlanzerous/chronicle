@@ -5,12 +5,14 @@ library;
 
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui';
 
 import 'package:chronicle/api/providers.dart';
 import 'package:chronicle/api/server_url.dart';
 import 'package:chronicle/api/session.dart';
 import 'package:chronicle/capture/capture_controller.dart';
 import 'package:chronicle/capture/capture_record.dart';
+import 'package:chronicle/queue/background.dart' show queueForegroundPortName;
 import 'package:chronicle/queue/device_block.dart';
 import 'package:chronicle/queue/engine.dart';
 import 'package:chronicle/queue/queue_controller.dart';
@@ -231,5 +233,43 @@ void main() {
 
     expect(st().records['a']?.status, QueueStatus.acknowledged);
     expect(server.memos, hasLength(1));
+  });
+
+  test('building the controller registers the isolate-presence port background.dart checks for',
+      () async {
+    // A standalone container, disposed directly here rather than through
+    // the shared tearDown, so this test can observe both sides of the
+    // lifecycle without double-disposing the shared one.
+    final localRoot = await Directory.systemTemp.createTemp('chrn61-presence');
+    SharedPreferences.setMockInitialValues({});
+    final localPrefs = await SharedPreferences.getInstance();
+    final localContainer = ProviderContainer(overrides: [
+      prefsProvider.overrideWithValue(localPrefs),
+      capturePlatformProvider.overrideWithValue(NoRecorderPlatform(localRoot)),
+      captureOwnerProvider.overrideWithValue(NoOwner()),
+      queueEngineProvider.overrideWithValue(QueueEngine(transport: FakeUploadTransport(FakeChronicleServer()))),
+    ]);
+
+    expect(
+      IsolateNameServer.lookupPortByName(queueForegroundPortName),
+      isNull,
+      reason: 'nothing has built the controller yet',
+    );
+
+    localContainer.read(queueControllerProvider); // builds it
+    expect(
+      IsolateNameServer.lookupPortByName(queueForegroundPortName),
+      isNotNull,
+      reason: 'background.dart\'s headless dispatcher checks for exactly this presence',
+    );
+
+    localContainer.dispose();
+    expect(
+      IsolateNameServer.lookupPortByName(queueForegroundPortName),
+      isNull,
+      reason: 'a torn-down controller must not leave a stale "foreground is alive" signal',
+    );
+
+    if (await localRoot.exists()) await localRoot.delete(recursive: true);
   });
 }
