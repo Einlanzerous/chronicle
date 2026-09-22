@@ -95,12 +95,20 @@ class QueueEngine {
   /// see `device_block.dart`'s own rule about persisting device facts).
   /// [currentBlock] is honoured first: a block that still applies ends the
   /// pass before a single request is made.
+  ///
+  /// [onAttemptStart], if given, is called with a capture's id right before
+  /// its attempt begins and nowhere else -- the one place this engine
+  /// exposes the live fact the plan's screen label needs (`SENDING`, next
+  /// to the persisted labels `QUEUED`/`SENT`/etc.), without persisting a
+  /// `sending` flag anywhere. Purely observational: nothing here waits on
+  /// it or changes behaviour because of it.
   Future<DeviceBlock?> drainPass({
     required List<QueueCapture> captures,
     required String? token,
     required String serverUrl,
     required String tokenDigest,
     DeviceBlock? currentBlock,
+    void Function(String captureId)? onAttemptStart,
   }) async {
     if (currentBlock != null &&
         currentBlock.stillApplies(
@@ -142,6 +150,7 @@ class QueueEngine {
         continue;
       }
 
+      onAttemptStart?.call(qc.capture.captureId);
       final outcome = await _attemptOne(qc);
 
       if (outcome is _Skip) {

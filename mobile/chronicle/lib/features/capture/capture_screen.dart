@@ -25,8 +25,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../capture/capture_channel.dart';
 import '../../capture/capture_controller.dart';
 import '../../capture/capture_record.dart';
+import '../../queue/queue_controller.dart';
+import '../../queue/queue_label.dart';
+import '../../router/router.dart';
 import '../../theme/theme.dart';
 import '../../theme/tokens.dart';
+import '../shared/bottom_tabs.dart';
 
 /// How many amplitude samples the waveform keeps.
 const _waveSamples = 48;
@@ -72,9 +76,20 @@ class _CaptureScreenState extends ConsumerState<CaptureScreen> {
 
     return Scaffold(
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(space4),
-          child: state.isRecording ? _recording(state) : _idle(state),
+        child: Column(
+          children: [
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.all(space4),
+                child: state.isRecording ? _recording(state) : _idle(state),
+              ),
+            ),
+            // Chrome, not content: a recording is a focused, full-screen
+            // state with nothing to navigate away to mid-memo, matching
+            // board 1a's own screen 02, which reserves no space for this
+            // row at all.
+            if (!state.isRecording) const BottomCaptureQueueTabs(current: captureRoute),
+          ],
         ),
       ),
     );
@@ -325,16 +340,35 @@ class _Refusal extends StatelessWidget {
       );
 }
 
-class _RecentRow extends StatelessWidget {
+class _RecentRow extends ConsumerWidget {
   const _RecentRow({required this.record});
 
   final CaptureRecord record;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final at = record.startedAt.toLocal();
     final clock = '${at.hour.toString().padLeft(2, '0')}:'
         '${at.minute.toString().padLeft(2, '0')}';
+
+    // CHRN-61's own chip, alongside CHRN-60's capture-state one. A capture
+    // not yet sendable (still `recording`, or `empty`) has nothing the
+    // queue can say about it, so it wears only its capture chip.
+    String? queueChip;
+    if (record.state == CaptureState.ready || record.state == CaptureState.salvaged) {
+      final queue = ref.watch(queueControllerProvider);
+      queueChip = queueLabel(
+        captureId: record.captureId,
+        record: queue.records[record.captureId],
+        allRecords: queue.records,
+        deviceBlock: queue.deviceBlock,
+        sendingCaptureId: queue.sending,
+        retention: record.retention,
+        enqueuedAt: queue.records[record.captureId]?.enqueuedAt ?? record.startedAt,
+        now: DateTime.now(),
+      );
+    }
+
     return Padding(
       padding: const EdgeInsets.only(bottom: space2),
       child: Row(
@@ -349,8 +383,18 @@ class _RecentRow extends StatelessWidget {
               style: const TextStyle(fontSize: sizeBody, color: chText),
             ),
           ),
-          if (_chip(record) != null)
+          if (_chip(record) != null) ...[
             Text(_chip(record)!, style: microLabel(size: sizeXxs)),
+            const SizedBox(width: space1),
+          ],
+          if (queueChip != null)
+            Text(
+              queueChip,
+              style: microLabel(
+                color: queueChip == 'SENT' ? chResolved : chTextMeta,
+                size: sizeXxs,
+              ),
+            ),
         ],
       ),
     );

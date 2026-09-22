@@ -9,6 +9,7 @@ import 'api/server_url.dart';
 import 'api/session.dart';
 import 'app.dart';
 import 'capture/capture_controller.dart';
+import 'queue/queue_controller.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -45,7 +46,19 @@ Future<void> main() async {
   //
   // Not awaited. It reads files and hashes bytes, and the first frame must not
   // wait for it -- the same reasoning as the probe above.
-  unawaited(container.read(captureControllerProvider.notifier).recover());
+  //
+  // The queue's own launch trigger is chained onto the END of recovery,
+  // never run alongside it: recovery is what turns a capture torn by a
+  // crash into `ready`/`salvaged`/`empty`, and the queue must never race it
+  // to decide what is sendable. `QueueController` also re-scans on its own
+  // whenever `CaptureController.recent` next changes, so this first chained
+  // call is the launch case specifically, not the only trigger it has.
+  unawaited(
+    container
+        .read(captureControllerProvider.notifier)
+        .recover()
+        .then((_) => container.read(queueControllerProvider.notifier).wake()),
+  );
 
   runApp(
     UncontrolledProviderScope(

@@ -34,3 +34,10 @@ final authApiProvider = Provider<AuthApi>(
 final metaApiProvider = Provider<MetaApi>(
   (ref) => MetaApi(ref.watch(apiClientProvider)),
 );
+
+/// CHRN-61's upload queue. Watches [apiClientProvider], so a sign-in, a
+/// sign-out or a re-scanned server address rebuilds it exactly like every
+/// other API surface here -- the queue never holds a stale credential.
+final uploadsApiProvider = Provider<UploadsApi>(
+  (ref) => UploadsApi(ref.watch(apiClientProvider)),
+);

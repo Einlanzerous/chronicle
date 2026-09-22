@@ -1,0 +1,217 @@
+/// Board 1a, screen 03 -- the CHRN-61 slice of it.
+///
+/// The design's own mockup for this screen mixes in on-device transcription
+/// (CHRN-81) and Scribe routing review (board 1a's screens 04/05) rows.
+/// Neither exists yet, and this screen renders only what this ticket owns:
+/// what is held on device, sending, or not sent and why. Nothing here ever
+/// claims a memo was transcribed or routed -- those chips do not exist
+/// until the tickets that own them build them.
+library;
+
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../capture/capture_controller.dart';
+import '../../capture/capture_record.dart';
+import '../../queue/device_block.dart';
+import '../../queue/queue_controller.dart';
+import '../../queue/queue_label.dart';
+import '../../queue/queue_record.dart';
+import '../../router/router.dart';
+import '../../theme/theme.dart';
+import '../../theme/tokens.dart';
+import '../shared/bottom_tabs.dart';
+
+class QueueScreen extends ConsumerWidget {
+  const QueueScreen({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final captures = ref.watch(captureControllerProvider.select((s) => s.recent));
+    final queue = ref.watch(queueControllerProvider);
+
+    // Sendable material only -- a live recording or an empty capture is not
+    // queue material (`engine.dart`'s own precondition), and showing it
+    // here would be a row with nothing this screen can honestly say about
+    // it.
+    final sendable = captures
+        .where((c) => c.state == CaptureState.ready || c.state == CaptureState.salvaged)
+        .toList();
+
+    final held = sendable.where((c) {
+      final record = queue.records[c.captureId];
+      return record == null || record.status == QueueStatus.pending;
+    }).toList();
+    final heldBytes = held.fold<int>(0, (sum, c) => sum + (c.byteSize ?? 0));
+
+    return Scaffold(
+      body: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(space4, space4, space4, 0),
+              child: Text('QUEUE', style: microLabel(color: chSignal, size: sizeSm)),
+            ),
+            const SizedBox(height: space3),
+            _Banner(
+              deviceBlock: queue.deviceBlock,
+              heldCount: held.length,
+              heldBytes: heldBytes,
+              onRetry: () => ref.read(queueControllerProvider.notifier).wake(),
+            ),
+            const SizedBox(height: space2),
+            Expanded(
+              child: sendable.isEmpty
+                  ? Center(
+                      child: Text(
+                        'Nothing captured yet.',
+                        style: const TextStyle(fontSize: sizeBody, color: chText2),
+                      ),
+                    )
+                  : ListView(
+                      padding: const EdgeInsets.symmetric(horizontal: space4),
+                      children: [
+                        for (final capture in sendable)
+                          _QueueRow(
+                            capture: capture,
+                            record: queue.records[capture.captureId],
+                            allRecords: queue.records,
+                            deviceBlock: queue.deviceBlock,
+                            sendingCaptureId: queue.sending,
+                          ),
+                      ],
+                    ),
+            ),
+            const BottomCaptureQueueTabs(current: queueRoute),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _Banner extends StatelessWidget {
+  const _Banner({
+    required this.deviceBlock,
+    required this.heldCount,
+    required this.heldBytes,
+    required this.onRetry,
+  });
+
+  final DeviceBlock? deviceBlock;
+  final int heldCount;
+  final int heldBytes;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    if (deviceBlock == null && heldCount == 0) {
+      // Nothing waiting and nothing blocked: the quiet, correct state. No
+      // banner is itself the honest answer -- inventing an "up to date"
+      // line would be one more thing that could go stale.
+      return const SizedBox.shrink();
+    }
+
+    final String message;
+    if (deviceBlock?.reason == DeviceBlockReason.signedOut) {
+      message = 'Sign in to send what is held on this device.';
+    } else if (deviceBlock?.reason == DeviceBlockReason.wrongHost) {
+      message = 'This device is pointed at the wrong host. Re-scan to fix it.';
+    } else {
+      message = '$heldCount held on device · ${_mb(heldBytes)}';
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: space4),
+      child: Container(
+        padding: const EdgeInsets.all(space3),
+        decoration: BoxDecoration(
+          color: chRaised,
+          border: Border.all(color: chLine),
+          borderRadius: BorderRadius.circular(space1),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: space1,
+              height: space1,
+              decoration: const BoxDecoration(color: chTextMeta, shape: BoxShape.circle),
+            ),
+            const SizedBox(width: space2),
+            Expanded(
+              child: Text(message, style: const TextStyle(fontSize: sizeBody, color: chText)),
+            ),
+            if (deviceBlock == null)
+              TextButton(onPressed: onRetry, child: const Text('RETRY')),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static String _mb(int bytes) =>
+      bytes < 1024 * 1024 ? '${(bytes / 1024).round()} KB' : '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+}
+
+class _QueueRow extends StatelessWidget {
+  const _QueueRow({
+    required this.capture,
+    required this.record,
+    required this.allRecords,
+    required this.deviceBlock,
+    required this.sendingCaptureId,
+  });
+
+  final CaptureRecord capture;
+  final QueueRecord? record;
+  final Map<String, QueueRecord> allRecords;
+  final DeviceBlock? deviceBlock;
+  final String? sendingCaptureId;
+
+  @override
+  Widget build(BuildContext context) {
+    final at = capture.startedAt.toLocal();
+    final clock = '${at.hour.toString().padLeft(2, '0')}:'
+        '${at.minute.toString().padLeft(2, '0')}';
+    final label = queueLabel(
+      captureId: capture.captureId,
+      record: record,
+      allRecords: allRecords,
+      deviceBlock: deviceBlock,
+      sendingCaptureId: sendingCaptureId,
+      retention: capture.retention,
+      enqueuedAt: record?.enqueuedAt ?? capture.startedAt,
+      now: DateTime.now(),
+    );
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: space2),
+      child: Row(
+        children: [
+          SizedBox(width: 44, child: Text(clock, style: monoMeta(size: sizeXs))),
+          const SizedBox(width: space2),
+          Expanded(
+            child: Text(
+              capture.durationMs != null ? _duration(capture.durationMs!) : 'nothing recovered',
+              style: const TextStyle(fontSize: sizeBody, color: chText),
+            ),
+          ),
+          const SizedBox(width: space2),
+          Text(
+            label,
+            style: microLabel(
+              color: label == 'SENT' ? chResolved : chText2,
+              size: sizeXxs,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static String _duration(int ms) {
+    final total = ms ~/ 1000;
+    return total >= 60 ? '${total ~/ 60}m ${total % 60}s' : '${total}s';
+  }
+}

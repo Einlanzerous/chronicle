@@ -134,6 +134,12 @@ class QueueRecord {
   final DateTime enqueuedAt;
 
   final int attemptCount;
+
+  /// When the engine last actually tried this capture. What
+  /// `backoff.dart`'s `backoffElapsed` waits out -- so a manual "Try
+  /// again" (`QueueController.retryCapture`) clears this along with
+  /// [failureStreak], or the retry would sit waiting out the SAME backoff
+  /// it was meant to override.
   final DateTime? lastAttemptAt;
 
   /// The class of the MOST RECENT outcome, shown on the queue screen as the
@@ -166,6 +172,7 @@ class QueueRecord {
     QueueStatus? status,
     int? attemptCount,
     DateTime? lastAttemptAt,
+    bool clearLastAttemptAt = false,
     FailureClass? lastFailureClass,
     bool clearLastFailureClass = false,
     String? lastFailureCode,
@@ -180,7 +187,8 @@ class QueueRecord {
         status: status ?? this.status,
         enqueuedAt: enqueuedAt,
         attemptCount: attemptCount ?? this.attemptCount,
-        lastAttemptAt: lastAttemptAt ?? this.lastAttemptAt,
+        lastAttemptAt:
+            clearLastAttemptAt ? null : (lastAttemptAt ?? this.lastAttemptAt),
         lastFailureClass: clearLastFailureClass
             ? null
             : (lastFailureClass ?? this.lastFailureClass),
