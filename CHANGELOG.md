@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.21.0](https://github.com/Einlanzerous/chronicle/compare/v1.20.0...v1.21.0) (2026-09-22)
+
+
+### Features
+
+* **mobile:** durable offline queue that survives a force-stop (CHRN-61) ([#123](https://github.com/Einlanzerous/chronicle/issues/123)) ([e16d9ec](https://github.com/Einlanzerous/chronicle/commit/e16d9ec0ba07be446215806a7113f3f8de3c1dc5))
+
 ## [1.20.0](https://github.com/Einlanzerous/chronicle/compare/v1.19.0...v1.20.0) (2026-09-21)
 
 
