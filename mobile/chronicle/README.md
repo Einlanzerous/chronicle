@@ -1,13 +1,15 @@
 # Chronicle — Android client
 
-The capture end of Chronicle (E9). This ticket, **CHRN-59**, is the skeleton
-under it: the app project, its auth against Chronicle's own tokens, and
-networking that works on Tailscale at home and off the WAN outside.
+The capture end of Chronicle (E9). **CHRN-59** is the skeleton: the app
+project, its auth against Chronicle's own tokens, and networking that works
+on Tailscale at home and off the WAN outside. **CHRN-60** adds one-tap
+capture — Ogg/Opus into a foreground service, and recovery that destroys
+nothing. **CHRN-61** adds the durable offline queue this README's own
+[queue section](#the-durable-offline-queue-chrn-61) describes.
 
-Recording is **not** here. One-tap capture is CHRN-60, the durable queue is
-CHRN-61, the `DISCARD NOW / 30 DAYS / FOREVER` confirm is CHRN-62 and batch
-triage is CHRN-63 — the first two are `review_mode: decision`, so they owe a
-written decision before any code.
+The `DISCARD NOW / 30 DAYS / FOREVER` confirm is CHRN-62 and batch triage is
+CHRN-63 — both `review_mode: decision`, so they owe a written decision before
+any code, same as CHRN-60 and CHRN-61 did.
 
 ## The toolkit, and why it was not a fresh decision
 
@@ -36,8 +38,8 @@ CI pins the same two versions (`.github/workflows/mobile.yml`).
 
 ```sh
 flutter pub get
-flutter analyze          # the lint gate
-flutter test             # 43 tests, no hardware
+flutter analyze          # the lint gate -- run AFTER the last edit, not before
+flutter test             # 238 tests, no hardware
 flutter build apk --debug
 ```
 
@@ -104,6 +106,106 @@ turns redirect-following off and refuses, and names Access when the redirect
 target is Access. Refusing every redirect is safe by construction: `openapi.yaml`
 declares **no 3xx on any of its 50 operations** (the two `304`s are cache
 validators).
+
+## The durable offline queue (CHRN-61)
+
+CHRN-60 leaves a `ready`/`salvaged` capture on disk. CHRN-61 turns that into
+"a memo the server has acknowledged," and its whole design rests on one
+promise it must never break: **never say a memo was sent when it was not.**
+`lib/queue/queue_record.dart:QueueStatus.acknowledged` is reachable only
+through `lib/queue/ack.dart:verifyAck`, which checks the server's answer
+against the capture's OWN recorded hash and size — a `complete` response is
+not enough on its own, because it says nothing about *which* memo completed.
+
+### What "survives a force-stop" actually means
+
+Force-stop is a platform fact, not a design choice, and reading the ticket's
+own `Done when` against it is what the approved plan settles:
+
+| device state | what runs | what does not |
+|---|---|---|
+| **app open** | every in-app trigger (launch, a capture reaching `ready`, resume, backoff, manual retry) | — |
+| **backgrounded, not force-stopped** | the WorkManager periodic task, on `NetworkType.connected` | — |
+| **force-stopped** | **nothing** | no WorkManager job, no alarm, **not even across a reboot**, until the person launches the app again |
+| **rebooted, never force-stopped** | WorkManager re-registers at boot and can drain unattended once the device is unlocked (credential-encrypted storage needs first-unlock) | — |
+
+So "survives" means: nothing lost, nothing marked sent, and the queue
+resumes on the next launch with no action beyond opening the app. A
+force-stopped app draining in the background is not a bug this ticket left
+in — it is a claim Android does not let any app make.
+
+### The state machine, in one paragraph
+
+`upload.json` sits beside `meta.json` in each capture directory, written and
+read only by the queue engine (`lib/queue/engine.dart`), atomically, the same
+temp-then-rename pattern as `CaptureDir.writeMeta`. There is **no persisted
+`uploading`** — CHRN-60 already learned that lesson once (`state: recording`
+on disk was the wrong oracle for "is this still being written"); `SENDING`
+here is a live fact of a running pass (`QueueController.wake`'s
+`onAttemptStart` callback), never a flag a killed engine can leave behind.
+The four other screen labels — `QUEUED`, `AWAITING RETENTION`,
+`SIGN IN TO SEND`, `NOT SENT — <reason>`, and `SENT` — are a pure function of
+persisted state (`lib/queue/queue_label.dart`, unit-tested directly).
+
+A 401 never touches the credential store from the queue. It raises an
+in-memory `DeviceBlock` (`lib/queue/device_block.dart`) and asks the
+EXISTING `/auth/me` path (`meProvider`) to arbitrate — a stale or
+wrong-endpoint 401 must not be trusted over that path, which is the only
+thing that has ever cleared a dead token here.
+
+### Who wakes it
+
+- **In-app**: launch (chained after capture recovery, never alongside it),
+  a capture reaching `ready`, app resume, the per-capture backoff timer, and
+  a manual "Try again" (`QueueController.retryCapture`).
+- **Process-dead**: a WorkManager periodic task on `queueCallbackDispatcher`
+  (`lib/queue/background.dart`) — the SAME Dart entrypoint the foreground
+  drives, so there is one protocol implementation, not two. It reads the
+  token and server address directly (no `ProviderScope`) and yields cleanly
+  rather than crash-looping if they are unreadable.
+- Two isolates (foreground + headless) coordinate through an
+  `IsolateNameServer` presence check to avoid double-draining — an
+  **optimisation**, not the safety property: `_writeUnlessAcknowledged` and
+  `test/queue/engine_concurrent_test.dart` already prove two engines racing
+  the same capture cannot produce a second memo or an unverified ack even
+  with the exclusion disabled.
+
+### Verification status
+
+`flutter analyze`, `flutter test` (238 tests, including a faithful in-Dart
+fake Chronicle server, a kill harness over every I/O boundary of a
+multi-chunk upload, and a genuine two-engine race) and `flutter build apk
+--debug` are all green — see the commits on `chrn-61-durable-upload-queue`.
+**Not yet run, and not runnable from this environment:** the real
+`chronicle serve` pass (criterion 13) and the on-device pass below, both of
+which need hardware/network access this session did not have.
+
+### The device pass this ticket still needs
+
+Follow the wireless-debugging setup in [Verifying it on a
+device](#verifying-it-on-a-device) below, then:
+
+1. **Ten memos, offline.** Airplane mode. Record ten short memos. Expect ten
+   `QUEUED` rows, `0` acknowledged, no file removed.
+2. **Force-stop, and confirm nothing runs.** `am force-stop dev.dodson.chronicle`.
+   Reconnect the network. Wait several minutes. Expect **all ten still
+   `QUEUED`** — this is not a failure, it is the platform fact the plan's
+   finding 7 names.
+3. **Relaunch, still offline-adjacent state cleared.** Open the app. Expect
+   the queue to start draining on its own (the launch trigger), with no
+   further action.
+4. **Reboot, no force-stop, in between.** From a fresh set of ten offline
+   memos: reboot the device (no force-stop), leave the app closed, reconnect
+   the network, unlock the device. Expect the WorkManager task to drain them
+   **without opening the app** — the one case that can run unattended.
+5. **Mid-upload interruption.** Cut connectivity partway through a
+   multi-chunk memo (a longer recording, Wi-Fi off mid-`SENDING`). Expect
+   the same memo to resume from the server's own offset once connectivity
+   returns, landing as exactly one memo server-side.
+
+Evidence for all five belongs on the CHRN-61 Switchyard ticket as a comment,
+posted alongside the transition — never assumed from CI alone, per the
+epic's own `Done when`.
 
 ## Verifying it on a device
 
@@ -223,8 +325,27 @@ lib/
     sign_in_link.dart  parsing the QR payload
     auth_controller.dart
     device_label.dart
+  capture/             CHRN-60: one-tap capture, recovery, the on-disk record
+    capture_record.dart   meta.json, CaptureDir, the idempotency key
+    capture_channel.dart  the Dart half of the seam to CaptureService
+    capture_controller.dart
+    recovery.dart      classify() and finalise() -- never guesses about a live recorder
+    ogg.dart
+  queue/               CHRN-61: the durable offline queue -- see the section above
+    queue_record.dart  upload.json, QueueStatus, the queue's only write surface
+    ack.dart           verifyAck -- the one door to `acknowledged`
+    retention_gate.dart · backoff.dart · device_block.dart · failure.dart
+    engine.dart        QueueEngine.drainPass -- one attempt, always the same shape
+    upload_transport.dart · uploads_api_transport.dart
+    queue_controller.dart  the in-app triggers
+    queue_label.dart   the screen label, as a pure function of persisted state
+    background.dart    the WorkManager headless entrypoint
   theme/               tokens ported from web/src/styles/tokens.css
-  features/signin/     scan, or paste the link
-  features/home/       account, address, connection state
+  features/
+    signin/            scan, or paste the link
+    home/               account, address, connection state
+    capture/           board 1a screens 01/02 -- idle, recording
+    queue/              board 1a screen 03's CHRN-61 slice
+    shared/            the CAPTURE / QUEUE tab bar
 packages/chronicle_api/  GENERATED -- do not edit
 ```
