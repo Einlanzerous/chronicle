@@ -62,9 +62,18 @@ class UploadsApiTransport implements UploadTransport {
 /// `openUpload`/`appendChunk` are typed `Future<UploadState?>` only because
 /// the generator treats every operation's "204, no body" shape uniformly --
 /// this operation has no 204 in `openapi.yaml`; every real answer that does
-/// not throw carries a body. A null here would mean the contract changed
-/// out from under this client, not a case to route through
-/// `classifyError`/`classifyResponse` as an ordinary outcome.
+/// not throw carries a body. A null here would mean the contract changed out
+/// from under this client.
+///
+/// **This does still reach `classifyError`, same as any other thrown
+/// object** -- `_attemptOne`'s `catch (e)` is unconditional, and a bare
+/// `StateError` matches none of `classifyError`'s recognised shapes
+/// (`ApiException`, `NotChronicleException`, the network-error types), so it
+/// falls to the same safe default as everything else unrecognised: end the
+/// pass, back off, try again. That is the right outcome for a genuine
+/// client/server contract drift too (quiet, bounded retry, never a crash
+/// loop) -- it is just not a DISTINCT one, and nothing here currently makes
+/// a drift like this more visible than an ordinary network hiccup.
 UploadState _require(UploadState? state, String call) {
   if (state == null) {
     throw StateError('$call answered with no body -- openapi.yaml declares one on every '

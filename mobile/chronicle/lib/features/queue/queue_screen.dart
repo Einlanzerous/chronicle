@@ -79,6 +79,16 @@ class QueueScreen extends ConsumerWidget {
                             allRecords: queue.records,
                             deviceBlock: queue.deviceBlock,
                             sendingCaptureId: queue.sending,
+                            // The engine never retries a rejection on its
+                            // own (queue_record.dart's own rule) -- this is
+                            // the ONLY path back to pending, so a rejected
+                            // row has to be able to reach it directly. The
+                            // banner's own RETRY calls wake(), which skips
+                            // rejected captures entirely; that button is
+                            // not a substitute for this one.
+                            onRetry: () => ref
+                                .read(queueControllerProvider.notifier)
+                                .retryCapture(capture.captureId),
                           ),
                       ],
                     ),
@@ -161,6 +171,7 @@ class _QueueRow extends StatelessWidget {
     required this.allRecords,
     required this.deviceBlock,
     required this.sendingCaptureId,
+    required this.onRetry,
   });
 
   final CaptureRecord capture;
@@ -168,6 +179,12 @@ class _QueueRow extends StatelessWidget {
   final Map<String, QueueRecord> allRecords;
   final DeviceBlock? deviceBlock;
   final String? sendingCaptureId;
+
+  /// Moves this capture from `rejected` back to `pending` and re-sends it.
+  /// Only ever called from the button below, which only exists on a
+  /// rejected row -- see `QueueController.retryCapture`'s own doc for why
+  /// this is the sole way back.
+  final VoidCallback onRetry;
 
   @override
   Widget build(BuildContext context) {
@@ -184,6 +201,7 @@ class _QueueRow extends StatelessWidget {
       enqueuedAt: record?.enqueuedAt ?? capture.startedAt,
       now: DateTime.now(),
     );
+    final rejected = record?.status == QueueStatus.rejected;
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: space2),
@@ -205,6 +223,20 @@ class _QueueRow extends StatelessWidget {
               size: sizeXxs,
             ),
           ),
+          if (rejected) ...[
+            const SizedBox(width: space2),
+            InkWell(
+              onTap: onRetry,
+              child: Padding(
+                // The 44px minimum tap target would blow out this row's
+                // height; the padding trades a slightly generous hit area
+                // for keeping the row compact, which a screen that is
+                // mostly a list of these has to do somewhere.
+                padding: const EdgeInsets.symmetric(vertical: space1),
+                child: Text('TRY AGAIN', style: microLabel(color: chSignal, size: sizeXxs)),
+              ),
+            ),
+          ],
         ],
       ),
     );

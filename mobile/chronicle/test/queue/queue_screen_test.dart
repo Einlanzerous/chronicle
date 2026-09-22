@@ -139,4 +139,49 @@ void main() {
     expect(find.text('SENT'), findsNothing);
     expect(find.text('NOT SENT — KEY CONFLICT'), findsOneWidget);
   });
+
+  testWidgets('tapping TRY AGAIN on a rejected row moves it back to pending and resends it',
+      (tester) async {
+    final server = FakeChronicleServer();
+    final transport = FakeUploadTransport(server);
+    transport.onBeforeCall = (call, {required isOpen}) => TransportFault.beforeSend(
+          gen.ApiException(409, '{"code":"idempotency_key_reused","message":"nope"}'),
+        );
+    final container = await harness(tester, server, transport);
+    addTearDown(container.dispose);
+
+    await tester.runAsync(() => writeFixtureCapture(root, id: 'a', bytes: [1, 2, 3]));
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const MaterialApp(home: QueueScreen()),
+      ),
+    );
+    await tester.runAsync(() async {
+      await container.read(captureControllerProvider.notifier).refresh();
+      await container.read(queueControllerProvider.notifier).wake();
+    });
+    await tester.pump();
+    expect(find.text('NOT SENT — KEY CONFLICT'), findsOneWidget);
+
+    // The rejected row is the ONLY route back to pending -- the banner's
+    // own RETRY calls wake(), which skips rejected captures entirely (see
+    // the button's own build-time gating), so this is what the review
+    // finding on PR #123 was about: without this control a rejected
+    // capture was a dead end no screen could reach.
+    transport.onBeforeCall = null;
+    // The tap handler kicks off retryCapture()'s real file I/O
+    // synchronously; per this file's own header note, that has to happen
+    // inside runAsync too, or it hangs rather than throws.
+    await tester.runAsync(() async {
+      await tester.tap(find.text('TRY AGAIN'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    });
+    await tester.pump();
+
+    expect(find.text('SENT'), findsOneWidget);
+    expect(find.text('NOT SENT — KEY CONFLICT'), findsNothing);
+    expect(server.memos, hasLength(1));
+  });
 }
