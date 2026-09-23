@@ -30,6 +30,7 @@ class _Session {
     required this.contentHash,
     required this.byteSize,
     required this.retention,
+    required this.recordedAt,
   });
 
   final String uploadId;
@@ -37,6 +38,7 @@ class _Session {
   final String contentHash;
   final int byteSize;
   final String? retention;
+  final DateTime recordedAt;
   final BytesBuilder received = BytesBuilder(copy: true);
   Memo? memo;
 
@@ -61,6 +63,7 @@ class FakeChronicleServer {
     required String idempotencyKey,
     required String contentHash,
     required int byteSize,
+    required DateTime recordedAt,
     String? retention,
   }) {
     final existing = _byKey[idempotencyKey];
@@ -110,6 +113,7 @@ class FakeChronicleServer {
       contentHash: contentHash,
       byteSize: byteSize,
       retention: retention,
+      recordedAt: recordedAt,
     );
     _byKey[idempotencyKey] = session;
     _byUploadId[session.uploadId] = session;
@@ -224,6 +228,7 @@ class FakeChronicleServer {
       contentHash: session.contentHash,
       byteSize: session.byteSize,
       capturedAt: DateTime.now().toUtc(),
+      recordedAt: session.recordedAt,
       audioPruned: false,
       retentionStatus: 'scheduled',
       prunesAt: null,
@@ -314,6 +319,7 @@ class FakeUploadTransport implements UploadTransport {
     required String idempotencyKey,
     required String contentHash,
     required int byteSize,
+    required DateTime recordedAt,
     String? retention,
   }) =>
       _call(
@@ -322,6 +328,7 @@ class FakeUploadTransport implements UploadTransport {
           idempotencyKey: idempotencyKey,
           contentHash: contentHash,
           byteSize: byteSize,
+          recordedAt: recordedAt,
           retention: retention,
         ),
       );

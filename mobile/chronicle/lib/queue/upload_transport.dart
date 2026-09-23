@@ -27,10 +27,18 @@ import 'package:chronicle_api/api.dart';
 abstract class UploadTransport {
   /// `POST /memos/uploads`. [retention] is `meta.json`'s value, passed
   /// through unchanged -- null means "no opinion", never a default.
+  ///
+  /// [recordedAt] is [CaptureRecord.startedAt] (CHRN-118): display-only on
+  /// arrival, never verified, and never this client's own retention clock --
+  /// `QueueRecord.enqueuedAt`'s own doc comment already says the grace runs
+  /// from there, never from `startedAt`. Every capture has one, so it is
+  /// required here rather than threaded through as an optional the caller
+  /// could forget.
   Future<UploadState> openUpload({
     required String idempotencyKey,
     required String contentHash,
     required int byteSize,
+    required DateTime recordedAt,
     String? retention,
   });
 

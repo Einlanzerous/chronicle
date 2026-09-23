@@ -242,6 +242,7 @@ class QueueEngine {
         idempotencyKey: capture.idempotencyKey,
         contentHash: expectedHash,
         byteSize: expectedSize,
+        recordedAt: capture.startedAt,
         retention: capture.retention,
       );
     } catch (e) {

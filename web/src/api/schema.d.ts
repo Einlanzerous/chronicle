@@ -330,7 +330,7 @@ export interface paths {
          *     `UploadConflict`. Once that session has finished — its memo
          *     committed, its row cleared — the key is no longer live, and there is
          *     nothing left here to check it against: re-presenting it against
-         *     different content is answered `200` (a fresh session opens), and the
+         *     different content is answered `201` (a fresh session opens), and the
          *     reuse is only caught at *finalise*, after the whole file has been
          *     transferred — the same `idempotency_key_reused` shape, but from
          *     whichever call actually finalises: ordinarily the `PATCH` that
