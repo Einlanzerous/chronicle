@@ -324,6 +324,15 @@ func TestGuardRejectsFromRawSQL(t *testing.T) {
 			args:  []any{id},
 		},
 		{
+			// CHRN-118: recorded_at gets the same treatment as captured_at,
+			// including on a memo whose recorded_at is still NULL — a bug
+			// that only guarded the value-to-value case would let a first
+			// assertion in through raw SQL after the row already exists.
+			name: "recorded_at is immutable", sqlstate: pgMemoImmutable,
+			query: `UPDATE tier2.memos SET recorded_at = now() WHERE id = $1`,
+			args:  []any{id},
+		},
+		{
 			name: "content_hash is immutable", sqlstate: pgMemoImmutable,
 			query: `UPDATE tier2.memos SET content_hash = $2 WHERE id = $1`,
 			args:  []any{id, hashOf("different bytes")},

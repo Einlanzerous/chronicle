@@ -449,8 +449,9 @@ BEGIN
     IF NEW.author_id    IS DISTINCT FROM OLD.author_id
     OR NEW.content_hash IS DISTINCT FROM OLD.content_hash
     OR NEW.byte_size    IS DISTINCT FROM OLD.byte_size
-    OR NEW.captured_at  IS DISTINCT FROM OLD.captured_at THEN
-        RAISE EXCEPTION 'memo identity and captured_at are immutable'
+    OR NEW.captured_at  IS DISTINCT FROM OLD.captured_at
+    OR NEW.recorded_at  IS DISTINCT FROM OLD.recorded_at THEN
+        RAISE EXCEPTION 'memo identity, captured_at and recorded_at are immutable'
             USING ERRCODE = 'CH002';
     END IF;
 
@@ -897,6 +898,7 @@ CREATE TABLE tier1.memo_uploads (
     original_filename text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     last_activity_at timestamp with time zone DEFAULT now() NOT NULL,
+    recorded_at timestamp with time zone,
     CONSTRAINT memo_uploads_byte_size_check CHECK ((byte_size > 0)),
     CONSTRAINT memo_uploads_content_hash_check CHECK ((content_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT memo_uploads_idempotency_key_check CHECK (((length(idempotency_key) >= 16) AND (length(idempotency_key) <= 200))),
@@ -909,6 +911,13 @@ CREATE TABLE tier1.memo_uploads (
 --
 
 COMMENT ON TABLE tier1.memo_uploads IS 'CHRN-20. Uploads in flight: what the client declared it is sending, so the bytes can be checked against it. Tier 1 — regenerable from the client, which still holds the recording until the memo is acknowledged. Holds no reference into tier 2.';
+
+
+--
+-- Name: COLUMN memo_uploads.recorded_at; Type: COMMENT; Schema: tier1; Owner: -
+--
+
+COMMENT ON COLUMN tier1.memo_uploads.recorded_at IS 'Carried through to the memo at finalise. Tier 1, so losing this row loses nothing durable — the client still holds the recording and its own idea of when it happened, and re-opens.';
 
 
 --
@@ -1212,12 +1221,20 @@ CREATE TABLE tier2.memos (
     original_filename text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    recorded_at timestamp with time zone,
     CONSTRAINT memos_byte_size_check CHECK ((byte_size > 0)),
     CONSTRAINT memos_content_hash_check CHECK ((content_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT memos_duration_ms_check CHECK (((duration_ms IS NULL) OR (duration_ms > 0))),
     CONSTRAINT memos_retention_check CHECK ((retention = ANY (ARRAY['discard_now'::text, 'days_30'::text, 'forever'::text]))),
     CONSTRAINT memos_state_check CHECK ((state = ANY (ARRAY['captured'::text, 'queued'::text, 'transcribing'::text, 'transcribed'::text, 'triaged'::text, 'held'::text, 'discarded'::text])))
 );
+
+
+--
+-- Name: COLUMN memos.recorded_at; Type: COMMENT; Schema: tier2; Owner: -
+--
+
+COMMENT ON COLUMN tier2.memos.recorded_at IS 'When a person says this was recorded, asserted by the client and never verified. Display only — never read by the retention pruner or by any prunes_at projection, which stay on captured_at. Set once, at the arrival that creates the row, and immutable after (CH002): the first writer wins, the same treatment original_filename already gets in IngestMemo''s upsert, and a re-delivery or a second arrival path never revises it.';
 
 
 --

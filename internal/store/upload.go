@@ -49,18 +49,24 @@ type Upload struct {
 	Retention        string
 	OriginalFilename string
 
+	// RecordedAt is CHRN-118's: carried from the declaration to the memo it
+	// eventually becomes at finalise. Nil means the client had no opinion —
+	// same as Retention, it is not compared on a resume; the stored
+	// declaration wins.
+	RecordedAt *time.Time
+
 	CreatedAt      time.Time
 	LastActivityAt time.Time
 }
 
 const uploadColumns = `id, author_id, idempotency_key, content_hash, byte_size,
-	retention, original_filename, created_at, last_activity_at`
+	retention, original_filename, recorded_at, created_at, last_activity_at`
 
 func scanUpload(row pgx.Row) (Upload, error) {
 	var u Upload
 	var retention, filename *string
 	err := row.Scan(&u.ID, &u.AuthorID, &u.IdempotencyKey, &u.ContentHash, &u.ByteSize,
-		&retention, &filename, &u.CreatedAt, &u.LastActivityAt)
+		&retention, &filename, &u.RecordedAt, &u.CreatedAt, &u.LastActivityAt)
 	if retention != nil {
 		u.Retention = *retention
 	}
@@ -106,12 +112,12 @@ func (s *Store) OpenUpload(ctx context.Context, in Upload) (u Upload, created bo
 
 	u, err = scanUpload(s.pool.QueryRow(ctx, `
 		INSERT INTO tier1.memo_uploads
-		       (author_id, idempotency_key, content_hash, byte_size, retention, original_filename)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		       (author_id, idempotency_key, content_hash, byte_size, retention, original_filename, recorded_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (author_id, idempotency_key) DO NOTHING
 		RETURNING `+uploadColumns,
 		in.AuthorID, in.IdempotencyKey, in.ContentHash, in.ByteSize,
-		nullable(in.Retention), nullable(in.OriginalFilename)))
+		nullable(in.Retention), nullable(in.OriginalFilename), in.RecordedAt))
 	if err == nil {
 		return u, true, nil
 	}

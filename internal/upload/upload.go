@@ -319,6 +319,10 @@ type OpenRequest struct {
 	ByteSize         int64
 	Retention        string
 	OriginalFilename string
+
+	// RecordedAt is CHRN-118's: display-only, never verified, carried through
+	// to the memo unchanged. Nil when the client has no opinion.
+	RecordedAt *time.Time
 }
 
 // Open starts an upload, resumes one, or reports that there is nothing to send.
@@ -353,6 +357,7 @@ func (s *Service) Open(ctx context.Context, in OpenRequest) (Result, error) {
 			ByteSize:         in.ByteSize,
 			Retention:        in.Retention,
 			OriginalFilename: in.OriginalFilename,
+			RecordedAt:       in.RecordedAt,
 		}, "already held")
 		if err != nil {
 			return Result{}, err
@@ -380,6 +385,7 @@ func (s *Service) Open(ctx context.Context, in OpenRequest) (Result, error) {
 			ByteSize:         in.ByteSize,
 			Retention:        in.Retention,
 			OriginalFilename: in.OriginalFilename,
+			RecordedAt:       in.RecordedAt,
 		}, "audio already pruned")
 		if err != nil {
 			return Result{}, err
@@ -411,6 +417,7 @@ func (s *Service) Open(ctx context.Context, in OpenRequest) (Result, error) {
 		ByteSize:         in.ByteSize,
 		Retention:        in.Retention,
 		OriginalFilename: in.OriginalFilename,
+		RecordedAt:       in.RecordedAt,
 	})
 	if err != nil {
 		return Result{}, err
@@ -779,6 +786,7 @@ func (s *Service) commit(ctx context.Context, u store.Upload, how string) (*Comm
 		IdempotencyKey:   u.IdempotencyKey,
 		Retention:        u.Retention,
 		OriginalFilename: u.OriginalFilename,
+		RecordedAt:       u.RecordedAt,
 	})
 	if err != nil {
 		return nil, err

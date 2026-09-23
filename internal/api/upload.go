@@ -61,6 +61,13 @@ type uploadOpenRequest struct {
 	ByteSize         int64  `json:"byte_size"`
 	Retention        string `json:"retention"`
 	OriginalFilename string `json:"original_filename"`
+
+	// RecordedAt is CHRN-118's: when a person says this was recorded, never
+	// verified. Go's time.Time unmarshalling requires RFC 3339 with an
+	// offset, which is the whole of the format check this needs — a
+	// malformed value fails decodeJSON generically, the same as any other
+	// field whose JSON shape is wrong rather than merely out of range.
+	RecordedAt *time.Time `json:"recorded_at,omitempty"`
 }
 
 // wire.UploadState is the one shape all four calls answer with, discriminated
@@ -116,6 +123,7 @@ func toMemo(m store.Memo, retentionStatus string, prunesAt *time.Time) wire.Memo
 		ContentHash:      m.ContentHash,
 		ByteSize:         m.ByteSize,
 		CapturedAt:       m.CapturedAt,
+		RecordedAt:       m.RecordedAt,
 		AudioPruned:      m.AudioPruned(),
 		DurationMs:       m.DurationMS,
 		Codec:            m.Codec,
@@ -174,6 +182,7 @@ func (a *api) OpenUpload(w http.ResponseWriter, r *http.Request) {
 		ByteSize:         req.ByteSize,
 		Retention:        req.Retention,
 		OriginalFilename: req.OriginalFilename,
+		RecordedAt:       req.RecordedAt,
 	})
 	if err != nil {
 		a.uploadError(w, r, "open upload", err)

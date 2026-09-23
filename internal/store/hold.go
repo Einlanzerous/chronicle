@@ -248,7 +248,7 @@ func (s *Store) DeferredMemos(ctx context.Context, authorID uuid.UUID, limit int
 		var m Memo
 		var reason *string
 		var ageSeconds float64
-		if err := rows.Scan(&m.ID, &m.AuthorID, &m.ContentHash, &m.ByteSize, &m.CapturedAt,
+		if err := rows.Scan(&m.ID, &m.AuthorID, &m.ContentHash, &m.ByteSize, &m.CapturedAt, &m.RecordedAt,
 			&m.State, &m.StateReason, &m.Retention, &m.AudioPrunedAt,
 			&m.DurationMS, &m.Codec, &m.SampleRateHz, &m.OriginalFilename,
 			&m.CreatedAt, &m.UpdatedAt,

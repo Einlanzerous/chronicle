@@ -145,6 +145,10 @@ func (f *uploadIngest) IngestMemo(_ context.Context, in store.Arrival) (store.In
 			ID: uuid.New(), AuthorID: in.AuthorID, ContentHash: in.ContentHash,
 			ByteSize: in.ByteSize, State: store.StateCaptured,
 			Retention: store.RetentionDays30, CapturedAt: time.Now(),
+			// First writer wins (CHRN-118): only set on the arrival that
+			// creates the memo, never revised by one that finds it already
+			// there — the fake mirrors IngestMemo's INSERT-only column.
+			RecordedAt: in.RecordedAt,
 		}
 		if in.Retention != "" {
 			m.Retention = in.Retention
@@ -625,6 +629,49 @@ func TestACompletedUploadReportsTheMetadataItJustRecorded(t *testing.T) {
 	}
 	if done.Memo.Codec == nil || *done.Memo.Codec != "opus" {
 		t.Fatalf("codec %v, want opus", done.Memo.Codec)
+	}
+}
+
+// CHRN-118's Done-when: an upload carrying recorded_at produces a memo whose
+// API representation returns it. decodeUpload's apitest.Conform call is what
+// proves the shape matches openapi.yaml, not just that Go's own struct field
+// round-tripped.
+func TestOpenUploadCarriesRecordedAtToTheMemo(t *testing.T) {
+	r := newUploadRig(t)
+	content := audioBytes(2000)
+	recordedAt := time.Date(2026, 9, 15, 8, 30, 0, 0, time.FixedZone("", -7*3600))
+
+	body := fmt.Sprintf(`{"idempotency_key":%q,"content_hash":%q,"byte_size":%d,"recorded_at":%q}`,
+		"key-recorded-at-round-trip", digestOf(content), len(content), recordedAt.Format(time.RFC3339))
+	rec := r.do(jsonReq(http.MethodPost, "/memos/uploads", body))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("open: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	open := decodeUpload(t, "openUpload", rec)
+
+	done := decodeUpload(t, "appendChunk", r.appendChunk(uploadID(open), 0, content))
+	if done.Memo == nil {
+		t.Fatal("no memo on a completed upload")
+	}
+	if done.Memo.RecordedAt == nil || !done.Memo.RecordedAt.Equal(recordedAt) {
+		t.Fatalf("recorded_at = %v, want %v", done.Memo.RecordedAt, recordedAt)
+	}
+}
+
+// A CLIENT THAT SENDS NO OPINION GETS A NULL BACK, not a 400 — the whole
+// reason CHRN-118 exists: decodeJSON's DisallowUnknownFields would refuse an
+// unrecognised field, and the omitted case must not be confused with that.
+func TestOpenUploadWithNoRecordedAtLeavesItNull(t *testing.T) {
+	r := newUploadRig(t)
+	content := audioBytes(500)
+
+	open := r.openUpload(t, "key-no-recorded-at", content)
+	done := decodeUpload(t, "appendChunk", r.appendChunk(uploadID(open), 0, content))
+	if done.Memo == nil {
+		t.Fatal("no memo on a completed upload")
+	}
+	if done.Memo.RecordedAt != nil {
+		t.Fatalf("recorded_at = %v, want nil for an upload that never asserted one", done.Memo.RecordedAt)
 	}
 }
 

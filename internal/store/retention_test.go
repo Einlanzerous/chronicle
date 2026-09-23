@@ -419,6 +419,57 @@ func TestTheWindowRefusesAMemoThatIsNotOldEnough(t *testing.T) {
 	}
 }
 
+// A DEVICE WITH A WRONG CLOCK CAN ASSERT ANY recorded_at IT LIKES (CHRN-18 §4,
+// CHRN-118), which is exactly why the pruner must never read it. A memo
+// captured moments ago, asserting a recorded_at 60 days in the past, must
+// stay unprunable under the real 30-day window — the sharpest possible
+// mutation test: read recorded_at anywhere in prunableClause or
+// RetentionStatus and this memo wrongly becomes deletable today.
+func TestThePrunerIgnoresRecordedAt(t *testing.T) {
+	s, ctx := newTestStore(t)
+	author := newAuthor(t, s, ctx, "recorded-backdated@example.test")
+
+	past := time.Now().Add(-60 * 24 * time.Hour)
+	res, err := s.IngestMemo(ctx, Arrival{
+		AuthorID: author, ContentHash: hashOf("backdated"), ByteSize: 1024,
+		Source: SourceUpload, SourceRef: "test", RecordedAt: &past,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Postgres truncates timestamptz to microseconds, so this reads back with
+	// less precision than time.Now() had — a tolerance, not an Equal, same as
+	// the other date comparisons in this file.
+	if res.Memo.RecordedAt == nil || res.Memo.RecordedAt.Sub(past).Abs() > time.Second {
+		t.Fatalf("recorded_at = %v, want %v — setup is broken, the rest of this test proves nothing", res.Memo.RecordedAt, past)
+	}
+	durable(t, s, ctx, res.Memo.ID, "whisper.cpp/small.en")
+
+	rows, err := s.PrunableAudio(ctx, audio.ProjectionWindow, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.MemoID == res.Memo.ID {
+			t.Fatal("a memo captured moments ago was listed for deletion because recorded_at claimed " +
+				"60 days ago; the pruner is reading the client-asserted clock instead of captured_at")
+		}
+	}
+
+	// And the status agrees, with the date computed off captured_at.
+	status, at, err := s.RetentionStatus(ctx, res.Memo.ID, audio.ProjectionWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != RetentionScheduled {
+		t.Fatalf("status %q, want %q — recorded_at made this look already due", status, RetentionScheduled)
+	}
+	want := res.Memo.CapturedAt.Add(audio.ProjectionWindow)
+	if at == nil || at.Sub(want) > time.Second || want.Sub(*at) > time.Second {
+		t.Fatalf("prunes_at = %v, want captured_at + 30d = %s", at, want)
+	}
+}
+
 // DISCARD NOW BYPASSES THE WINDOW AND ONLY THE WINDOW. It still waits for the
 // transcript (asserted above); what it does not wait for is thirty days.
 func TestDiscardNowBypassesTheWindowButNotTheGate(t *testing.T) {

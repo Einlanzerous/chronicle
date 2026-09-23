@@ -321,8 +321,22 @@ export interface paths {
          * @description `idempotency_key` is minted per capture and persisted by the client
          *     BEFORE the request goes out, so an HTTP retry is a replay rather than a
          *     second memo. A replay — same key, same declaration — answers `200` with
-         *     the existing session; a mismatch answers `409` and the client mints a
-         *     fresh key.
+         *     the existing session.
+         *
+         *     **A mismatch answers `409`, but not always from this call.** While a
+         *     session is still open under that key, a different declaration is
+         *     caught right here, before anything is transferred: this call's own
+         *     session-level check, the `idempotency_key_reused` case of
+         *     `UploadConflict`. Once that session has finished — its memo
+         *     committed, its row cleared — the key is no longer live, and there is
+         *     nothing left here to check it against: re-presenting it against
+         *     different content is answered `200` (a fresh session opens), and the
+         *     reuse is only caught at *finalise*, after the whole file has been
+         *     transferred — the same `idempotency_key_reused` shape, but from
+         *     whichever call actually finalises: ordinarily the `PATCH` that
+         *     completes the transfer, but a `GET` polling a resumed session, or even
+         *     this `POST` reopening one whose bytes were already fully staged, can
+         *     reach it too.
          */
         post: operations["openUpload"];
         delete?: never;
@@ -1567,6 +1581,16 @@ export interface components {
              */
             retention?: "discard_now" | "days_30" | "forever";
             original_filename?: string;
+            /**
+             * Format: date-time
+             * @description When a person says this was recorded — offline capture's answer to
+             *     `captured_at` being arrival time, not recording time. Asserted by
+             *     the client and never verified: it carries no retention weight, and
+             *     `CHRN-22`'s pruner reads `captured_at` alone. Display only, and
+             *     once set on a memo it is as immutable as `captured_at` — a replay
+             *     or a second delivery path never revises it (CHRN-18 §4, CHRN-118).
+             */
+            recorded_at?: string;
         };
         /**
          * @description Where an upload got to. The same shape answers the successful cases and
@@ -1622,6 +1646,15 @@ export interface components {
             byte_size: number;
             /** Format: date-time */
             captured_at: string;
+            /**
+             * Format: date-time
+             * @description When a person says this was recorded, client-asserted and never
+             *     verified. Null for a memo whose arrival never sent one — every
+             *     memo captured before CHRN-118, and any watcher delivery. Display
+             *     only: it carries no retention weight and is not read by the
+             *     pruner or by `prunes_at`, which stay on `captured_at`.
+             */
+            recorded_at: string | null;
             /**
              * @description The recording is gone and the transcript remains. Never true without
              *     a durable transcript — that predicate, not the calendar, is what
