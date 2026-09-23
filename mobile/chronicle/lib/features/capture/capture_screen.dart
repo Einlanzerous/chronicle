@@ -395,6 +395,10 @@ class _RecentRow extends ConsumerWidget {
                 size: sizeXxs,
               ),
             ),
+          if (record.state == CaptureState.empty) ...[
+            const SizedBox(width: space1),
+            _DismissAction(captureId: record.captureId),
+          ],
         ],
       ),
     );
@@ -419,4 +423,21 @@ class _RecentRow extends ConsumerWidget {
     final total = ms ~/ 1000;
     return total >= 60 ? '${total ~/ 60}m ${total % 60}s' : '${total}s';
   }
+}
+
+/// Hides an `empty` capture -- the only capture state that ever wears this.
+/// Deletes nothing; see `CaptureController.dismiss`.
+class _DismissAction extends ConsumerWidget {
+  const _DismissAction({required this.captureId});
+
+  final String captureId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) => InkWell(
+        onTap: () => ref.read(captureControllerProvider.notifier).dismiss(captureId),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: space1),
+          child: Text('DISMISS', style: microLabel(color: chSignal, size: sizeXxs)),
+        ),
+      );
 }

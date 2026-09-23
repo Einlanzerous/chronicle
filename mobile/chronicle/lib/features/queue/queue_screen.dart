@@ -30,13 +30,14 @@ class QueueScreen extends ConsumerWidget {
     final captures = ref.watch(captureControllerProvider.select((s) => s.recent));
     final queue = ref.watch(queueControllerProvider);
 
-    // Sendable material only -- a live recording or an empty capture is not
-    // queue material (`engine.dart`'s own precondition), and showing it
-    // here would be a row with nothing this screen can honestly say about
-    // it.
+    // Sendable material -- a live recording is not queue material
+    // (`engine.dart`'s own precondition) and never appears here. `empty` is
+    // not sendable either, but CHRN-61's approved plan lists it anyway (see
+    // `_EmptyCapturesSection`) so the loss it represents is never silent.
     final sendable = captures
         .where((c) => c.state == CaptureState.ready || c.state == CaptureState.salvaged)
         .toList();
+    final empty = captures.where((c) => c.state == CaptureState.empty).toList();
 
     final held = sendable.where((c) {
       final record = queue.records[c.captureId];
@@ -62,7 +63,7 @@ class QueueScreen extends ConsumerWidget {
             ),
             const SizedBox(height: space2),
             Expanded(
-              child: sendable.isEmpty
+              child: sendable.isEmpty && empty.isEmpty
                   ? Center(
                       child: Text(
                         'Nothing captured yet.',
@@ -72,6 +73,7 @@ class QueueScreen extends ConsumerWidget {
                   : ListView(
                       padding: const EdgeInsets.symmetric(horizontal: space4),
                       children: [
+                        if (empty.isNotEmpty) _EmptyCapturesSection(captures: empty),
                         for (final capture in sendable)
                           _QueueRow(
                             capture: capture,
@@ -245,5 +247,87 @@ class _QueueRow extends StatelessWidget {
   static String _duration(int ms) {
     final total = ms ~/ 1000;
     return total >= 60 ? '${total ~/ 60}m ${total % 60}s' : '${total}s';
+  }
+}
+
+/// CHRN-61's approved plan, built here rather than there: every `empty`
+/// capture is listed, with no retry action, because it never enters the
+/// queue and no retry could do anything for it. At three or fewer each
+/// shows on its own row; past three they collapse into one summary row that
+/// expands in place, so a growing list cannot teach the operator to stop
+/// reading a screen whose job is "what has not reached the server".
+class _EmptyCapturesSection extends StatefulWidget {
+  const _EmptyCapturesSection({required this.captures});
+
+  /// Every `empty` capture, newest first. Never empty -- the caller only
+  /// builds this widget when there is at least one.
+  final List<CaptureRecord> captures;
+
+  @override
+  State<_EmptyCapturesSection> createState() => _EmptyCapturesSectionState();
+}
+
+class _EmptyCapturesSectionState extends State<_EmptyCapturesSection> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.captures.length <= 3 || _expanded) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [for (final c in widget.captures) _EmptyCaptureRow(capture: c)],
+      );
+    }
+    return InkWell(
+      onTap: () => setState(() => _expanded = true),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: space2),
+        child: Text(
+          '${widget.captures.length} EMPTY CAPTURES',
+          style: microLabel(color: chText2, size: sizeXxs),
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptyCaptureRow extends ConsumerWidget {
+  const _EmptyCaptureRow({required this.capture});
+
+  final CaptureRecord capture;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final at = capture.startedAt.toLocal();
+    final clock = '${at.hour.toString().padLeft(2, '0')}:'
+        '${at.minute.toString().padLeft(2, '0')}';
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: space2),
+      child: Row(
+        children: [
+          SizedBox(width: 44, child: Text(clock, style: monoMeta(size: sizeXs))),
+          const SizedBox(width: space2),
+          // No duration estimate is persisted for an `empty` capture --
+          // `nothing recovered` matches RECENT's own wording for the same
+          // null `durationMs`.
+          const Expanded(
+            child: Text('nothing recovered',
+                style: TextStyle(fontSize: sizeBody, color: chText)),
+          ),
+          const SizedBox(width: space2),
+          Text('NOT SENT — EMPTY', style: microLabel(color: chText2, size: sizeXxs)),
+          const SizedBox(width: space2),
+          InkWell(
+            onTap: () =>
+                ref.read(captureControllerProvider.notifier).dismiss(capture.captureId),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: space1),
+              child: Text('DISMISS', style: microLabel(color: chSignal, size: sizeXxs)),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }

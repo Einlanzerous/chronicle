@@ -282,4 +282,60 @@ void main() {
       expect(platform.stopped, isFalse);
     });
   });
+
+  group('dismissing an empty capture (CHRN-119)', () {
+    Future<CaptureDir> writeCapture(String id, CaptureState state) async {
+      final capture = CaptureDir(root, id);
+      await capture.writeMeta(CaptureRecord(
+        captureId: id,
+        idempotencyKey: 'chr-cap-$id',
+        startedAt: DateTime(2026, 1, 1),
+        state: state,
+      ));
+      if (state != CaptureState.empty) {
+        await capture.audio.writeAsBytes([1, 2, 3], flush: true);
+      }
+      return capture;
+    }
+
+    test('hides the capture from RECENT, deletes nothing', () async {
+      final capture = await writeCapture('empty-1', CaptureState.empty);
+      await ctl().refresh();
+      expect(st().recent.map((r) => r.captureId), contains('empty-1'));
+
+      await ctl().dismiss('empty-1');
+
+      expect(st().recent.map((r) => r.captureId), isNot(contains('empty-1')));
+      expect(await capture.isDismissed(), isTrue);
+      expect(await capture.dir.exists(), isTrue,
+          reason: 'the directory is hidden, never removed');
+      expect(await capture.meta.exists(), isTrue);
+      final record = await capture.readMeta();
+      expect(record, isNotNull, reason: 'meta.json must still parse');
+      expect(record!.state, CaptureState.empty);
+    });
+
+    test('a second refresh keeps it hidden without a restart', () async {
+      await writeCapture('empty-2', CaptureState.empty);
+      await ctl().refresh();
+      await ctl().dismiss('empty-2');
+      await ctl().refresh();
+      expect(st().recent.map((r) => r.captureId), isNot(contains('empty-2')));
+    });
+
+    test('refuses to dismiss anything but an empty capture', () async {
+      final ready = await writeCapture('ready-1', CaptureState.ready);
+      await ctl().refresh();
+
+      await ctl().dismiss('ready-1');
+
+      expect(await ready.isDismissed(), isFalse);
+      expect(st().recent.map((r) => r.captureId), contains('ready-1'));
+    });
+
+    test('dismissing an id with no capture does nothing', () async {
+      await ctl().dismiss('does-not-exist');
+      // No throw is the assertion; there is nothing else to check.
+    });
+  });
 }

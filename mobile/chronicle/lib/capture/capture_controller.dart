@@ -212,6 +212,11 @@ class CaptureController extends Notifier<CaptureUiState> {
   }
 
   /// Reloads the finished captures on disk, newest first.
+  ///
+  /// **The one place a dismissed capture leaves view.** Both RECENT and the
+  /// queue screen read `state.recent`, so filtering here once is the whole
+  /// of CHRN-119's "no longer occupies either list" -- neither screen needs
+  /// its own check.
   Future<void> refresh() async {
     final root = await _platform.capturesRoot();
     if (!await root.exists() || !ref.mounted) return;
@@ -219,14 +224,33 @@ class CaptureController extends Notifier<CaptureUiState> {
     await for (final entry in root.list()) {
       if (entry is! Directory) continue;
       final id = entry.path.split(Platform.pathSeparator).last;
-      final record = await CaptureDir(root, id).readMeta();
-      if (record != null && record.state != CaptureState.recording) {
+      final captureDir = CaptureDir(root, id);
+      final record = await captureDir.readMeta();
+      if (record != null &&
+          record.state != CaptureState.recording &&
+          !await captureDir.isDismissed()) {
         records.add(record);
       }
     }
     records.sort((a, b) => b.startedAt.compareTo(a.startedAt));
     if (!ref.mounted) return;
     state = state.copyWith(recent: records);
+  }
+
+  /// Hides an `empty` capture from RECENT and the queue screen. See
+  /// `CaptureDir.markDismissed` for why this deletes nothing.
+  ///
+  /// Refuses anything but `empty`: hiding a capture that might still be sent
+  /// is a different, much bigger decision than hiding the shell of one that
+  /// never had bytes to lose, and this ticket does not make it.
+  Future<void> dismiss(String captureId) async {
+    final root = await _platform.capturesRoot();
+    final capture = CaptureDir(root, captureId);
+    final record = await capture.readMeta();
+    if (record == null || record.state != CaptureState.empty) return;
+    await capture.markDismissed();
+    if (!ref.mounted) return;
+    await refresh();
   }
 
   /// The idle screen's primary control: start, or stop if already running.
