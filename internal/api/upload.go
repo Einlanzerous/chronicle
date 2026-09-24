@@ -132,6 +132,42 @@ func toMemo(m store.Memo, retentionStatus string, prunesAt *time.Time) wire.Memo
 	}
 }
 
+// recordedAtYearMin and recordedAtYearMax bound the UTC year of an asserted
+// recorded_at. This is NOT the cosmetic "is this a plausible clock" question
+// CHRN-118's ruling 2 asks — it is a hard technical bound, needed regardless
+// of how that ruling is decided.
+//
+// time.Time.MarshalJSON refuses a year outside [0, 9999], and pgx decodes a
+// timestamptz back into time.Local — the deploying server's own zone, never
+// forced to UTC anywhere in this codebase. A client-asserted value near
+// either edge of that range can therefore round-trip through Postgres fine
+// and only fail to ENCODE once read back in the server's local zone, shifted
+// far enough to cross the [0, 9999] boundary that Postgres itself does not
+// enforce. writeJSON has already sent the status line by the time Encode
+// runs and its error is discarded, so the failure mode is not a 500 — it is
+// a 2xx with an EMPTY BODY, answered for an upload that already committed. A
+// margin measured in centuries, not the ~26 hours the widest real UTC
+// offsets span, is what makes this refusal independent of which zone any
+// future deployment runs in.
+const (
+	recordedAtYearMin = 100
+	recordedAtYearMax = 9900
+)
+
+// recordedAtInRange refuses a recorded_at whose UTC year would put the server
+// at risk of failing to encode its own response — see the constants above.
+func recordedAtInRange(w http.ResponseWriter, t *time.Time) bool {
+	if t == nil {
+		return true
+	}
+	if y := t.UTC().Year(); y < recordedAtYearMin || y > recordedAtYearMax {
+		writeError(w, http.StatusBadRequest, codeInvalidBody,
+			"recorded_at is too far from the present to be a real recording")
+		return false
+	}
+	return true
+}
+
 // OpenUpload declares an upload.
 //
 // Three answers, and the third is the one that makes re-delivery cheap:
@@ -172,6 +208,9 @@ func (a *api) OpenUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !checkLen(w, "original_filename", req.OriginalFilename, maxFilenameLen) {
+		return
+	}
+	if !recordedAtInRange(w, req.RecordedAt) {
 		return
 	}
 

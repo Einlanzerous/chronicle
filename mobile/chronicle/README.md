@@ -73,6 +73,21 @@ the generated model fails `dart analyze`. `mobile/openapi-dart.yaml` renames the
 `openapi.yaml` would change a shipped contract the Go server, the web client and
 CHRN-32's proposal decision all use, to suit one language's scoping rule.
 
+### The server deploys first, on any contract change the client always sends
+
+A generated model built by `openapi-generator`'s Dart target always emits
+every property it declares on `toJson`, `null` where the app has no value —
+`retention`, `original_filename` and (CHRN-118) `recorded_at` all round-trip
+this way. Chronicle's own `decodeJSONLimit` (`internal/api/session.go`) uses
+`DisallowUnknownFields`, which refuses *any* JSON key it does not recognise,
+`null` value or not. Adding a field to `openapi.yaml` is therefore not safe to
+ship independently on the two sides: an app build carrying a regenerated
+`chronicle_api` that now sends a new key fails **every** upload — not just
+one carrying the new field — against a Chronicle server that predates that
+field. **The server release containing the contract change must be promoted
+before the first APK built from a tree containing the regenerated package is
+installed.**
+
 ## One server address, and never a second
 
 Chronicle serves two hostnames off one backend and they are not interchangeable

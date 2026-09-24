@@ -84,7 +84,7 @@ var ErrAuthorHasMemos = errors.New("store: account has memos and cannot be remov
 // typed errors so a handler can answer 409 rather than 500.
 var (
 	ErrIllegalTransition = errors.New("store: illegal memo state transition")
-	ErrMemoImmutable     = errors.New("store: memo identity and captured_at are immutable")
+	ErrMemoImmutable     = errors.New("store: memo identity, captured_at and recorded_at are immutable")
 )
 
 // Memo is one recording. The audio behind it may be gone — audio_pruned_at set

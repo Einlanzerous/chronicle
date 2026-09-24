@@ -718,6 +718,35 @@ func TestOpenUploadRejectsARecordedAtWithNoOffset(t *testing.T) {
 	}
 }
 
+// A recorded_at NEAR THE time.Time ENCODING BOUNDARY is refused with a clean
+// 400, not accepted and left to fail later. pgx decodes a stored timestamptz
+// back into time.Local, so a value near year 0 or year 9999 can round-trip
+// through Postgres fine and only fail time.Time.MarshalJSON once read back in
+// whatever zone the server happens to run in — and by then the memo would
+// already be committed, so the failure would be an empty 2xx body rather than
+// a clean refusal. This proves the refusal happens before any of that, on the
+// declaration alone.
+func TestOpenUploadRejectsARecordedAtNearTheYearBoundary(t *testing.T) {
+	r := newUploadRig(t)
+	content := audioBytes(500)
+
+	for _, tc := range []struct {
+		name, recordedAt string
+	}{
+		{"far future", "9999-12-31T23:59:59-05:00"},
+		{"far past", "0001-01-01T00:00:00+05:00"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := fmt.Sprintf(`{"idempotency_key":%q,"content_hash":%q,"byte_size":%d,"recorded_at":%q}`,
+				"key-recorded-at-boundary-"+tc.name, digestOf(content), len(content), tc.recordedAt)
+			rec := r.do(jsonReq(http.MethodPost, "/memos/uploads", body))
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status %d, body %s; want 400", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
 // opusBytes is a minimal valid Ogg Opus stream of the given length. Kept here
 // rather than shared with internal/upload: this package tests the wire, and a
 // test helper reaching across packages to build its input is how a fixture ends
