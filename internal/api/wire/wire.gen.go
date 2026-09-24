@@ -950,9 +950,12 @@ type MemoProvenance struct {
 	// optimistically.
 	AudioReadable bool `json:"audio_readable"`
 
-	// CapturedAt When it was recorded. Immutable — `CH002` refuses an UPDATE that
-	// moves it — which is also why it is what the audio stream's
-	// `Last-Modified` is built from.
+	// CapturedAt When Chronicle first saw the bytes — arrival time, not recording
+	// time (CHRN-118 gave the two names separate meanings; this one is
+	// **not** `recorded_at`, and `MemoProvenance` does not carry that
+	// field). Immutable — `CH002` refuses an UPDATE that moves it —
+	// which is also why it is what the audio stream's `Last-Modified`
+	// is built from.
 	CapturedAt time.Time `json:"captured_at"`
 
 	// DurationMs How long the recording is. Null for a memo with neither a header
@@ -1228,6 +1231,12 @@ type OpenUploadRequest struct {
 	// `CHRN-22`'s pruner reads `captured_at` alone. Display only, and
 	// once set on a memo it is as immutable as `captured_at` — a replay
 	// or a second delivery path never revises it (CHRN-18 §4, CHRN-118).
+	//
+	// Nullable rather than merely optional, because a client that
+	// always emits its declaration's keys — the generated Dart client
+	// does, matching `retention` and `original_filename`'s existing
+	// shape — sends `"recorded_at": null` for a capture with no
+	// opinion, not an omitted key.
 	RecordedAt *time.Time `json:"recorded_at,omitempty"`
 
 	// Retention Omitted means the deployment default. `days_30` is pruned by policy

@@ -129,6 +129,16 @@ vox-dictate made. Same name, same namespace, one meaning across the estate.
 Scoped `(client_id, key)`, **never expires**, mismatch answers **409** — CHRN-18's
 shape, adopted rather than re-derived.
 
+> **[rev 2] "Matching CHRN-18" is about the shape, not the transport.**
+> CHRN-18's own `idempotency_key` has never ridden as a header — it is a JSON
+> body field, `openapi.yaml`'s `OpenUploadRequest` was always right, and
+> CHRN-18 §2's claim otherwise carries a `[rev 3]` correction as of CHRN-118.
+> This service's own header is unaffected: `asr/openapi.yaml` genuinely
+> declares `Idempotency-Key` as a header parameter, and nothing here is
+> wrong about *this* contract. What "matching CHRN-18" borrows is the scope,
+> the never-expires rule and the 409-on-mismatch shape — not the wire
+> location, which the two services have never actually shared.
+
 **The key is minted per transcription attempt and persisted by the client before
 the request is sent.** That is the load-bearing sentence. It must be stable
 across HTTP retries of one attempt — otherwise the failure this prevents is not

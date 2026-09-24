@@ -468,6 +468,26 @@ func TestThePrunerIgnoresRecordedAt(t *testing.T) {
 	if at == nil || at.Sub(want) > time.Second || want.Sub(*at) > time.Second {
 		t.Fatalf("prunes_at = %v, want captured_at + 30d = %s", at, want)
 	}
+
+	// THE OTHER DIRECTION. A recorded_at in the FUTURE must not hold back a
+	// prune the real gate (captured_at, under the nanosecond test window like
+	// every other case in this file) would otherwise perform — the mirror of
+	// the case above, and the one a COALESCE(recorded_at, captured_at)-shaped
+	// bug would get backwards from this one.
+	future := time.Now().Add(60 * 24 * time.Hour)
+	futureRes, err := s.IngestMemo(ctx, Arrival{
+		AuthorID: author, ContentHash: hashOf("future-recorded"), ByteSize: 1024,
+		Source: SourceUpload, SourceRef: "test2", RecordedAt: &future,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	durable(t, s, ctx, futureRes.Memo.ID, "whisper.cpp/small.en")
+
+	if !prunableIDs(t, s, ctx)[futureRes.Memo.ID] {
+		t.Fatal("a memo whose recorded_at claims 60 days in the future was withheld from pruning; " +
+			"the pruner is reading the client-asserted clock instead of captured_at")
+	}
 }
 
 // DISCARD NOW BYPASSES THE WINDOW AND ONLY THE WINDOW. It still waits for the

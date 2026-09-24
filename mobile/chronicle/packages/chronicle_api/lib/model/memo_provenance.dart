@@ -34,7 +34,7 @@ class MemoProvenance {
   /// Pass it to `getMemoTranscript` or `getMemoAudio`.
   String memoId;
 
-  /// When it was recorded. Immutable — `CH002` refuses an UPDATE that moves it — which is also why it is what the audio stream's `Last-Modified` is built from. 
+  /// When Chronicle first saw the bytes — arrival time, not recording time (CHRN-118 gave the two names separate meanings; this one is **not** `recorded_at`, and `MemoProvenance` does not carry that field). Immutable — `CH002` refuses an UPDATE that moves it — which is also why it is what the audio stream's `Last-Modified` is built from. 
   DateTime capturedAt;
 
   /// How long the recording is. Null for a memo with neither a header duration nor a transcript — the pre-transcription window, and honest rather than a zero. 

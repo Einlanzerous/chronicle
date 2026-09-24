@@ -675,6 +675,49 @@ func TestOpenUploadWithNoRecordedAtLeavesItNull(t *testing.T) {
 	}
 }
 
+// AN EXPLICIT `null` IS THE SAME AS OMITTED. The generated Dart client always
+// emits the key — `"recorded_at": null` when a capture has no opinion, exactly
+// as it already does for `retention` and `original_filename` — so this is the
+// shape a real client sends, not a hypothetical.
+func TestOpenUploadWithRecordedAtExplicitlyNullLeavesItNull(t *testing.T) {
+	r := newUploadRig(t)
+	content := audioBytes(500)
+
+	body := fmt.Sprintf(`{"idempotency_key":%q,"content_hash":%q,"byte_size":%d,"recorded_at":null}`,
+		"key-recorded-at-explicit-null", digestOf(content), len(content))
+	rec := r.do(jsonReq(http.MethodPost, "/memos/uploads", body))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("open: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	open := decodeUpload(t, "openUpload", rec)
+
+	done := decodeUpload(t, "appendChunk", r.appendChunk(uploadID(open), 0, content))
+	if done.Memo == nil {
+		t.Fatal("no memo on a completed upload")
+	}
+	if done.Memo.RecordedAt != nil {
+		t.Fatalf("recorded_at = %v, want nil for an explicit null", done.Memo.RecordedAt)
+	}
+}
+
+// A VALUE WITH NO OFFSET IS REJECTED, deliberately. Go's time.Time JSON
+// unmarshalling requires RFC 3339 with a zone, which is the whole of the
+// format check openapi.yaml's `recorded_at` needs — this proves that holds
+// rather than assuming it, and pins the refusal as generic (the same 400
+// decodeJSON already answers for any other malformed field) rather than a
+// silently-dropped value.
+func TestOpenUploadRejectsARecordedAtWithNoOffset(t *testing.T) {
+	r := newUploadRig(t)
+	content := audioBytes(500)
+
+	body := fmt.Sprintf(`{"idempotency_key":%q,"content_hash":%q,"byte_size":%d,"recorded_at":"2026-09-15T08:30:00"}`,
+		"key-recorded-at-no-offset", digestOf(content), len(content))
+	rec := r.do(jsonReq(http.MethodPost, "/memos/uploads", body))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, body %s; want 400 for an offset-less recorded_at", rec.Code, rec.Body.String())
+	}
+}
+
 // opusBytes is a minimal valid Ogg Opus stream of the given length. Kept here
 // rather than shared with internal/upload: this package tests the wire, and a
 // test helper reaching across packages to build its input is how a fixture ends

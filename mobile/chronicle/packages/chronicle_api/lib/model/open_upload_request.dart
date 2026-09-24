@@ -41,13 +41,7 @@ class OpenUploadRequest {
   ///
   String? originalFilename;
 
-  /// When a person says this was recorded — offline capture's answer to `captured_at` being arrival time, not recording time. Asserted by the client and never verified: it carries no retention weight, and `CHRN-22`'s pruner reads `captured_at` alone. Display only, and once set on a memo it is as immutable as `captured_at` — a replay or a second delivery path never revises it (CHRN-18 §4, CHRN-118). 
-  ///
-  /// Please note: This property should have been non-nullable! Since the specification file
-  /// does not include a default value (using the "default:" property), however, the generated
-  /// source code must fall back to having a nullable type.
-  /// Consider adding a "default:" property in the specification file to hide this note.
-  ///
+  /// When a person says this was recorded — offline capture's answer to `captured_at` being arrival time, not recording time. Asserted by the client and never verified: it carries no retention weight, and `CHRN-22`'s pruner reads `captured_at` alone. Display only, and once set on a memo it is as immutable as `captured_at` — a replay or a second delivery path never revises it (CHRN-18 §4, CHRN-118).  Nullable rather than merely optional, because a client that always emits its declaration's keys — the generated Dart client does, matching `retention` and `original_filename`'s existing shape — sends `\"recorded_at\": null` for a capture with no opinion, not an omitted key. 
   DateTime? recordedAt;
 
   @override
