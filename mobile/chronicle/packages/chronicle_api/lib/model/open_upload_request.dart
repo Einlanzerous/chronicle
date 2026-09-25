@@ -18,6 +18,7 @@ class OpenUploadRequest {
     required this.byteSize,
     this.retention,
     this.originalFilename,
+    this.recordedAt,
   });
 
   /// Minted per capture and persisted by the client BEFORE the request goes out, so an HTTP retry is a replay rather than a second memo. 
@@ -40,13 +41,17 @@ class OpenUploadRequest {
   ///
   String? originalFilename;
 
+  /// When a person says this was recorded — offline capture's answer to `captured_at` being arrival time, not recording time. Asserted by the client and never verified: it carries no retention weight, and `CHRN-22`'s pruner reads `captured_at` alone. Display only, and once set on a memo it is as immutable as `captured_at` — a replay or a second delivery path never revises it (CHRN-18 §4, CHRN-118).  Nullable rather than merely optional, because a client that always emits its declaration's keys — the generated Dart client does, matching `retention` and `original_filename`'s existing shape — sends `\"recorded_at\": null` for a capture with no opinion, not an omitted key. 
+  DateTime? recordedAt;
+
   @override
   bool operator ==(Object other) => identical(this, other) || other is OpenUploadRequest &&
     other.idempotencyKey == idempotencyKey &&
     other.contentHash == contentHash &&
     other.byteSize == byteSize &&
     other.retention == retention &&
-    other.originalFilename == originalFilename;
+    other.originalFilename == originalFilename &&
+    other.recordedAt == recordedAt;
 
   @override
   int get hashCode =>
@@ -55,10 +60,11 @@ class OpenUploadRequest {
     (contentHash.hashCode) +
     (byteSize.hashCode) +
     (retention == null ? 0 : retention!.hashCode) +
-    (originalFilename == null ? 0 : originalFilename!.hashCode);
+    (originalFilename == null ? 0 : originalFilename!.hashCode) +
+    (recordedAt == null ? 0 : recordedAt!.hashCode);
 
   @override
-  String toString() => 'OpenUploadRequest[idempotencyKey=$idempotencyKey, contentHash=$contentHash, byteSize=$byteSize, retention=$retention, originalFilename=$originalFilename]';
+  String toString() => 'OpenUploadRequest[idempotencyKey=$idempotencyKey, contentHash=$contentHash, byteSize=$byteSize, retention=$retention, originalFilename=$originalFilename, recordedAt=$recordedAt]';
 
   Map<String, dynamic> toJson() {
     final json = <String, dynamic>{};
@@ -74,6 +80,11 @@ class OpenUploadRequest {
       json[r'original_filename'] = this.originalFilename;
     } else {
       json[r'original_filename'] = null;
+    }
+    if (this.recordedAt != null) {
+      json[r'recorded_at'] = this.recordedAt!.toUtc().toIso8601String();
+    } else {
+      json[r'recorded_at'] = null;
     }
     return json;
   }
@@ -104,6 +115,7 @@ class OpenUploadRequest {
         byteSize: mapValueOfType<int>(json, r'byte_size')!,
         retention: OpenUploadRequestRetentionEnum.fromJson(json[r'retention']),
         originalFilename: mapValueOfType<String>(json, r'original_filename'),
+        recordedAt: mapDateTime(json, r'recorded_at', r''),
       );
     }
     return null;

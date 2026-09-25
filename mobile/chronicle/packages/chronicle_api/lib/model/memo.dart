@@ -19,6 +19,7 @@ class Memo {
     required this.contentHash,
     required this.byteSize,
     required this.capturedAt,
+    required this.recordedAt,
     required this.audioPruned,
     required this.retentionStatus,
     required this.prunesAt,
@@ -41,6 +42,9 @@ class Memo {
   int byteSize;
 
   DateTime capturedAt;
+
+  /// When a person says this was recorded, client-asserted and never verified. Null for a memo whose arrival never sent one — every memo captured before CHRN-118, and any watcher delivery. Display only: it carries no retention weight and is not read by the pruner or by `prunes_at`, which stay on `captured_at`. 
+  DateTime? recordedAt;
 
   /// The recording is gone and the transcript remains. Never true without a durable transcript — that predicate, not the calendar, is what gates deletion. 
   bool audioPruned;
@@ -77,6 +81,7 @@ class Memo {
     other.contentHash == contentHash &&
     other.byteSize == byteSize &&
     other.capturedAt == capturedAt &&
+    other.recordedAt == recordedAt &&
     other.audioPruned == audioPruned &&
     other.retentionStatus == retentionStatus &&
     other.prunesAt == prunesAt &&
@@ -95,6 +100,7 @@ class Memo {
     (contentHash.hashCode) +
     (byteSize.hashCode) +
     (capturedAt.hashCode) +
+    (recordedAt == null ? 0 : recordedAt!.hashCode) +
     (audioPruned.hashCode) +
     (retentionStatus.hashCode) +
     (prunesAt == null ? 0 : prunesAt!.hashCode) +
@@ -105,7 +111,7 @@ class Memo {
     (originalFilename == null ? 0 : originalFilename!.hashCode);
 
   @override
-  String toString() => 'Memo[id=$id, state=$state, retention=$retention, contentHash=$contentHash, byteSize=$byteSize, capturedAt=$capturedAt, audioPruned=$audioPruned, retentionStatus=$retentionStatus, prunesAt=$prunesAt, audioPrunedAt=$audioPrunedAt, durationMs=$durationMs, codec=$codec, sampleRateHz=$sampleRateHz, originalFilename=$originalFilename]';
+  String toString() => 'Memo[id=$id, state=$state, retention=$retention, contentHash=$contentHash, byteSize=$byteSize, capturedAt=$capturedAt, recordedAt=$recordedAt, audioPruned=$audioPruned, retentionStatus=$retentionStatus, prunesAt=$prunesAt, audioPrunedAt=$audioPrunedAt, durationMs=$durationMs, codec=$codec, sampleRateHz=$sampleRateHz, originalFilename=$originalFilename]';
 
   Map<String, dynamic> toJson() {
     final json = <String, dynamic>{};
@@ -115,6 +121,11 @@ class Memo {
       json[r'content_hash'] = this.contentHash;
       json[r'byte_size'] = this.byteSize;
       json[r'captured_at'] = this.capturedAt.toUtc().toIso8601String();
+    if (this.recordedAt != null) {
+      json[r'recorded_at'] = this.recordedAt!.toUtc().toIso8601String();
+    } else {
+      json[r'recorded_at'] = null;
+    }
       json[r'audio_pruned'] = this.audioPruned;
       json[r'retention_status'] = this.retentionStatus;
     if (this.prunesAt != null) {
@@ -173,6 +184,7 @@ class Memo {
         assert(json[r'byte_size'] != null, 'Required key "Memo[byte_size]" has a null value in JSON.');
         assert(json.containsKey(r'captured_at'), 'Required key "Memo[captured_at]" is missing from JSON.');
         assert(json[r'captured_at'] != null, 'Required key "Memo[captured_at]" has a null value in JSON.');
+        assert(json.containsKey(r'recorded_at'), 'Required key "Memo[recorded_at]" is missing from JSON.');
         assert(json.containsKey(r'audio_pruned'), 'Required key "Memo[audio_pruned]" is missing from JSON.');
         assert(json[r'audio_pruned'] != null, 'Required key "Memo[audio_pruned]" has a null value in JSON.');
         assert(json.containsKey(r'retention_status'), 'Required key "Memo[retention_status]" is missing from JSON.');
@@ -192,6 +204,7 @@ class Memo {
         contentHash: mapValueOfType<String>(json, r'content_hash')!,
         byteSize: mapValueOfType<int>(json, r'byte_size')!,
         capturedAt: mapDateTime(json, r'captured_at', r'')!,
+        recordedAt: mapDateTime(json, r'recorded_at', r''),
         audioPruned: mapValueOfType<bool>(json, r'audio_pruned')!,
         retentionStatus: mapValueOfType<String>(json, r'retention_status')!,
         prunesAt: mapDateTime(json, r'prunes_at', r''),
@@ -253,6 +266,7 @@ class Memo {
     'content_hash',
     'byte_size',
     'captured_at',
+    'recorded_at',
     'audio_pruned',
     'retention_status',
     'prunes_at',

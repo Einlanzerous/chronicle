@@ -47,6 +47,11 @@ void main() {
       expect(record!.status, QueueStatus.acknowledged);
       expect(record.memoId, server.memos.single.id);
       expect(record.acknowledgedAt, isNotNull);
+      // CHRN-118: the capture's own startedAt reaches the memo as
+      // recorded_at, unchanged -- display-only, never this client's own
+      // retention clock (QueueRecord.enqueuedAt's doc comment already says
+      // so).
+      expect(server.memos.single.recordedAt, capture.capture.startedAt);
     });
 
     test('ten captures drain sequentially, oldest startedAt first, all acknowledged', () async {
@@ -659,6 +664,7 @@ void main() {
         contentHash: 'not-this-captures-hash',
         byteSize: 999,
         capturedAt: DateTime.now().toUtc(),
+        recordedAt: null,
         audioPruned: false,
         retentionStatus: 'scheduled',
         prunesAt: null,
@@ -710,6 +716,7 @@ class _StaticTransport implements UploadTransport {
     required String idempotencyKey,
     required String contentHash,
     required int byteSize,
+    required DateTime recordedAt,
     String? retention,
   }) async =>
       state;

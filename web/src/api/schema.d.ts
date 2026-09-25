@@ -321,8 +321,27 @@ export interface paths {
          * @description `idempotency_key` is minted per capture and persisted by the client
          *     BEFORE the request goes out, so an HTTP retry is a replay rather than a
          *     second memo. A replay — same key, same declaration — answers `200` with
-         *     the existing session; a mismatch answers `409` and the client mints a
-         *     fresh key.
+         *     the existing session.
+         *
+         *     **A mismatch answers `409`, and it can happen three ways, at two
+         *     different depths.** While a session is still open under that key, a
+         *     different declaration is caught right here, before anything is
+         *     transferred: this call's own session-level check, the
+         *     `idempotency_key_reused` case of `UploadConflict`.
+         *
+         *     Once that session has finished — its memo committed, its row
+         *     cleared — the key is no longer live at that level, but it is still
+         *     recorded against the memo it produced. Re-presenting it against
+         *     different content then depends on whether these bytes are already on
+         *     disk: if they are (or the audio was pruned), `Open` commits
+         *     immediately, and the SAME `idempotency_key_reused` shape answers
+         *     `409` from this very call — no transfer, no second request, just a
+         *     deeper check than the session-level one above. Otherwise a fresh
+         *     session opens (`201`) and the reuse is only caught at *finalise*,
+         *     after the whole file has been transferred — ordinarily the `PATCH`
+         *     that completes it, but a `GET` polling a resumed session, or even
+         *     this `POST` reopening one whose bytes were already fully staged, can
+         *     reach it too.
          */
         post: operations["openUpload"];
         delete?: never;
@@ -1567,6 +1586,22 @@ export interface components {
              */
             retention?: "discard_now" | "days_30" | "forever";
             original_filename?: string;
+            /**
+             * Format: date-time
+             * @description When a person says this was recorded — offline capture's answer to
+             *     `captured_at` being arrival time, not recording time. Asserted by
+             *     the client and never verified: it carries no retention weight, and
+             *     `CHRN-22`'s pruner reads `captured_at` alone. Display only, and
+             *     once set on a memo it is as immutable as `captured_at` — a replay
+             *     or a second delivery path never revises it (CHRN-18 §4, CHRN-118).
+             *
+             *     Nullable rather than merely optional, because a client that
+             *     always emits its declaration's keys — the generated Dart client
+             *     does, matching `retention` and `original_filename`'s existing
+             *     shape — sends `"recorded_at": null` for a capture with no
+             *     opinion, not an omitted key.
+             */
+            recorded_at?: string | null;
         };
         /**
          * @description Where an upload got to. The same shape answers the successful cases and
@@ -1622,6 +1657,15 @@ export interface components {
             byte_size: number;
             /** Format: date-time */
             captured_at: string;
+            /**
+             * Format: date-time
+             * @description When a person says this was recorded, client-asserted and never
+             *     verified. Null for a memo whose arrival never sent one — every
+             *     memo captured before CHRN-118, and any watcher delivery. Display
+             *     only: it carries no retention weight and is not read by the
+             *     pruner or by `prunes_at`, which stay on `captured_at`.
+             */
+            recorded_at: string | null;
             /**
              * @description The recording is gone and the transcript remains. Never true without
              *     a durable transcript — that predicate, not the calendar, is what
@@ -1686,9 +1730,12 @@ export interface components {
             memo_id: string;
             /**
              * Format: date-time
-             * @description When it was recorded. Immutable — `CH002` refuses an UPDATE that
-             *     moves it — which is also why it is what the audio stream's
-             *     `Last-Modified` is built from.
+             * @description When Chronicle first saw the bytes — arrival time, not recording
+             *     time (CHRN-118 gave the two names separate meanings; this one is
+             *     **not** `recorded_at`, and `MemoProvenance` does not carry that
+             *     field). Immutable — `CH002` refuses an UPDATE that moves it —
+             *     which is also why it is what the audio stream's `Last-Modified`
+             *     is built from.
              */
             captured_at: string;
             /**

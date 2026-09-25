@@ -101,6 +101,20 @@ hash. Only a key the client chose before it started can answer that.
 Matching the estate: the header is `Idempotency-Key`, as in the Switchyard call
 vox-dictate made. Same name, same namespace, one meaning.
 
+> **[rev 3] The shipped shape is not a header — it never was one.**
+> `internal/api/upload.go`'s `uploadOpenRequest.IdempotencyKey` carries
+> `json:"idempotency_key"` and is read out of the JSON body by
+> `decodeJSON`/`decodeJSONLimit`, and `openapi.yaml`'s `OpenUploadRequest`
+> agrees: `idempotency_key` is a body field, never a header. Found while
+> planning CHRN-61 and corrected by CHRN-118. Left standing rather than
+> rewritten, per this document's own pattern: "same name, same namespace, one
+> meaning" was the argument for matching the estate, and the code took a
+> different, equally defensible shape — a key that is inseparable from the
+> declaration it accompanies (`content_hash`, `byte_size`) reads more naturally
+> as one JSON object than as a header beside a body. Nothing above this note
+> depended on the transport; the argument is about what the key does, not
+> where it rides.
+
 **[rev] Two deliberate departures from Switchyard's implementation**
 (`switchyard/server/src/lib/idempotency.ts`), stated so they read as choices
 rather than as a half-copied pattern. Switchyard scopes a key to

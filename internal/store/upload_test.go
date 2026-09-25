@@ -144,6 +144,75 @@ func TestUploadCarriesRetentionAndDistinguishesNoOpinion(t *testing.T) {
 	}
 }
 
+// THE SESSION HOP, END TO END, AGAINST REAL POSTGRES ON BOTH SIDES OF IT —
+// CHRN-118. original_filename and retention already prove OpenUpload carries
+// a declaration to a stored tier1.memo_uploads row; this proves recorded_at
+// makes the SAME trip AND survives the second hop finalise takes: the row
+// GetUpload reads back is what an Arrival gets built from, not the request
+// that opened the session. Deleting recorded_at from uploadColumns, scanUpload
+// or the Open INSERT would leave every OTHER upload test green — this is the
+// one that would not.
+func TestUploadCarriesRecordedAtAcrossBothHops(t *testing.T) {
+	s, ctx := newTestStore(t)
+	author := newAuthor(t, s, ctx, "uploader@example.com")
+
+	declared := time.Now().Add(-10 * 24 * time.Hour)
+	u := newUpload(author, uploadKeyA, "with a recorded_at", 19)
+	u.RecordedAt = &declared
+	opened, _, err := s.OpenUpload(ctx, u)
+	if err != nil {
+		t.Fatalf("OpenUpload: %v", err)
+	}
+	if opened.RecordedAt == nil || opened.RecordedAt.Sub(declared).Abs() > time.Second {
+		t.Fatalf("OpenUpload returned recorded_at = %v, want %v", opened.RecordedAt, declared)
+	}
+
+	// An independent read, not just the INSERT's own RETURNING — the same
+	// SELECT path a resumed session or a finalise reaches through.
+	reread, err := s.GetUpload(ctx, opened.ID)
+	if err != nil {
+		t.Fatalf("GetUpload: %v", err)
+	}
+	if reread.RecordedAt == nil || reread.RecordedAt.Sub(declared).Abs() > time.Second {
+		t.Fatalf("GetUpload returned recorded_at = %v, want %v", reread.RecordedAt, declared)
+	}
+
+	// A resume with a DIFFERENT recorded_at keeps the first — the same
+	// "stored declaration wins" rule retention and original_filename already
+	// get, uncompared rather than refused.
+	resumeAt := time.Now().Add(24 * time.Hour)
+	resumeAttempt := newUpload(author, uploadKeyA, "with a recorded_at", 19)
+	resumeAttempt.RecordedAt = &resumeAt
+	resumed, created, err := s.OpenUpload(ctx, resumeAttempt)
+	if err != nil {
+		t.Fatalf("OpenUpload (resume): %v", err)
+	}
+	if created {
+		t.Fatal("a resume under the same key was reported as a new session")
+	}
+	if resumed.RecordedAt == nil || resumed.RecordedAt.Sub(declared).Abs() > time.Second {
+		t.Fatalf("a resume changed recorded_at to %v, want the original %v", resumed.RecordedAt, declared)
+	}
+
+	// The second hop: build the Arrival the way upload.Open's commit() does —
+	// from the STORED Upload GetUpload returned, never from a fresh request —
+	// and confirm the memo it produces carries the same instant.
+	res, err := s.IngestMemo(ctx, Arrival{
+		AuthorID:       reread.AuthorID,
+		ContentHash:    reread.ContentHash,
+		ByteSize:       reread.ByteSize,
+		Source:         SourceUpload,
+		IdempotencyKey: reread.IdempotencyKey,
+		RecordedAt:     reread.RecordedAt,
+	})
+	if err != nil {
+		t.Fatalf("IngestMemo: %v", err)
+	}
+	if res.Memo.RecordedAt == nil || res.Memo.RecordedAt.Sub(declared).Abs() > time.Second {
+		t.Fatalf("the memo's recorded_at = %v, want %v", res.Memo.RecordedAt, declared)
+	}
+}
+
 // Expiry runs from last activity, not from creation, so a slow upload that is
 // still progressing is never stale.
 func TestStaleUploadsMeasureIdlenessNotAge(t *testing.T) {

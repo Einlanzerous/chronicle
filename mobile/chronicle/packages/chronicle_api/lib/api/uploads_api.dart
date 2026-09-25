@@ -192,7 +192,7 @@ class UploadsApi {
 
   /// Declare an upload and open a session for it.
   ///
-  /// `idempotency_key` is minted per capture and persisted by the client BEFORE the request goes out, so an HTTP retry is a replay rather than a second memo. A replay — same key, same declaration — answers `200` with the existing session; a mismatch answers `409` and the client mints a fresh key. 
+  /// `idempotency_key` is minted per capture and persisted by the client BEFORE the request goes out, so an HTTP retry is a replay rather than a second memo. A replay — same key, same declaration — answers `200` with the existing session.  **A mismatch answers `409`, and it can happen three ways, at two different depths.** While a session is still open under that key, a different declaration is caught right here, before anything is transferred: this call's own session-level check, the `idempotency_key_reused` case of `UploadConflict`.  Once that session has finished — its memo committed, its row cleared — the key is no longer live at that level, but it is still recorded against the memo it produced. Re-presenting it against different content then depends on whether these bytes are already on disk: if they are (or the audio was pruned), `Open` commits immediately, and the SAME `idempotency_key_reused` shape answers `409` from this very call — no transfer, no second request, just a deeper check than the session-level one above. Otherwise a fresh session opens (`201`) and the reuse is only caught at *finalise*, after the whole file has been transferred — ordinarily the `PATCH` that completes it, but a `GET` polling a resumed session, or even this `POST` reopening one whose bytes were already fully staged, can reach it too. 
   ///
   /// Note: This method returns the HTTP [Response].
   ///
@@ -227,7 +227,7 @@ class UploadsApi {
 
   /// Declare an upload and open a session for it.
   ///
-  /// `idempotency_key` is minted per capture and persisted by the client BEFORE the request goes out, so an HTTP retry is a replay rather than a second memo. A replay — same key, same declaration — answers `200` with the existing session; a mismatch answers `409` and the client mints a fresh key. 
+  /// `idempotency_key` is minted per capture and persisted by the client BEFORE the request goes out, so an HTTP retry is a replay rather than a second memo. A replay — same key, same declaration — answers `200` with the existing session.  **A mismatch answers `409`, and it can happen three ways, at two different depths.** While a session is still open under that key, a different declaration is caught right here, before anything is transferred: this call's own session-level check, the `idempotency_key_reused` case of `UploadConflict`.  Once that session has finished — its memo committed, its row cleared — the key is no longer live at that level, but it is still recorded against the memo it produced. Re-presenting it against different content then depends on whether these bytes are already on disk: if they are (or the audio was pruned), `Open` commits immediately, and the SAME `idempotency_key_reused` shape answers `409` from this very call — no transfer, no second request, just a deeper check than the session-level one above. Otherwise a fresh session opens (`201`) and the reuse is only caught at *finalise*, after the whole file has been transferred — ordinarily the `PATCH` that completes it, but a `GET` polling a resumed session, or even this `POST` reopening one whose bytes were already fully staged, can reach it too. 
   ///
   /// Parameters:
   ///

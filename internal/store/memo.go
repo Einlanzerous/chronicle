@@ -84,7 +84,7 @@ var ErrAuthorHasMemos = errors.New("store: account has memos and cannot be remov
 // typed errors so a handler can answer 409 rather than 500.
 var (
 	ErrIllegalTransition = errors.New("store: illegal memo state transition")
-	ErrMemoImmutable     = errors.New("store: memo identity and captured_at are immutable")
+	ErrMemoImmutable     = errors.New("store: memo identity, captured_at and recorded_at are immutable")
 )
 
 // Memo is one recording. The audio behind it may be gone — audio_pruned_at set
@@ -96,6 +96,14 @@ type Memo struct {
 	ContentHash string
 	ByteSize    int64
 	CapturedAt  time.Time
+
+	// RecordedAt is when a person says this was recorded, asserted by the
+	// client and never verified — display only, and never read by the
+	// pruner. Nil for every memo that predates CHRN-118 or whose arrival
+	// never asserted one. Set once, at the arrival that creates the row, and
+	// immutable after (CH002): see IngestMemo.
+	RecordedAt *time.Time
+
 	State       string
 	StateReason *string
 
@@ -143,6 +151,11 @@ type Arrival struct {
 	Retention string
 
 	OriginalFilename string
+
+	// RecordedAt is nil for the watcher path, which has no way to assert one —
+	// the same reason it never carries an IdempotencyKey. Applied only when
+	// this arrival creates the memo (CHRN-118): see IngestMemo.
+	RecordedAt *time.Time
 }
 
 // IngestResult is what one delivery produced.
@@ -163,14 +176,14 @@ type IngestResult struct {
 	Collapsed bool
 }
 
-const memoColumns = `id, author_id, content_hash, byte_size, captured_at,
+const memoColumns = `id, author_id, content_hash, byte_size, captured_at, recorded_at,
 	state, state_reason, retention, audio_pruned_at,
 	duration_ms, codec, sample_rate_hz, original_filename,
 	created_at, updated_at`
 
 func scanMemo(row pgx.Row) (Memo, error) {
 	var m Memo
-	err := row.Scan(&m.ID, &m.AuthorID, &m.ContentHash, &m.ByteSize, &m.CapturedAt,
+	err := row.Scan(&m.ID, &m.AuthorID, &m.ContentHash, &m.ByteSize, &m.CapturedAt, &m.RecordedAt,
 		&m.State, &m.StateReason, &m.Retention, &m.AudioPrunedAt,
 		&m.DurationMS, &m.Codec, &m.SampleRateHz, &m.OriginalFilename,
 		&m.CreatedAt, &m.UpdatedAt)
@@ -280,16 +293,20 @@ func (s *Store) IngestMemo(ctx context.Context, in Arrival) (IngestResult, error
 	// trigger, no updated_at bump.
 	retention := nullable(in.Retention)
 	var memoID uuid.UUID
+	// recorded_at is in the INSERT list only — never in the DO UPDATE's SET —
+	// so a re-delivery or a second arrival path never revises it. The same
+	// treatment original_filename already gets here, and CHRN-118's ruling:
+	// first writer wins, and it is as immutable as captured_at.
 	err = tx.QueryRow(ctx, `
-		INSERT INTO tier2.memos (author_id, content_hash, byte_size, retention, original_filename)
-		VALUES ($1, $2, $3, COALESCE($4, 'days_30'), $5)
+		INSERT INTO tier2.memos (author_id, content_hash, byte_size, retention, original_filename, recorded_at)
+		VALUES ($1, $2, $3, COALESCE($4, 'days_30'), $5, $6)
 		ON CONFLICT (author_id, content_hash) DO UPDATE
 		   SET retention = $4
 		 WHERE $4 IS NOT NULL
 		   AND tier2.memos.state <> 'discarded'
 		   AND tier2.retention_rank($4) > tier2.retention_rank(tier2.memos.retention)
 		RETURNING id`,
-		in.AuthorID, in.ContentHash, in.ByteSize, retention, nullable(in.OriginalFilename)).Scan(&memoID)
+		in.AuthorID, in.ContentHash, in.ByteSize, retention, nullable(in.OriginalFilename), in.RecordedAt).Scan(&memoID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// No update fired. Safe to read the row plainly: ON CONFLICT has
 		// already waited out any competing transaction, so it is committed

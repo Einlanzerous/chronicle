@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -304,6 +305,19 @@ func TestGuardRejectsFromRawSQL(t *testing.T) {
 	}
 	id := res.Memo.ID
 
+	// A second fixture, created WITH a recorded_at, so the value-to-value and
+	// value-to-NULL directions have a non-NULL starting point to mutate —
+	// the NULL-to-value case above uses id, which has none.
+	recordedAt := time.Now().Add(-time.Hour)
+	withRecordedAt, err := s.IngestMemo(ctx, Arrival{
+		AuthorID: author, ContentHash: hashOf("guarded, recorded"), ByteSize: 32,
+		Source: SourceUpload, IdempotencyKey: "k-ffffffffffffffff", RecordedAt: &recordedAt,
+	})
+	if err != nil {
+		t.Fatalf("ingest with recorded_at: %v", err)
+	}
+	recordedID := withRecordedAt.Memo.ID
+
 	cases := []struct {
 		name, sqlstate, query string
 		args                  []any
@@ -322,6 +336,25 @@ func TestGuardRejectsFromRawSQL(t *testing.T) {
 			name: "captured_at is immutable", sqlstate: pgMemoImmutable,
 			query: `UPDATE tier2.memos SET captured_at = now() - interval '99 days' WHERE id = $1`,
 			args:  []any{id},
+		},
+		{
+			// CHRN-118: recorded_at gets the same treatment as captured_at,
+			// including on a memo whose recorded_at is still NULL — a bug
+			// that only guarded the value-to-value case would let a first
+			// assertion in through raw SQL after the row already exists.
+			name: "recorded_at is immutable (NULL to value)", sqlstate: pgMemoImmutable,
+			query: `UPDATE tier2.memos SET recorded_at = now() WHERE id = $1`,
+			args:  []any{id},
+		},
+		{
+			name: "recorded_at is immutable (value to a different value)", sqlstate: pgMemoImmutable,
+			query: `UPDATE tier2.memos SET recorded_at = recorded_at + interval '1 day' WHERE id = $1`,
+			args:  []any{recordedID},
+		},
+		{
+			name: "recorded_at is immutable (value to NULL)", sqlstate: pgMemoImmutable,
+			query: `UPDATE tier2.memos SET recorded_at = NULL WHERE id = $1`,
+			args:  []any{recordedID},
 		},
 		{
 			name: "content_hash is immutable", sqlstate: pgMemoImmutable,
@@ -358,6 +391,18 @@ func TestGuardRejectsFromRawSQL(t *testing.T) {
 				t.Errorf("SQLSTATE = %q, want %q (error: %v)", got, tc.sqlstate, err)
 			}
 		})
+	}
+
+	// A LEGAL transition on a row that carries a recorded_at must still pass —
+	// the guard's new arm compares NEW.recorded_at to OLD.recorded_at, and an
+	// ordinary state-only UPDATE leaves it untouched, so this must not trip
+	// CH002 just because the column happens to be non-NULL.
+	advanced, err := s.AdvanceMemoState(ctx, recordedID, StateCaptured, StateQueued, "")
+	if err != nil {
+		t.Fatalf("a legal transition on a memo with recorded_at set was rejected: %v", err)
+	}
+	if advanced.RecordedAt == nil || advanced.RecordedAt.Sub(recordedAt).Abs() > time.Second {
+		t.Errorf("recorded_at changed across a legal state transition: got %v, want %v", advanced.RecordedAt, recordedAt)
 	}
 
 	// And the typed error, for the path that goes through Go.

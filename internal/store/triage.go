@@ -114,7 +114,7 @@ func (s *Store) UntriagedMemos(ctx context.Context, authorID uuid.UUID, limit in
 	for rows.Next() {
 		var it UntriagedMemo
 		var m Memo
-		if err := rows.Scan(&m.ID, &m.AuthorID, &m.ContentHash, &m.ByteSize, &m.CapturedAt,
+		if err := rows.Scan(&m.ID, &m.AuthorID, &m.ContentHash, &m.ByteSize, &m.CapturedAt, &m.RecordedAt,
 			&m.State, &m.StateReason, &m.Retention, &m.AudioPrunedAt,
 			&m.DurationMS, &m.Codec, &m.SampleRateHz, &m.OriginalFilename,
 			&m.CreatedAt, &m.UpdatedAt, &it.Excerpt); err != nil {

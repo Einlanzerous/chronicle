@@ -19,6 +19,7 @@ Memo _memo({String id = 'memo-1', String hash = 'abc123', int size = 10}) => Mem
       contentHash: hash,
       byteSize: size,
       capturedAt: DateTime.now(),
+      recordedAt: null,
       audioPruned: false,
       retentionStatus: 'active',
       prunesAt: null,

@@ -901,8 +901,15 @@ type Memo struct {
 	// on exactly the memo a person is most likely to be looking at when
 	// they wonder what happened to it. The past date is `audio_pruned_at`
 	// below; this one only ever names a future sweep.
-	PrunesAt  *time.Time    `json:"prunes_at"`
-	Retention MemoRetention `json:"retention"`
+	PrunesAt *time.Time `json:"prunes_at"`
+
+	// RecordedAt When a person says this was recorded, client-asserted and never
+	// verified. Null for a memo whose arrival never sent one — every
+	// memo captured before CHRN-118, and any watcher delivery. Display
+	// only: it carries no retention weight and is not read by the
+	// pruner or by `prunes_at`, which stay on `captured_at`.
+	RecordedAt *time.Time    `json:"recorded_at"`
+	Retention  MemoRetention `json:"retention"`
 
 	// RetentionStatus What will happen to this memo's audio — the same clause the pruner sweeps with.
 	RetentionStatus string `json:"retention_status"`
@@ -943,9 +950,12 @@ type MemoProvenance struct {
 	// optimistically.
 	AudioReadable bool `json:"audio_readable"`
 
-	// CapturedAt When it was recorded. Immutable — `CH002` refuses an UPDATE that
-	// moves it — which is also why it is what the audio stream's
-	// `Last-Modified` is built from.
+	// CapturedAt When Chronicle first saw the bytes — arrival time, not recording
+	// time (CHRN-118 gave the two names separate meanings; this one is
+	// **not** `recorded_at`, and `MemoProvenance` does not carry that
+	// field). Immutable — `CH002` refuses an UPDATE that moves it —
+	// which is also why it is what the audio stream's `Last-Modified`
+	// is built from.
 	CapturedAt time.Time `json:"captured_at"`
 
 	// DurationMs How long the recording is. Null for a memo with neither a header
@@ -1214,6 +1224,20 @@ type OpenUploadRequest struct {
 	// goes out, so an HTTP retry is a replay rather than a second memo.
 	IdempotencyKey   string  `json:"idempotency_key"`
 	OriginalFilename *string `json:"original_filename,omitempty"`
+
+	// RecordedAt When a person says this was recorded — offline capture's answer to
+	// `captured_at` being arrival time, not recording time. Asserted by
+	// the client and never verified: it carries no retention weight, and
+	// `CHRN-22`'s pruner reads `captured_at` alone. Display only, and
+	// once set on a memo it is as immutable as `captured_at` — a replay
+	// or a second delivery path never revises it (CHRN-18 §4, CHRN-118).
+	//
+	// Nullable rather than merely optional, because a client that
+	// always emits its declaration's keys — the generated Dart client
+	// does, matching `retention` and `original_filename`'s existing
+	// shape — sends `"recorded_at": null` for a capture with no
+	// opinion, not an omitted key.
+	RecordedAt *time.Time `json:"recorded_at,omitempty"`
 
 	// Retention Omitted means the deployment default. `days_30` is pruned by policy
 	// once a durable transcript exists — never on the calendar alone,

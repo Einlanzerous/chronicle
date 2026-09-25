@@ -38,10 +38,12 @@ void main() {
         ..client = client;
       final transport = UploadsApiTransport(UploadsApi(apiClient));
 
+      final recordedAt = DateTime.utc(2026, 9, 15, 8, 30);
       final state = await transport.openUpload(
         idempotencyKey: 'chr-cap-a',
         contentHash: 'deadbeef',
         byteSize: 10,
+        recordedAt: recordedAt,
         retention: 'days_30',
       );
 
@@ -57,6 +59,7 @@ void main() {
       expect(body['content_hash'], 'deadbeef');
       expect(body['byte_size'], 10);
       expect(body['retention'], 'days_30');
+      expect(body['recorded_at'], recordedAt.toIso8601String());
     });
 
     test('no retention opinion is OMITTED, never sent as a default', () async {
@@ -78,7 +81,12 @@ void main() {
         ..client = client;
       final transport = UploadsApiTransport(UploadsApi(apiClient));
 
-      await transport.openUpload(idempotencyKey: 'chr-cap-a', contentHash: 'deadbeef', byteSize: 10);
+      await transport.openUpload(
+        idempotencyKey: 'chr-cap-a',
+        contentHash: 'deadbeef',
+        byteSize: 10,
+        recordedAt: DateTime.utc(2026, 9, 15, 8, 30),
+      );
 
       final body = jsonDecode(captured!.body) as Map<String, Object?>;
       expect(body.containsKey('retention'), isTrue);
@@ -96,7 +104,12 @@ void main() {
       final transport = UploadsApiTransport(UploadsApi(apiClient));
 
       await expectLater(
-        transport.openUpload(idempotencyKey: 'a', contentHash: 'x', byteSize: 1),
+        transport.openUpload(
+          idempotencyKey: 'a',
+          contentHash: 'x',
+          byteSize: 1,
+          recordedAt: DateTime.utc(2026, 9, 15, 8, 30),
+        ),
         throwsA(isA<ApiException>()
             .having((e) => e.code, 'code', 409)
             .having((e) => e.message, 'message', contains('idempotency_key_reused'))),
@@ -159,6 +172,7 @@ void main() {
               'content_hash': 'abc',
               'byte_size': 108,
               'captured_at': '2026-01-01T00:00:00Z',
+              'recorded_at': null,
               'audio_pruned': false,
               'retention_status': 'scheduled',
               'prunes_at': null,

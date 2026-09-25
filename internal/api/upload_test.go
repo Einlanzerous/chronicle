@@ -145,6 +145,10 @@ func (f *uploadIngest) IngestMemo(_ context.Context, in store.Arrival) (store.In
 			ID: uuid.New(), AuthorID: in.AuthorID, ContentHash: in.ContentHash,
 			ByteSize: in.ByteSize, State: store.StateCaptured,
 			Retention: store.RetentionDays30, CapturedAt: time.Now(),
+			// First writer wins (CHRN-118): only set on the arrival that
+			// creates the memo, never revised by one that finds it already
+			// there — the fake mirrors IngestMemo's INSERT-only column.
+			RecordedAt: in.RecordedAt,
 		}
 		if in.Retention != "" {
 			m.Retention = in.Retention
@@ -625,6 +629,121 @@ func TestACompletedUploadReportsTheMetadataItJustRecorded(t *testing.T) {
 	}
 	if done.Memo.Codec == nil || *done.Memo.Codec != "opus" {
 		t.Fatalf("codec %v, want opus", done.Memo.Codec)
+	}
+}
+
+// CHRN-118's Done-when: an upload carrying recorded_at produces a memo whose
+// API representation returns it. decodeUpload's apitest.Conform call is what
+// proves the shape matches openapi.yaml, not just that Go's own struct field
+// round-tripped.
+func TestOpenUploadCarriesRecordedAtToTheMemo(t *testing.T) {
+	r := newUploadRig(t)
+	content := audioBytes(2000)
+	recordedAt := time.Date(2026, 9, 15, 8, 30, 0, 0, time.FixedZone("", -7*3600))
+
+	body := fmt.Sprintf(`{"idempotency_key":%q,"content_hash":%q,"byte_size":%d,"recorded_at":%q}`,
+		"key-recorded-at-round-trip", digestOf(content), len(content), recordedAt.Format(time.RFC3339))
+	rec := r.do(jsonReq(http.MethodPost, "/memos/uploads", body))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("open: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	open := decodeUpload(t, "openUpload", rec)
+
+	done := decodeUpload(t, "appendChunk", r.appendChunk(uploadID(open), 0, content))
+	if done.Memo == nil {
+		t.Fatal("no memo on a completed upload")
+	}
+	if done.Memo.RecordedAt == nil || !done.Memo.RecordedAt.Equal(recordedAt) {
+		t.Fatalf("recorded_at = %v, want %v", done.Memo.RecordedAt, recordedAt)
+	}
+}
+
+// A CLIENT THAT SENDS NO OPINION GETS A NULL BACK, not a 400 — the whole
+// reason CHRN-118 exists: decodeJSON's DisallowUnknownFields would refuse an
+// unrecognised field, and the omitted case must not be confused with that.
+func TestOpenUploadWithNoRecordedAtLeavesItNull(t *testing.T) {
+	r := newUploadRig(t)
+	content := audioBytes(500)
+
+	open := r.openUpload(t, "key-no-recorded-at", content)
+	done := decodeUpload(t, "appendChunk", r.appendChunk(uploadID(open), 0, content))
+	if done.Memo == nil {
+		t.Fatal("no memo on a completed upload")
+	}
+	if done.Memo.RecordedAt != nil {
+		t.Fatalf("recorded_at = %v, want nil for an upload that never asserted one", done.Memo.RecordedAt)
+	}
+}
+
+// AN EXPLICIT `null` IS THE SAME AS OMITTED. The generated Dart client always
+// emits the key — `"recorded_at": null` when a capture has no opinion, exactly
+// as it already does for `retention` and `original_filename` — so this is the
+// shape a real client sends, not a hypothetical.
+func TestOpenUploadWithRecordedAtExplicitlyNullLeavesItNull(t *testing.T) {
+	r := newUploadRig(t)
+	content := audioBytes(500)
+
+	body := fmt.Sprintf(`{"idempotency_key":%q,"content_hash":%q,"byte_size":%d,"recorded_at":null}`,
+		"key-recorded-at-explicit-null", digestOf(content), len(content))
+	rec := r.do(jsonReq(http.MethodPost, "/memos/uploads", body))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("open: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	open := decodeUpload(t, "openUpload", rec)
+
+	done := decodeUpload(t, "appendChunk", r.appendChunk(uploadID(open), 0, content))
+	if done.Memo == nil {
+		t.Fatal("no memo on a completed upload")
+	}
+	if done.Memo.RecordedAt != nil {
+		t.Fatalf("recorded_at = %v, want nil for an explicit null", done.Memo.RecordedAt)
+	}
+}
+
+// A VALUE WITH NO OFFSET IS REJECTED, deliberately. Go's time.Time JSON
+// unmarshalling requires RFC 3339 with a zone, which is the whole of the
+// format check openapi.yaml's `recorded_at` needs — this proves that holds
+// rather than assuming it, and pins the refusal as generic (the same 400
+// decodeJSON already answers for any other malformed field) rather than a
+// silently-dropped value.
+func TestOpenUploadRejectsARecordedAtWithNoOffset(t *testing.T) {
+	r := newUploadRig(t)
+	content := audioBytes(500)
+
+	body := fmt.Sprintf(`{"idempotency_key":%q,"content_hash":%q,"byte_size":%d,"recorded_at":"2026-09-15T08:30:00"}`,
+		"key-recorded-at-no-offset", digestOf(content), len(content))
+	rec := r.do(jsonReq(http.MethodPost, "/memos/uploads", body))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, body %s; want 400 for an offset-less recorded_at", rec.Code, rec.Body.String())
+	}
+}
+
+// A recorded_at NEAR THE time.Time ENCODING BOUNDARY is refused with a clean
+// 400, not accepted and left to fail later. pgx decodes a stored timestamptz
+// back into time.Local, so a value near year 0 or year 9999 can round-trip
+// through Postgres fine and only fail time.Time.MarshalJSON once read back in
+// whatever zone the server happens to run in — and by then the memo would
+// already be committed, so the failure would be an empty 2xx body rather than
+// a clean refusal. This proves the refusal happens before any of that, on the
+// declaration alone.
+func TestOpenUploadRejectsARecordedAtNearTheYearBoundary(t *testing.T) {
+	r := newUploadRig(t)
+	content := audioBytes(500)
+
+	for _, tc := range []struct {
+		name, recordedAt string
+	}{
+		{"far future", "9999-12-31T23:59:59-05:00"},
+		{"far past", "0001-01-01T00:00:00+05:00"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := fmt.Sprintf(`{"idempotency_key":%q,"content_hash":%q,"byte_size":%d,"recorded_at":%q}`,
+				"key-recorded-at-boundary-"+tc.name, digestOf(content), len(content), tc.recordedAt)
+			rec := r.do(jsonReq(http.MethodPost, "/memos/uploads", body))
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status %d, body %s; want 400", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
 

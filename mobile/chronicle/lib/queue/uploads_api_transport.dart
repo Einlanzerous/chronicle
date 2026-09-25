@@ -31,6 +31,7 @@ class UploadsApiTransport implements UploadTransport {
     required String idempotencyKey,
     required String contentHash,
     required int byteSize,
+    required DateTime recordedAt,
     String? retention,
   }) async {
     final state = await _api.openUpload(
@@ -38,6 +39,7 @@ class UploadsApiTransport implements UploadTransport {
         idempotencyKey: idempotencyKey,
         contentHash: contentHash,
         byteSize: byteSize,
+        recordedAt: recordedAt,
         retention: _retentionEnum(retention),
       ),
     );
