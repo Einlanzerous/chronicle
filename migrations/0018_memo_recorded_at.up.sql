@@ -1,13 +1,11 @@
 -- 0018_memo_recorded_at — CHRN-118. A display-only, client-asserted
 -- recorded_at, riding beside captured_at and never replacing it.
 --
--- Argued before any code, in Mode B: the Switchyard plan on CHRN-118,
--- revision 1, proposes exactly what this file builds -- first writer wins,
--- no clamping, both its recommended picks. Read that for the argument; this
--- file implements what it recommends. It still awaits approval, which is
--- why this says "argued" rather than "decided" -- a migration comment
--- cannot be corrected once it has shipped, so it does not claim a settled
--- decision this file's own merge would be racing.
+-- Decided before any code, in Mode B: the Switchyard plan on CHRN-118
+-- (revision 5, approved) picked first writer wins and no clamping beyond
+-- the hard technical bound enforced in internal/api/upload.go -- both its
+-- recommended options -- plus shipping the Android sender in this same PR.
+-- Read that plan for the argument; this file implements what it decided.
 --
 -- captured_at is arrival time — when Chronicle first saw the bytes — and it
 -- is the only clock CHRN-22's pruner may run from (CHRN-18 §4). recorded_at
