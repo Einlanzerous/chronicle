@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.22.0](https://github.com/Einlanzerous/chronicle/compare/v1.21.0...v1.22.0) (2026-09-25)
+
+
+### Features
+
+* **api:** carry the recording time to the server, display-only, never the prune clock (CHRN-118) ([#125](https://github.com/Einlanzerous/chronicle/issues/125)) ([141d7db](https://github.com/Einlanzerous/chronicle/commit/141d7dbb68815cc00dbb7dd265a62101f2422296))
+* **mobile:** dismiss an empty capture -- hide, never delete (CHRN-119) ([#126](https://github.com/Einlanzerous/chronicle/issues/126)) ([8e846f4](https://github.com/Einlanzerous/chronicle/commit/8e846f4ff4e8b6a19611ba13ce38c3f286322edd))
+
 ## [1.21.0](https://github.com/Einlanzerous/chronicle/compare/v1.20.0...v1.21.0) (2026-09-22)
 
 
