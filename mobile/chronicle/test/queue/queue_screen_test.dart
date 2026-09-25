@@ -18,6 +18,7 @@ import 'package:chronicle/api/providers.dart';
 import 'package:chronicle/api/server_url.dart';
 import 'package:chronicle/api/session.dart';
 import 'package:chronicle/capture/capture_controller.dart';
+import 'package:chronicle/capture/capture_record.dart';
 import 'package:chronicle/features/queue/queue_screen.dart';
 import 'package:chronicle/queue/engine.dart';
 import 'package:chronicle/queue/queue_controller.dart';
@@ -32,6 +33,19 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'support/capture_fixture.dart';
 import 'support/fake_chronicle_server.dart';
 import 'support/no_recorder.dart';
+
+/// Polls rather than sleeping a fixed amount, for the CHRN-119 dismiss
+/// tests below: `dismiss()` completes on the real event loop, fired and
+/// forgotten from a tap the widget never awaits, so how long it takes
+/// depends on how loaded the machine running the test is.
+Future<void> _pumpUntil(WidgetTester tester, bool Function() condition) async {
+  for (var i = 0; i < 80; i++) {
+    if (condition()) return;
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 25)));
+    await tester.pump();
+  }
+  expect(condition(), isTrue, reason: 'condition not met within 2s of polling');
+}
 
 void main() {
   late Directory root;
@@ -183,5 +197,107 @@ void main() {
     expect(find.text('SENT'), findsOneWidget);
     expect(find.text('NOT SENT — KEY CONFLICT'), findsNothing);
     expect(server.memos, hasLength(1));
+  });
+
+  Future<void> writeEmptyCapture(String id, {DateTime? startedAt}) =>
+      CaptureDir(root, id).writeMeta(CaptureRecord(
+        captureId: id,
+        idempotencyKey: 'chr-cap-$id',
+        startedAt: startedAt ?? DateTime(2026, 1, 1),
+        state: CaptureState.empty,
+      ));
+
+  group('CHRN-119: empty captures on the queue screen', () {
+    testWidgets('an empty capture is listed, with no retry action', (tester) async {
+      final server = FakeChronicleServer();
+      final container = await harness(tester, server, FakeUploadTransport(server));
+      addTearDown(container.dispose);
+
+      await tester.runAsync(() => writeEmptyCapture('e'));
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: const MaterialApp(home: QueueScreen()),
+        ),
+      );
+      await tester.runAsync(
+        () => container.read(captureControllerProvider.notifier).refresh(),
+      );
+      await tester.pump();
+
+      expect(find.text('NOT SENT — EMPTY'), findsOneWidget);
+      expect(find.text('DISMISS'), findsOneWidget);
+      expect(find.text('TRY AGAIN'), findsNothing);
+      expect(find.text('Nothing captured yet.'), findsNothing);
+    });
+
+    testWidgets(
+        'more than three collapse into one summary row that expands in place',
+        (tester) async {
+      final server = FakeChronicleServer();
+      final container = await harness(tester, server, FakeUploadTransport(server));
+      addTearDown(container.dispose);
+
+      await tester.runAsync(() async {
+        for (var i = 0; i < 4; i++) {
+          await writeEmptyCapture('e$i', startedAt: DateTime(2026, 1, 1, i));
+        }
+      });
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: const MaterialApp(home: QueueScreen()),
+        ),
+      );
+      await tester.runAsync(
+        () => container.read(captureControllerProvider.notifier).refresh(),
+      );
+      await tester.pump();
+
+      expect(find.text('4 EMPTY CAPTURES'), findsOneWidget);
+      expect(find.text('NOT SENT — EMPTY'), findsNothing);
+      expect(find.text('DISMISS'), findsNothing);
+
+      await tester.tap(find.text('4 EMPTY CAPTURES'));
+      await tester.pump();
+
+      expect(find.text('4 EMPTY CAPTURES'), findsNothing);
+      expect(find.text('NOT SENT — EMPTY'), findsNWidgets(4));
+      expect(find.text('DISMISS'), findsNWidgets(4));
+    });
+
+    testWidgets('tapping DISMISS removes the row and deletes nothing on disk',
+        (tester) async {
+      final server = FakeChronicleServer();
+      final container = await harness(tester, server, FakeUploadTransport(server));
+      addTearDown(container.dispose);
+
+      await tester.runAsync(() => writeEmptyCapture('e'));
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: const MaterialApp(home: QueueScreen()),
+        ),
+      );
+      await tester.runAsync(
+        () => container.read(captureControllerProvider.notifier).refresh(),
+      );
+      await tester.pump();
+      expect(find.text('NOT SENT — EMPTY'), findsOneWidget);
+
+      await tester.runAsync(() => tester.tap(find.text('DISMISS')));
+      await tester.pump();
+      await _pumpUntil(tester, () => find.text('NOT SENT — EMPTY').evaluate().isEmpty);
+
+      expect(find.text('NOT SENT — EMPTY'), findsNothing);
+      expect(find.text('Nothing captured yet.'), findsOneWidget);
+
+      final capture = CaptureDir(root, 'e');
+      await tester.runAsync(() async {
+        expect(await capture.isDismissed(), isTrue);
+        expect(await capture.dir.exists(), isTrue);
+        expect(await capture.meta.exists(), isTrue);
+      });
+    });
   });
 }

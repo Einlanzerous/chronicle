@@ -6,6 +6,10 @@
 ///     meta.json        written and fsync'd BEFORE recording starts
 ///     lease            heartbeat + owner instance, rewritten by the service
 ///     audio.trimmed    only on a salvage; audio.opus is never edited
+///     dismissed        CHRN-119: present once the person hides an `empty`
+///                       capture from RECENT and the queue screen. Written
+///                       for no other state, and deletes nothing -- see
+///                       `CaptureDir.markDismissed`.
 /// ```
 ///
 /// ## Two things here are load-bearing and neither is obvious
@@ -240,6 +244,7 @@ class CaptureDir {
   File get lease => File('${dir.path}/lease');
   File get audio => File('${dir.path}/audio.opus');
   File get trimmed => File('${dir.path}/audio.trimmed');
+  File get dismissed => File('${dir.path}/dismissed');
 
   /// The file the queue sends: the trimmed stream on a salvage, else the
   /// original.
@@ -283,6 +288,30 @@ class CaptureDir {
     );
     await tmp.rename(meta.path);
   }
+
+  /// Hides this capture from RECENT and the queue screen. Deletes nothing --
+  /// not `audio.opus`, not `meta.json`, not a `lease`.
+  ///
+  /// CHRN-119: the remnant of an `empty` capture is the only durable evidence
+  /// that a memo was spoken and never arrived, and `CaptureState.empty`'s own
+  /// doc comment says deleting it "would make the single worst loss this
+  /// system can suffer completely silent". Dismissal is the person choosing
+  /// to stop seeing it, never a claim that it did not happen -- so the fact
+  /// lives on disk, just not in front of anybody, in a file `meta.json` and
+  /// `upload.json` do not own: this ticket's own marker, sibling to `lease`.
+  Future<void> markDismissed() async {
+    await dir.create(recursive: true);
+    final tmp = File('${dismissed.path}.${_tempSeq++}-'
+        '${DateTime.now().microsecondsSinceEpoch}.tmp');
+    await tmp.writeAsString(
+      const JsonEncoder.withIndent('  ')
+          .convert({'dismissed_at': DateTime.now().toIso8601String()}),
+      flush: true,
+    );
+    await tmp.rename(dismissed.path);
+  }
+
+  Future<bool> isDismissed() => dismissed.exists();
 }
 
 int _tempSeq = 0;
