@@ -85,12 +85,6 @@ final audioGateTransportProvider = Provider<AudioGateTransport>(
   (ref) => MemosApiAudioGateTransport(ref.watch(memosApiProvider)),
 );
 
-/// Whether the foreground prunes at all. Exactly [pruneLocalAudioEnabled] --
-/// the compile-time constant, false unless a build opts in -- and a provider
-/// only so a test can turn it on without a `--dart-define`. Nothing in `lib/`
-/// overrides it.
-final pruneEnabledProvider = Provider<bool>((ref) => pruneLocalAudioEnabled);
-
 class QueueController extends Notifier<QueueUiState> {
   Timer? _retryTimer;
   AppLifecycleListener? _lifecycle;
@@ -254,8 +248,10 @@ class QueueController extends Notifier<QueueUiState> {
         // The session is genuinely still good: a transient or
         // wrong-endpoint 401, not a real sign-out. Lift the block just
         // raised and retry immediately -- calling `_wakeOnce` directly,
-        // never the public `wake()`, which would just coalesce onto THIS
-        // still-running call and do nothing.
+        // never the public `wake()`. Since CHRN-120 `wake()` from here would
+        // not do nothing: it would coalesce onto THIS still-running call and
+        // also schedule a whole extra pass after it. The retry has to be
+        // immediate and bounded to depth one, which only a direct call is.
         state = state.copyWith(clearDeviceBlock: true);
         if (allowArbitrationRetry) {
           await _wakeOnce(allowArbitrationRetry: false);

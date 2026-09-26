@@ -37,6 +37,7 @@ import 'dart:async';
 import 'dart:io' show FileSystemException;
 
 import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:flutter_riverpod/flutter_riverpod.dart' show Provider;
 
 import '../capture/capture_record.dart';
 import 'audio_gate_transport.dart';
@@ -64,6 +65,18 @@ import 'queue_record.dart';
 /// gap.
 const bool pruneLocalAudioEnabled =
     bool.fromEnvironment('CHRONICLE_PRUNE_LOCAL_AUDIO');
+
+/// Whether the foreground prunes at all. Exactly [pruneLocalAudioEnabled] --
+/// the compile-time constant, false unless a build opts in -- and a provider
+/// only so a test can turn it on without a `--dart-define`. Nothing in `lib/`
+/// overrides it.
+///
+/// **It lives here, and not beside `QueueController`, on purpose.** This file is
+/// one `pr-review.yml`'s `sensitive_paths` names, so a change to the value that
+/// decides whether deletion happens at all is reviewed at the expensive tier.
+/// In `queue_controller.dart` a one-line edit turning it on in every build would
+/// reverse the backup ruling and go through the cheap one.
+final pruneEnabledProvider = Provider<bool>((ref) => pruneLocalAudioEnabled);
 
 /// At most this many captures are asked about in one pass. A bound on the work
 /// one wake can do, not on the rate -- [minPollInterval] is the rate.

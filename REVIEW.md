@@ -379,7 +379,7 @@ uncovered is a false 🔴** — check the pattern before raising one:
 |---|---|---|
 | CHRN-22 (retention pruner) | `internal/retention/` | `internal/(invite\|config\|audio\|watch\|upload\|retention)/` |
 | CHRN-39 (revisions) | `internal/store/` — CHRN-38 put revisions there | `internal/store/` |
-| CHRN-120 (the phone's own prune) | `mobile/chronicle/lib/queue/{prune,prune_gate,audio_gate_transport,ack}.dart`, `mobile/chronicle/lib/capture/capture_record.dart` (the tombstone and the unlink), and their tests | `mobile/chronicle/(lib\|test)/capture/capture_record\|mobile/chronicle/(lib\|test)/queue/(prune\|ack\|audio_gate\|engine_prune\|background_pass\|queue_controller_prune)` |
+| CHRN-120 (the phone's own prune) | `mobile/chronicle/lib/queue/{prune,prune_gate,audio_gate_transport,ack,queue_controller,background}.dart`, `mobile/chronicle/lib/capture/capture_record.dart` (the tombstone and the unlink), and their tests | `mobile/chronicle/(lib\|test)/capture/capture_record\|mobile/chronicle/(lib\|test)/queue/(prune\|ack\|audio_gate\|engine_prune\|background\|queue_controller)` |
 
 **CHRN-120's entry is deliberately narrow, and the narrowness is the decision.**
 A `mobile/` alternative would route every hand-written Dart PR in the E9 epic to
@@ -389,8 +389,13 @@ hold the deletion and its gate: the unlink lives in `CaptureDir`
 (`capture_record.dart`), not in `lib/queue/`, and listing only `lib/queue/`
 would have covered the gate and the pass while skipping the actual
 `File.delete` — the same gap this section already argues against for
-`internal/audio/`. A PR that moves that logic to a file the pattern does not
-name is the finding to raise.
+`internal/audio/`. It also names `queue_controller.dart` and `background.dart`,
+the two callers, because they decide when the pass runs and whether it is handed
+an override: `pruneLocalAudioEnabled` defaults to false (ruling ⚖2, the backup
+gap), and a one-line `pruneEnabled: true` in either would reverse that at the
+cheap tier. The enable provider itself lives in `prune.dart` for the same reason.
+A PR that moves that logic to a file the pattern does not name is the finding to
+raise.
 
 For any other Mode C ticket, resolve the package against `sensitive_paths`
 before writing a finding; the rule is about a package the pattern misses, not

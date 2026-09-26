@@ -270,16 +270,22 @@ jobs:
       # recording that may be the only copy, so the file that does the deleting
       # (`lib/capture/capture_record.dart`: the tombstone and the unlink, in
       # `CaptureDir`, not in `lib/queue/`), the gate that permits it
-      # (`lib/queue/prune_gate.dart`), the pass (`prune.dart`), the ack it is
-      # gated behind (`ack.dart`), the transport (`audio_gate_transport.dart`)
-      # and their tests are named. Stems are unanchored for the same reason as
+      # (`lib/queue/prune_gate.dart`), the pass and the switch that turns it on
+      # (`prune.dart`), the ack it is gated behind (`ack.dart`), the transport
+      # (`audio_gate_transport.dart`) and their tests are named -- and so are
+      # `queue_controller.dart` and `background.dart`, the two places that decide
+      # WHEN the pass runs and whether it is handed an override. Without them a
+      # one-line `pruneEnabled: true` there would turn deletion on in every build,
+      # reversing the backup ruling, and be reviewed at the cheap tier (the PR
+      # reviewer's own finding on the PR that added this). Stems are unanchored
+      # for the same reason as
       # `internal/api/session` above: `_test.dart` comes along, since gutting a
       # test of a deletion path is the same weakening as gutting the path. A
       # blanket `mobile/` alternative would route every hand-written Dart PR in
       # E9 to the expensive tier; `.github/review-ignore` excludes only the
       # generated client, so that is a sizeable side effect on unrelated tickets
       # and is not taken.
-      sensitive_paths: '^(internal/store/|internal/scribe/|internal/triage/|asr/|internal/transcribe/|internal/api/(session|cfaccess|ratelimit|router|policy|contract|storage|upload|transcription)|internal/(invite|config|audio|watch|upload|retention)/|cmd/chronicle/|migrations/|deploy/|scripts/|verify\.sh|openapi\.yaml|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore|mobile/chronicle/(lib|test)/capture/capture_record|mobile/chronicle/(lib|test)/queue/(prune|ack|audio_gate|engine_prune|background_pass|queue_controller_prune))'
+      sensitive_paths: '^(internal/store/|internal/scribe/|internal/triage/|asr/|internal/transcribe/|internal/api/(session|cfaccess|ratelimit|router|policy|contract|storage|upload|transcription)|internal/(invite|config|audio|watch|upload|retention)/|cmd/chronicle/|migrations/|deploy/|scripts/|verify\.sh|openapi\.yaml|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore|mobile/chronicle/(lib|test)/capture/capture_record|mobile/chronicle/(lib|test)/queue/(prune|ack|audio_gate|engine_prune|background|queue_controller))'
 
       # No `docs_skip_extra`: this repo commits no knowledge-graph cache, and
       # the one generated artifact it does carry is excluded outright in
