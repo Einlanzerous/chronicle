@@ -10,6 +10,10 @@
 ///                       capture from RECENT and the queue screen. Written
 ///                       for no other state, and deletes nothing -- see
 ///                       `CaptureDir.markDismissed`.
+///     pruned           CHRN-120: written just BEFORE the sendable file is
+///                       deleted, and never afterwards. What survives the
+///                       audio -- see `PruneTombstone`. Independent of
+///                       `dismissed`; neither needs the other to exist.
 /// ```
 ///
 /// ## Two things here are load-bearing and neither is obvious
@@ -230,6 +234,64 @@ class CaptureLease {
   }
 }
 
+/// The fact that a capture's audio was deleted on purpose, and on whose word.
+///
+/// **This exists because `upload.json` cannot carry that fact alone.** The
+/// queue treats an absent or corrupt `upload.json` as "never queued" and
+/// writes a fresh `pending` record over it, and `memoId` -- the one fact that
+/// says a capture was already delivered -- lives nowhere else on the device
+/// (`meta.json` never holds it). Losing `upload.json` used to cost one round
+/// trip, because the audio was still there to re-open with. Once the audio is
+/// deleted that stops being true, so the deletion leaves this second record
+/// behind, in a file no queue code writes.
+///
+/// [gate] is the gate's own outcome code (`audio_pruned`), so the record says
+/// not just that the audio went but what the server said that allowed it.
+class PruneTombstone {
+  const PruneTombstone({
+    required this.memoId,
+    required this.prunedAt,
+    required this.prunedBytes,
+    required this.gate,
+  });
+
+  final String memoId;
+  final DateTime prunedAt;
+
+  /// The sendable file's length at the moment it was deleted.
+  final int prunedBytes;
+  final String gate;
+
+  Map<String, Object?> toJson() => {
+        'memo_id': memoId,
+        'pruned_at': prunedAt.toIso8601String(),
+        'pruned_bytes': prunedBytes,
+        'gate': gate,
+      };
+
+  /// Null for anything not readable as a whole tombstone. A half-read record
+  /// that named no memo would be worse than none.
+  static PruneTombstone? tryParse(String body) {
+    try {
+      final json = jsonDecode(body) as Map<String, Object?>;
+      final memoId = json['memo_id'] as String?;
+      final prunedAt = DateTime.tryParse(json['pruned_at'] as String? ?? '');
+      final prunedBytes = json['pruned_bytes'] as int?;
+      final gate = json['gate'] as String?;
+      if (memoId == null || memoId.isEmpty) return null;
+      if (prunedAt == null || prunedBytes == null || gate == null) return null;
+      return PruneTombstone(
+        memoId: memoId,
+        prunedAt: prunedAt,
+        prunedBytes: prunedBytes,
+        gate: gate,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
 /// One capture's directory, and the only place that knows its file names.
 class CaptureDir {
   CaptureDir(this.root, this.captureId);
@@ -245,6 +307,7 @@ class CaptureDir {
   File get audio => File('${dir.path}/audio.opus');
   File get trimmed => File('${dir.path}/audio.trimmed');
   File get dismissed => File('${dir.path}/dismissed');
+  File get pruned => File('${dir.path}/pruned');
 
   /// The file the queue sends: the trimmed stream on a salvage, else the
   /// original.
@@ -312,6 +375,52 @@ class CaptureDir {
   }
 
   Future<bool> isDismissed() => dismissed.exists();
+
+  /// Records that this capture's sendable file is about to be deleted.
+  /// Atomic (temp, flush, rename) like every other file here, and written
+  /// BEFORE [deleteSendable] -- never after -- so a crash between the two
+  /// leaves a tombstone and a file, which the next pass finishes, and never
+  /// a deleted file with nothing saying why.
+  Future<void> writePruneTombstone(PruneTombstone tombstone) async {
+    await dir.create(recursive: true);
+    final tmp = File('${pruned.path}.${_tempSeq++}-'
+        '${DateTime.now().microsecondsSinceEpoch}.tmp');
+    await tmp.writeAsString(
+      const JsonEncoder.withIndent('  ').convert(tombstone.toJson()),
+      flush: true,
+    );
+    await tmp.rename(pruned.path);
+  }
+
+  Future<PruneTombstone?> readPruneTombstone() async {
+    if (!await pruned.exists()) return null;
+    try {
+      return PruneTombstone.tryParse(await pruned.readAsString());
+    } on FileSystemException {
+      return null;
+    }
+  }
+
+  /// Deletes the file [sendable] names for [state], and nothing else: not
+  /// `meta.json`, not `upload.json`, not the tombstone, and -- on a salvage --
+  /// not `audio.opus`, whose tail past the trim cut the server never
+  /// received. A file already gone is not an error: this is the finishing
+  /// step of a prune that may have crashed after doing it.
+  ///
+  /// Refuses any state whose file was never sent. `recording` is still being
+  /// written and `empty` is the one capture whose remnant is the only
+  /// evidence a memo was spoken (`CaptureState.empty`).
+  Future<void> deleteSendable(CaptureState state) async {
+    if (state != CaptureState.ready && state != CaptureState.salvaged) {
+      throw StateError('only a capture that was sent has a sendable file to '
+          'delete; this one is ${state.name}');
+    }
+    try {
+      await sendable(state).delete();
+    } on PathNotFoundException {
+      // Already gone.
+    }
+  }
 }
 
 int _tempSeq = 0;

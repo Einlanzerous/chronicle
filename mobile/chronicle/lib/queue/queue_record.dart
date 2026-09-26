@@ -123,6 +123,8 @@ class QueueRecord {
     this.rejectReason,
     this.memoId,
     this.acknowledgedAt,
+    this.locallyPrunedAt,
+    this.lastPolledAt,
   });
 
   final QueueStatus status;
@@ -166,6 +168,24 @@ class QueueRecord {
   final String? memoId;
   final DateTime? acknowledgedAt;
 
+  /// CHRN-120: when this device deleted the capture's sendable audio, on the
+  /// server's own word (`prune_gate.dart`). Written by exactly one function
+  /// (`prune.dart`) and never cleared once set -- the same rule
+  /// [acknowledgedAt] follows. Absent reads as "not pruned", which is the
+  /// right reading of every record written before this field existed.
+  ///
+  /// **Set only AFTER the capture's own `pruned` tombstone is on disk and
+  /// BEFORE the file is deleted**, so its presence means "the delete was at
+  /// least decided", never "the file is gone" -- see `prune.dart`.
+  final DateTime? locallyPrunedAt;
+
+  /// CHRN-120: when the prune pass last got ANY answer from the server about
+  /// this capture. It exists for one reason, the poll floor: without it every
+  /// acknowledged capture would be asked about on every wake. Absent means
+  /// "never asked", and losing it costs at most one extra request. Not a
+  /// claim about the outcome -- a refusal changes this and nothing else.
+  final DateTime? lastPolledAt;
+
   bool get isTerminal => status == QueueStatus.acknowledged;
 
   QueueRecord copyWith({
@@ -182,6 +202,8 @@ class QueueRecord {
     bool clearRejectReason = false,
     String? memoId,
     DateTime? acknowledgedAt,
+    DateTime? locallyPrunedAt,
+    DateTime? lastPolledAt,
   }) =>
       QueueRecord(
         status: status ?? this.status,
@@ -200,6 +222,8 @@ class QueueRecord {
             clearRejectReason ? null : (rejectReason ?? this.rejectReason),
         memoId: memoId ?? this.memoId,
         acknowledgedAt: acknowledgedAt ?? this.acknowledgedAt,
+        locallyPrunedAt: locallyPrunedAt ?? this.locallyPrunedAt,
+        lastPolledAt: lastPolledAt ?? this.lastPolledAt,
       );
 
   Map<String, Object?> toJson() => {
@@ -213,6 +237,8 @@ class QueueRecord {
         'reject_reason': rejectReason?.name,
         'memo_id': memoId,
         'acknowledged_at': acknowledgedAt?.toIso8601String(),
+        'locally_pruned_at': locallyPrunedAt?.toIso8601String(),
+        'last_polled_at': lastPolledAt?.toIso8601String(),
       };
 
   static QueueRecord fromJson(Map<String, Object?> json) => QueueRecord(
@@ -233,6 +259,12 @@ class QueueRecord {
         acknowledgedAt: json['acknowledged_at'] == null
             ? null
             : DateTime.tryParse(json['acknowledged_at']! as String),
+        locallyPrunedAt: json['locally_pruned_at'] == null
+            ? null
+            : DateTime.tryParse(json['locally_pruned_at']! as String),
+        lastPolledAt: json['last_polled_at'] == null
+            ? null
+            : DateTime.tryParse(json['last_polled_at']! as String),
       );
 
   /// A freshly enqueued capture: `pending`, nothing tried yet.
@@ -264,6 +296,10 @@ T? _enumOrNull<T extends Enum>(List<T> values, String? name) {
 /// still holds the file") and CHRN-60's rule that nothing shrinks a capture
 /// the server has not acknowledged therefore hold by construction here, not
 /// by discipline.
+///
+/// **Deleting is not the engine's, and not this class's.** CHRN-120's one
+/// deletion path is `prune.dart`, reaching the file through
+/// [CaptureDir.deleteSendable]; nothing in `engine.dart` or here can.
 class QueueDir {
   QueueDir(this.capture);
 
@@ -278,11 +314,71 @@ class QueueDir {
         jsonDecode(await uploadFile.readAsString()) as Map<String, Object?>,
       );
     } catch (_) {
-      // Absent or corrupt reads the same: the capture is re-queued from
-      // scratch, and the server re-tells the ack on the next open. Losing
-      // this file costs one round trip, never the audio.
+      // Absent or corrupt reads the same. Callers that must decide what that
+      // MEANS go through [readOrEnqueue], not here: for a capture whose audio
+      // was never deleted, it costs one round trip (the server re-tells the
+      // ack on the next open), never the audio. For one whose audio WAS
+      // deleted (CHRN-120) the answer is in the `pruned` tombstone, not in
+      // this file.
       return null;
     }
+  }
+
+  /// The record a scan should hand the engine for [meta]'s capture,
+  /// persisting one when none is readable. The one place both scans -- the
+  /// foreground's and `background.dart`'s -- decide what "no `upload.json`"
+  /// means, so they cannot disagree.
+  ///
+  /// **An absent or corrupt `upload.json` no longer always means "never
+  /// queued".** Before CHRN-120 it did, and the answer was harmless: the audio
+  /// was still there, and re-opening was answered `duplicate: true`. Once a
+  /// capture's audio can be deleted, the same reading would enqueue an
+  /// already-delivered capture with nothing left to send. So, in order:
+  ///
+  /// 1. A readable record is returned as it is.
+  /// 2. A `pruned` tombstone means the capture WAS delivered and its audio
+  ///    deleted on the server's word: the record is rebuilt from it as
+  ///    `acknowledged`, never `pending`. `enqueuedAt` and `acknowledgedAt`
+  ///    are not recoverable and are set to the tombstone's `prunedAt` -- a
+  ///    bound, not the true instant.
+  /// 3. A sendable capture whose sendable file is simply absent, with no
+  ///    tombstone, is never written as `pending`. It is written as
+  ///    `blockedLocalFileChanged`, which is what the engine would have made
+  ///    of it anyway and which the screen says out loud. Nothing here can
+  ///    know whether it was ever delivered, so it does not claim to.
+  /// 4. Otherwise a fresh `pending` record, as before.
+  Future<QueueRecord> readOrEnqueue(CaptureRecord meta, DateTime now) async {
+    final existing = await read();
+    if (existing != null) return existing;
+
+    final tombstone = await capture.readPruneTombstone();
+    if (tombstone != null) {
+      final rebuilt = QueueRecord(
+        status: QueueStatus.acknowledged,
+        enqueuedAt: tombstone.prunedAt,
+        memoId: tombstone.memoId,
+        acknowledgedAt: tombstone.prunedAt,
+        locallyPrunedAt: tombstone.prunedAt,
+        lastPolledAt: tombstone.prunedAt,
+      );
+      await write(rebuilt);
+      return rebuilt;
+    }
+
+    final sendableState =
+        meta.state == CaptureState.ready || meta.state == CaptureState.salvaged;
+    if (sendableState && !await capture.sendable(meta.state).exists()) {
+      final blocked = QueueRecord(
+        status: QueueStatus.blockedLocalFileChanged,
+        enqueuedAt: now,
+      );
+      await write(blocked);
+      return blocked;
+    }
+
+    final fresh = QueueRecord.fresh(now);
+    await write(fresh);
+    return fresh;
   }
 
   /// Atomic: temp, flush, rename -- the same pattern as

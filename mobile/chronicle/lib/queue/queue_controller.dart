@@ -24,10 +24,12 @@ import '../auth/auth_controller.dart';
 import '../capture/capture_channel.dart';
 import '../capture/capture_controller.dart';
 import '../capture/capture_record.dart';
+import 'audio_gate_transport.dart';
 import 'backoff.dart';
 import 'background.dart' show queueForegroundPortName;
 import 'device_block.dart';
 import 'engine.dart';
+import 'prune.dart';
 import 'queue_record.dart';
 import 'upload_transport.dart';
 import 'uploads_api_transport.dart';
@@ -77,10 +79,17 @@ final queueEngineProvider = Provider<QueueEngine>(
   (ref) => QueueEngine(transport: ref.watch(uploadTransportProvider)),
 );
 
+/// The prune pass's transport (CHRN-120), watching the same credential and
+/// address as [uploadTransportProvider].
+final audioGateTransportProvider = Provider<AudioGateTransport>(
+  (ref) => MemosApiAudioGateTransport(ref.watch(memosApiProvider)),
+);
+
 class QueueController extends Notifier<QueueUiState> {
   Timer? _retryTimer;
   AppLifecycleListener? _lifecycle;
   Future<void>? _inFlight;
+  bool _wakeRequested = false;
   ReceivePort? _presencePort;
 
   late final CapturePlatform _platform = ref.read(capturePlatformProvider);
@@ -95,6 +104,12 @@ class QueueController extends Notifier<QueueUiState> {
     // outright, which is what the headless check exists for, unregisters
     // nothing -- but also needs nothing unregistered, since a dead
     // process's registrations do not survive it either).
+    //
+    // Keeping the two isolates apart is no longer only a saving. Before
+    // CHRN-120 two engines on one capture could at worst waste a request;
+    // `prunePass` deletes, so the other isolate can now find a file gone
+    // mid-attempt. The engine handles that (`engine.dart`, `_attemptOne`) --
+    // this check is what makes it rare, not what makes it safe.
     _presencePort = ReceivePort();
     IsolateNameServer.registerPortWithName(_presencePort!.sendPort, queueForegroundPortName);
 
@@ -132,15 +147,36 @@ class QueueController extends Notifier<QueueUiState> {
   /// still waiting. Concurrent calls coalesce onto whichever pass is
   /// already running rather than starting a second one over the same
   /// files.
+  ///
+  /// **Coalescing never swallows a trigger.** A call that arrives while a
+  /// pass is running still returns that pass's future, but also notes that
+  /// it happened, and one more pass runs when the current one finishes. A pass
+  /// scans the captures directory once at its start, so a capture that
+  /// reached `ready` a moment later was invisible to it; before CHRN-120 that
+  /// capture waited for the next unrelated trigger. The pass got longer when
+  /// it gained a prune leg (up to [maxProbesPerPass] network round trips
+  /// after the drain), which is what made the window worth closing. The
+  /// re-run is bounded to one per finished pass: it repeats only if a new
+  /// call arrived DURING it.
   Future<void> wake() {
     final existing = _inFlight;
-    if (existing != null) return existing;
-    final future = _wakeOnce(allowArbitrationRetry: true);
+    if (existing != null) {
+      _wakeRequested = true;
+      return existing;
+    }
+    final future = _wakeUntilQuiet();
     _inFlight = future;
     future.whenComplete(() {
       if (identical(_inFlight, future)) _inFlight = null;
     });
     return future;
+  }
+
+  Future<void> _wakeUntilQuiet() async {
+    do {
+      _wakeRequested = false;
+      await _wakeOnce(allowArbitrationRetry: true);
+    } while (_wakeRequested && ref.mounted);
   }
 
   /// [allowArbitrationRetry] bounds the one recursive case below to depth
@@ -162,7 +198,7 @@ class QueueController extends Notifier<QueueUiState> {
       final capture = await captureDir.readMeta();
       if (capture == null || capture.state == CaptureState.recording) continue;
       final queueDir = QueueDir(captureDir);
-      final record = await _ensureEnqueued(queueDir, now);
+      final record = await queueDir.readOrEnqueue(capture, now);
       captures.add(QueueCapture(queueDir: queueDir, capture: capture, queueRecord: record));
     }
     if (!ref.mounted) return;
@@ -212,8 +248,10 @@ class QueueController extends Notifier<QueueUiState> {
         // The session is genuinely still good: a transient or
         // wrong-endpoint 401, not a real sign-out. Lift the block just
         // raised and retry immediately -- calling `_wakeOnce` directly,
-        // never the public `wake()`, which would just coalesce onto THIS
-        // still-running call and do nothing.
+        // never the public `wake()`. Since CHRN-120 `wake()` from here would
+        // not do nothing: it would coalesce onto THIS still-running call and
+        // also schedule a whole extra pass after it. The retry has to be
+        // immediate and bounded to depth one, which only a direct call is.
         state = state.copyWith(clearDeviceBlock: true);
         if (allowArbitrationRetry) {
           await _wakeOnce(allowArbitrationRetry: false);
@@ -221,6 +259,19 @@ class QueueController extends Notifier<QueueUiState> {
         return;
       }
     }
+
+    // CHRN-120: the prune pass, immediately after the drain and never before
+    // it, so a capture is sent before anything is ever deleted. Skipped under
+    // a device block, and a no-op unless this build opts in
+    // (`pruneLocalAudioEnabled`). It also runs when nothing was sent -- the
+    // captures it cares about were acknowledged passes ago.
+    await prunePass(
+      captures: captures,
+      transport: ref.read(audioGateTransportProvider),
+      deviceBlock: block,
+      enabled: ref.read(pruneEnabledProvider),
+    );
+    if (!ref.mounted) return;
 
     _scheduleNextWake(records.values);
   }
@@ -246,19 +297,6 @@ class QueueController extends Notifier<QueueUiState> {
       failureStreak: 0,
     ));
     await wake();
-  }
-
-  /// The moment the queue first sees a capture sendable, persisted at once
-  /// -- never recomputed on a later pass. `retention_gate.dart`'s grace
-  /// clock runs from this timestamp, and recomputing it on every `wake()`
-  /// for a capture that has not been written yet (still retention-gated,
-  /// say) would mean the clock never actually starts.
-  Future<QueueRecord> _ensureEnqueued(QueueDir dir, DateTime now) async {
-    final existing = await dir.read();
-    if (existing != null) return existing;
-    final fresh = QueueRecord.fresh(now);
-    await dir.write(fresh);
-    return fresh;
   }
 
   /// Backoff is per-capture and jittered (`backoff.dart`); this schedules

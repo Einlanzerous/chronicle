@@ -23,12 +23,12 @@ from, and is the fallback when `review_mode` is null:
 |---|---|---|
 | **A · evidence** | `sonnet` / `haiku` | nobody else reads this diff |
 | **B · decision first** | `opus` | a written decision was approved before the code; check the code matches it |
-| **C · full diff** | the five below | a human reads every line too |
+| **C · full diff** | the six below | a human reads every line too |
 
 Mode C is exactly **CHRN-22** (retention pruner), **CHRN-39** (revisions),
 **CHRN-52** (tier isolation), **CHRN-65** (MCP transport), **CHRN-67** (MCP
-write scopes) — the tickets that can destroy authored data or hand an agent
-write access to it.
+write scopes), **CHRN-120** (the phone's own prune of its local audio) — the
+tickets that can destroy authored data or hand an agent write access to it.
 
 ## What CI already proves — and where it doesn't
 
@@ -95,7 +95,8 @@ moment to find out.
   to buy. **That guard is armed for CHRN as of 2026-09-03.** Every open ticket
   carrying a `metadata.tier` now has a stated `review_mode` — `evidence` for
   tier `sonnet`/`haiku`,
-  `decision` for tier `opus`, `full` for the five Mode C tickets — so a
+  `decision` for tier `opus`, `full` for the Mode C tickets (five when this
+  was armed; CHRN-120 was added as the sixth on 2026-09-25) — so a
   `decision` ticket is now *blocked* from entering `in_progress` until its plan
   is approved, rather than merely expected to have one. Two gaps in that
   arming, both deliberate:
@@ -355,9 +356,9 @@ to change and be regenerated.
 
 ### 7. A Mode C ticket must register its own package
 
-The five Mode C tickets are the ones that can destroy authored data or hand an
+The six Mode C tickets are the ones that can destroy authored data or hand an
 agent write access to it, so their code must live somewhere `sensitive_paths`
-in `.github/workflows/pr-review.yml` names. **Two of the five still have no path
+in `.github/workflows/pr-review.yml` names. **Two of the six still have no path
 in this repo — CHRN-67 (MCP write scopes) and CHRN-65 (the MCP server itself:
 Streamable HTTP behind Access).** Neither has a package, and an `internal/mcp/`
 or `internal/api/mcp/` would match nothing in the pattern — the
@@ -371,13 +372,30 @@ Important finding — every subsequent PR touching Chronicle's MCP surface, the
 Access-facing transport included, would otherwise be reviewed at the cheap tier,
 silently, which is the whole cost of the omission.
 
-**Two tickets this section used to name are now covered, and finding them
+**Three tickets this section names are now covered, and finding them
 uncovered is a false 🔴** — check the pattern before raising one:
 
 | ticket | path today | covered by |
 |---|---|---|
 | CHRN-22 (retention pruner) | `internal/retention/` | `internal/(invite\|config\|audio\|watch\|upload\|retention)/` |
 | CHRN-39 (revisions) | `internal/store/` — CHRN-38 put revisions there | `internal/store/` |
+| CHRN-120 (the phone's own prune) | `mobile/chronicle/lib/queue/{prune,prune_gate,audio_gate_transport,ack,queue_controller,background}.dart`, `mobile/chronicle/lib/capture/capture_record.dart` (the tombstone and the unlink), and their tests | `mobile/chronicle/(lib\|test)/capture/capture_record\|mobile/chronicle/(lib\|test)/queue/(prune\|ack\|audio_gate\|engine_prune\|background\|queue_controller)` |
+
+**CHRN-120's entry is deliberately narrow, and the narrowness is the decision.**
+A `mobile/` alternative would route every hand-written Dart PR in the E9 epic to
+the expensive tier, since `.github/review-ignore` excludes only
+`mobile/chronicle/packages/chronicle_api/`. So the pattern names the files that
+hold the deletion and its gate: the unlink lives in `CaptureDir`
+(`capture_record.dart`), not in `lib/queue/`, and listing only `lib/queue/`
+would have covered the gate and the pass while skipping the actual
+`File.delete` — the same gap this section already argues against for
+`internal/audio/`. It also names `queue_controller.dart` and `background.dart`,
+the two callers, because they decide when the pass runs and whether it is handed
+an override: `pruneLocalAudioEnabled` defaults to false (ruling ⚖2, the backup
+gap), and a one-line `pruneEnabled: true` in either would reverse that at the
+cheap tier. The enable provider itself lives in `prune.dart` for the same reason.
+A PR that moves that logic to a file the pattern does not name is the finding to
+raise.
 
 For any other Mode C ticket, resolve the package against `sensitive_paths`
 before writing a finding; the rule is about a package the pattern misses, not

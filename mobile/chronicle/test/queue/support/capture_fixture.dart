@@ -51,3 +51,55 @@ Future<QueueCapture> reloadCapture(QueueCapture qc) async {
   final record = await qc.queueDir.read() ?? qc.queueRecord;
   return QueueCapture(queueDir: qc.queueDir, capture: qc.capture, queueRecord: record);
 }
+
+/// A capture the queue has already delivered: [writeFixtureCapture] plus an
+/// `acknowledged` `upload.json`, the state the prune pass starts from.
+///
+/// [acknowledgedAt] defaults to [startedAt] plus a minute, and the memo id to
+/// `memo-<id>`. [lastPolledAt] is what the prune pass's own poll floor reads.
+Future<QueueCapture> writeAckedCapture(
+  Directory root, {
+  required String id,
+  List<int>? bytes,
+  DateTime? startedAt,
+  DateTime? acknowledgedAt,
+  DateTime? lastPolledAt,
+  String? retention,
+  CaptureState state = CaptureState.ready,
+  String? memoId,
+}) async {
+  final started = startedAt ?? DateTime(2026, 1, 1);
+  final fixture = await writeFixtureCapture(
+    root,
+    id: id,
+    bytes: bytes ?? List.generate(32, (i) => i),
+    startedAt: started,
+    retention: retention,
+    state: state,
+  );
+  final record = QueueRecord(
+    status: QueueStatus.acknowledged,
+    enqueuedAt: started,
+    attemptCount: 1,
+    memoId: memoId ?? 'memo-$id',
+    acknowledgedAt: acknowledgedAt ?? started.add(const Duration(minutes: 1)),
+    lastPolledAt: lastPolledAt,
+  );
+  await fixture.queueDir.write(record);
+  return QueueCapture(
+    queueDir: fixture.queueDir,
+    capture: fixture.capture,
+    queueRecord: record,
+  );
+}
+
+/// The names in a capture's directory, sorted -- what "meta.json and
+/// upload.json survive, and the audio does not" is asserted against.
+Future<List<String>> listCaptureDir(QueueCapture qc) async {
+  final names = <String>[];
+  await for (final e in qc.queueDir.capture.dir.list()) {
+    names.add(e.path.split(Platform.pathSeparator).last);
+  }
+  names.sort();
+  return names;
+}

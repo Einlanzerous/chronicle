@@ -179,11 +179,14 @@ thing that has ever cleared a dead token here.
   token and server address directly (no `ProviderScope`) and yields cleanly
   rather than crash-looping if they are unreadable.
 - Two isolates (foreground + headless) coordinate through an
-  `IsolateNameServer` presence check to avoid double-draining — an
-  **optimisation**, not the safety property: `_writeUnlessAcknowledged` and
-  `test/queue/engine_concurrent_test.dart` already prove two engines racing
-  the same capture cannot produce a second memo or an unverified ack even
-  with the exclusion disabled.
+  `IsolateNameServer` presence check to avoid double-draining. It is not the
+  safety property: `_writeUnlessAcknowledged` and
+  `test/queue/engine_concurrent_test.dart` prove two engines racing the same
+  capture cannot produce a second memo or an unverified ack even with the
+  exclusion disabled. **Since CHRN-120 it is also no longer merely an
+  optimisation**, because the prune pass below deletes: the other isolate can
+  find a file gone mid-attempt, and the engine now reads that as "the file
+  changed" rather than throwing (`test/queue/engine_prune_race_test.dart`).
 
 ### Verification status
 
@@ -221,6 +224,148 @@ device](#verifying-it-on-a-device) below, then:
 Evidence for all five belongs on the CHRN-61 Switchyard ticket as a comment,
 posted alongside the transition — never assumed from CI alone, per the
 epic's own `Done when`.
+
+## Pruning the phone's copy (CHRN-120)
+
+CHRN-61 shipped no deletion path on purpose: an acknowledged capture's audio
+stayed on the phone forever. Storage runs about 15 MB an hour and CHRN-60's
+free-space gate refuses to record rather than evict, so an install that never
+prunes eventually holds every memo it ever recorded. CHRN-120 is the follow-up
+that ruling promised, and it is the client's own prune of its own local copy —
+separate from the server's (CHRN-22), and gated on it.
+
+### It ships dark
+
+`pruneLocalAudioEnabled` (`lib/queue/prune.dart`) is a compile-time constant that
+**defaults to false**. A build that does not opt in never asks the server and
+never deletes anything: the drain runs exactly as before and the prune pass
+returns at its first line. To turn it on for a development build:
+
+```sh
+flutter run --dart-define=CHRONICLE_PRUNE_LOCAL_AUDIO=true
+```
+
+The reason is the backup gap. The shared Postgres has no backup (CHRN-68,
+SERV-43), and the transcript lives in that same database. Under this gate the
+phone deletes only after the server has deleted ITS audio, so from that moment a
+lost database loses the memo outright — where today the phone's surviving copy
+means it would only cost derived data. Until that is closed this ships
+default-off: the code is landed, reviewed and tested, and what is
+deferred is storage reclamation. `test/queue/prune_test.dart` pins the default,
+so changing it fails CI; flipping it is the follow-up that closes the gap.
+
+**This is a default, not a lock.** Chronicle has no APK release track yet, so
+nothing rejects a release build that passes the define. Lyceum's
+`tool/check_store_build.sh` fails on any `--dart-define` in its release workflow;
+the ticket that adds Chronicle's release track (see `server_url.dart`) owns the
+equivalent, and it must reject this define too.
+
+### The gate: the server's own prune, and nothing else
+
+The phone deletes a capture's sendable audio only after the server has deleted
+its own: `GET /audio/{memo_id}` (asked for one byte, `Range: bytes=0-0`)
+answering **`410` with code `audio_pruned`**. That answer is the server's whole
+prune predicate evaluated by the server — `retention <> 'forever'`, the 30-day
+window or `discard_now`, *and* a durable transcript — and `audio_pruned_at` is
+only ever set by a compare-and-swap over all of it (`store.MarkAudioPruned`). So
+`lib/queue/prune_gate.dart` holds no copy of any of it: no model floor, no
+window, no retention rule that could drift out of step and delete audio the
+server would still keep. CLAUDE.md invariant 1 (never prune audio for a memo
+whose transcription never succeeded) is enforced by the server's predicate, once.
+
+Every other answer is a refusal that changes nothing on disk. The table is in
+`prune_gate.dart` and tested row by row in `test/queue/prune_gate_test.dart`:
+
+| answer | outcome |
+|---|---|
+| `410`, `audio_pruned` | **the only delete** |
+| `206`, or a bare `200` (Range ignored) | still there; ask again later |
+| `410` with any other code or a non-JSON body | kept, logged at WARN |
+| `500 audio_missing`, `404` | kept, logged at WARN — the server may have lost *its* copy, so this device may hold the only one |
+| `429`, `503`, other `5xx` | kept; ends the pass |
+| `401`, no answer, wrong host | ends the pass; nothing recorded |
+| anything else | kept, logged at WARN |
+
+Nothing local ever permits a delete: not the age of the capture, not a
+`retention` value in `meta.json`, not how long ago it was acknowledged. A locally
+declared `forever` skips the request as a saving — the server never prunes a
+`forever` memo — and a `forever` memo therefore keeps its local audio.
+
+### When it asks, and how often
+
+The pass runs immediately after `drainPass` on every trigger the queue already
+wakes on, in both the foreground and the WorkManager leg
+(`runBackgroundQueuePass`, which exists so that leg has a test seam), and never
+before a send. It is skipped under an active device block. It does not raise a
+block itself: the send path's arbitration is the only writer of that state.
+
+A poll floor bounds *when* the server is asked, never *whether* a delete happens:
+
+- not before `startedAt + 30 days` (the server's window, a scheduling hint that
+  can only ask early, never late), or from the acknowledgement for a capture
+  declared `discard_now`;
+- at most once per capture per 24 hours (`lastPolledAt` in `upload.json`, absent
+  meaning "never asked");
+- least recently asked first, at most `maxProbesPerPass` (10) per pass.
+
+So removal happens at the **first poll after the server has pruned, and that is
+at most daily**, not the moment transcription finishes. A `discard_now` capture
+is asked once straight after its ack, gets a `206`, and is asked again a day
+later.
+
+### The order, and what survives
+
+For a capture the gate permits: the `pruned` tombstone is written, then
+`locallyPrunedAt` goes into `upload.json`, then the file is unlinked. A crash at
+any point leaves at most a tombstone and/or a mark with the file still present,
+and the next pass finishes the unlink **without asking the server again** — but
+never deletes a file that has no tombstone.
+
+Only the file the queue sent is ever eligible. `meta.json`, `upload.json` and the
+tombstone are never deleted, and on a `salvaged` capture the untrimmed
+`audio.opus` stays: its tail past the trim cut is bytes the server never
+received. An `empty` capture is never touched.
+
+**A lost `upload.json` no longer costs only a round trip.** The queue used to
+read an absent or corrupt `upload.json` as "never queued", which was harmless
+while the audio was there to re-open with. The tombstone carries `memoId`
+independently, and `QueueDir.readOrEnqueue` (used by both scans) rebuilds an
+`acknowledged` record from it instead of enqueuing a fresh `pending` one.
+
+### What this does not do
+
+- **No UI signal** that a capture's local audio is gone. `SENT` already says the
+  server holds it, and no design brief exists for a distinct "pruned locally"
+  chip.
+- **It does not remove the extra copy today's phone accidentally holds.** With no
+  prune the phone's copy survives even past the server's own, so a lost database
+  loses only derived data. Once the server's audio is gone and this device has
+  deleted its copy, the memo exists only in that database. That is the exposure
+  the default-off flag defers.
+
+### The device pass for CHRN-120
+
+Run against a real server with a debug build carrying the define. The 410 is not
+reachable by ordinary use, because `captured_at` is immutable and declared
+retention is null on every capture today, so the route is:
+
+1. Record a memo. Before its first send, hand-set `retention` to `discard_now` in
+   its `meta.json` (`adb shell run-as dev.dodson.chronicle`).
+2. Let it send: one `SENT` row, and one `206` probe straight after the ack.
+3. On the test database make sure a durable transcript exists (model
+   `whisper.cpp/small.en`, `partial` false), then run `chronicle prune` against
+   it (or wait for the server's hourly sweep).
+4. The once-per-24-hours cap now blocks the second probe, so clear
+   `last_polled_at` in that capture's `upload.json` with the same adb edit as
+   step 1 — or wait 24 hours.
+5. Wake the queue (open the app). Expect `audio.opus` gone from
+   `<filesDir>/captures/<id>/` while `meta.json`, `upload.json` and `pruned`
+   remain, and one `chronicle: pruned local audio memo=… gate=audio_pruned`
+   line in `adb logcat`.
+
+Evidence belongs on the CHRN-120 Switchyard ticket as a comment. If hardware or
+time does not allow the pass, say so there as a deviation rather than skipping it
+silently.
 
 ## Verifying it on a device
 
@@ -341,7 +486,7 @@ lib/
     auth_controller.dart
     device_label.dart
   capture/             CHRN-60: one-tap capture, recovery, the on-disk record
-    capture_record.dart   meta.json, CaptureDir, the idempotency key
+    capture_record.dart   meta.json, CaptureDir, the idempotency key, the prune tombstone
     capture_channel.dart  the Dart half of the seam to CaptureService
     capture_controller.dart
     recovery.dart      classify() and finalise() -- never guesses about a live recorder
@@ -352,6 +497,9 @@ lib/
     retention_gate.dart · backoff.dart · device_block.dart · failure.dart
     engine.dart        QueueEngine.drainPass -- one attempt, always the same shape
     upload_transport.dart · uploads_api_transport.dart
+    prune.dart         CHRN-120: the pass that deletes the phone's copy -- default OFF
+    prune_gate.dart    the one condition that permits it: the server's own 410
+    audio_gate_transport.dart  GET /audio/{id}, one byte, status returned not thrown
     queue_controller.dart  the in-app triggers
     queue_label.dart   the screen label, as a pure function of persisted state
     background.dart    the WorkManager headless entrypoint

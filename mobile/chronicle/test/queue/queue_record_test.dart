@@ -126,4 +126,82 @@ void main() {
     expect(await capture.audio.readAsBytes(), before);
     expect(await capture.meta.readAsString(), metaBefore);
   });
+
+  group('CHRN-120: locallyPrunedAt and lastPolledAt', () {
+    test('both survive a write and a read', () async {
+      final now = DateTime(2026, 9, 25, 12);
+      final record = QueueRecord.fresh(now).copyWith(
+        status: QueueStatus.acknowledged,
+        memoId: 'memo-1',
+        acknowledgedAt: now,
+        locallyPrunedAt: now.add(const Duration(days: 30)),
+        lastPolledAt: now.add(const Duration(days: 29)),
+      );
+      final d = dir('p');
+      await d.write(record);
+
+      final read = (await d.read())!;
+
+      expect(read.locallyPrunedAt, now.add(const Duration(days: 30)));
+      expect(read.lastPolledAt, now.add(const Duration(days: 29)));
+    });
+
+    test('a record written before this ticket reads with both absent -- "not '
+        'pruned" and "never polled", the correct reading of each', () async {
+      final d = dir('old');
+      await d.capture.dir.create(recursive: true);
+      await d.uploadFile.writeAsString('''
+{
+  "status": "acknowledged",
+  "enqueued_at": "2026-09-01T08:00:00.000",
+  "attempt_count": 1,
+  "failure_streak": 0,
+  "memo_id": "memo-old",
+  "acknowledged_at": "2026-09-01T08:01:00.000"
+}''');
+
+      final read = (await d.read())!;
+
+      expect(read.status, QueueStatus.acknowledged);
+      expect(read.memoId, 'memo-old');
+      expect(read.locallyPrunedAt, isNull);
+      expect(read.lastPolledAt, isNull);
+    });
+
+    test('an unparseable timestamp reads as absent rather than throwing', () {
+      final read = QueueRecord.fromJson({
+        'status': 'acknowledged',
+        'enqueued_at': '2026-09-01T08:00:00.000',
+        'locally_pruned_at': 'not a date',
+        'last_polled_at': 'nor this',
+      });
+
+      expect(read.locallyPrunedAt, isNull);
+      expect(read.lastPolledAt, isNull);
+    });
+
+    test('nothing the engine does to a record can clear either field', () {
+      final now = DateTime(2026, 9, 25);
+      final marked = QueueRecord.fresh(now).copyWith(
+        locallyPrunedAt: now,
+        lastPolledAt: now,
+      );
+
+      // Every copyWith the engine makes -- an ack, a failure, a retry -- passes
+      // neither field, so both must come through untouched. There is no `clear`
+      // flag for either: locallyPrunedAt is set once and never cleared, the
+      // same rule acknowledgedAt follows.
+      final after = marked.copyWith(
+        status: QueueStatus.pending,
+        attemptCount: 9,
+        clearLastAttemptAt: true,
+        clearLastFailureClass: true,
+        clearLastFailureCode: true,
+        clearRejectReason: true,
+      );
+
+      expect(after.locallyPrunedAt, now);
+      expect(after.lastPolledAt, now);
+    });
+  });
 }

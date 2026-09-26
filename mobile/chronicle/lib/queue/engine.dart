@@ -266,7 +266,18 @@ class QueueEngine {
       return _fromOutcome(unverifiedAck);
     }
 
-    final bytes = await sendable.readAsBytes();
+    // The same file the length check above already tolerated losing. It can
+    // vanish between the two lines: the other isolate's prune pass
+    // (`prune.dart`) deletes an ACKNOWLEDGED capture's audio, and this
+    // attempt may be working from a snapshot taken before that ack. Read as
+    // "the file changed"; `_writeUnlessAcknowledged` then declines to write
+    // over the `acknowledged` the other isolate already recorded.
+    final List<int> bytes;
+    try {
+      bytes = await sendable.readAsBytes();
+    } on FileSystemException {
+      return const _FileChanged();
+    }
     while (offset < expectedSize) {
       final end =
           (offset + chunkSize < expectedSize) ? offset + chunkSize : expectedSize;

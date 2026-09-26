@@ -39,7 +39,9 @@ import 'package:workmanager/workmanager.dart';
 
 import '../api/transport.dart';
 import '../capture/capture_record.dart';
+import 'audio_gate_transport.dart';
 import 'engine.dart';
+import 'prune.dart';
 import 'queue_record.dart';
 import 'uploads_api_transport.dart';
 
@@ -72,12 +74,17 @@ const capturesRootInputKey = 'captures_root';
 /// registry is a definite answer" shape (`CaptureOwner`'s pattern),
 /// applied to isolate-to-isolate presence rather than a platform channel.
 ///
-/// **An optimisation, not the safety property.** If this check is ever
-/// wrong -- stale, racy, disabled outright for a test -- two engines
-/// draining the same capture still cannot produce a second memo or an
-/// unverified ack (`engine.dart`'s own `_writeUnlessAcknowledged`,
-/// `engine_concurrent_test.dart`); the worst outcome is a wasted request
-/// and a 409 resync.
+/// **Not the safety property -- but no longer merely an optimisation either.**
+/// If this check is ever wrong -- stale, racy, disabled outright for a test --
+/// two engines draining the same capture still cannot produce a second memo or
+/// an unverified ack (`engine.dart`'s own `_writeUnlessAcknowledged`,
+/// `engine_concurrent_test.dart`). Before CHRN-120 that made the worst outcome
+/// a wasted request and a 409 resync. The prune pass (`prune.dart`) DELETES, so
+/// a second isolate can now find the file it was about to read gone: the
+/// worst case is a real race, not a wasted request. It is handled -- the
+/// engine reads a vanished file as "the file changed" and never writes over
+/// an `acknowledged` record (`engine_prune_race_test.dart`) -- which is why the
+/// handling exists, not why this check can be skipped.
 const queueForegroundPortName = 'dev.dodson.chronicle.queue.foreground';
 
 @pragma('vm:entry-point')
@@ -116,37 +123,13 @@ Future<bool> _runBackgroundPass(Map<String, dynamic>? inputData) async {
   final root = Directory(rootPath);
   if (!await root.exists()) return true;
 
-  final captures = <QueueCapture>[];
-  await for (final entry in root.list()) {
-    if (entry is! Directory) continue;
-    final id = entry.path.split(Platform.pathSeparator).last;
-    final captureDir = CaptureDir(root, id);
-    final capture = await captureDir.readMeta();
-    if (capture == null || capture.state == CaptureState.recording) continue;
-    final queueDir = QueueDir(captureDir);
-    final existing = await queueDir.read();
-    // Mirrors QueueController._ensureEnqueued: the enqueue moment is
-    // persisted once, on first sight, never recomputed on a later pass.
-    final record = existing ?? QueueRecord.fresh(DateTime.now());
-    if (existing == null) await queueDir.write(record);
-    captures.add(QueueCapture(queueDir: queueDir, capture: capture, queueRecord: record));
-  }
-  if (captures.isEmpty) return true;
-
   final apiClient = ApiClient(basePath: serverUrl)..client = ChronicleClient(token: token);
-  final engine = QueueEngine(transport: UploadsApiTransport(UploadsApi(apiClient)));
-
-  // No `currentBlock` carried in: this isolate is not durable across
-  // invocations (the OS may kill it between runs, and there is nowhere to
-  // persist a device block that is deliberately device-memory-only --
-  // `device_block.dart`'s own rule). A block from a prior pass simply
-  // re-derives itself from a fresh 401 if the reason for it still holds.
-  await engine.drainPass(
-    captures: captures,
+  await runBackgroundQueuePass(
+    root: root,
     token: token,
     serverUrl: serverUrl,
-    tokenDigest: _digest(token),
-    currentBlock: null,
+    engine: QueueEngine(transport: UploadsApiTransport(UploadsApi(apiClient))),
+    gate: MemosApiAudioGateTransport(MemosApi(apiClient)),
   );
 
   // Always Result.success: a capture that failed or got rejected is not a
@@ -155,6 +138,64 @@ Future<bool> _runBackgroundPass(Map<String, dynamic>? inputData) async {
   // all", which returning false would ask for -- and asking again
   // immediately would not fix a 401 or a 5xx either.
   return true;
+}
+
+/// Everything a headless wake does once it has a token, an address and a
+/// captures root: scan, drain, then prune. Split from [_runBackgroundPass] so
+/// the WorkManager leg -- the one place that runs with nobody watching -- has a
+/// test seam. `_runBackgroundPass` keeps the isolate-only concerns (the
+/// foreground-presence check, secure storage, `SharedPreferences`) and builds
+/// the real clients; this takes them as arguments, and `background_pass_test`
+/// drives it with fakes.
+///
+/// The order is the rule: the prune pass runs immediately after `drainPass` and
+/// never before it, so a capture is sent before anything is deleted, and
+/// `prunePass` is skipped under the device block the drain reports.
+Future<void> runBackgroundQueuePass({
+  required Directory root,
+  required String token,
+  required String serverUrl,
+  required QueueEngine engine,
+  required AudioGateTransport gate,
+  DateTime Function()? now,
+  bool? pruneEnabled,
+}) async {
+  final clock = now ?? DateTime.now;
+  final captures = <QueueCapture>[];
+  await for (final entry in root.list()) {
+    if (entry is! Directory) continue;
+    final id = entry.path.split(Platform.pathSeparator).last;
+    final captureDir = CaptureDir(root, id);
+    final capture = await captureDir.readMeta();
+    if (capture == null || capture.state == CaptureState.recording) continue;
+    final queueDir = QueueDir(captureDir);
+    // The same decision the foreground makes, from the same function: what
+    // "no `upload.json`" means is `QueueDir.readOrEnqueue`'s to say.
+    final record = await queueDir.readOrEnqueue(capture, clock());
+    captures.add(QueueCapture(queueDir: queueDir, capture: capture, queueRecord: record));
+  }
+  if (captures.isEmpty) return;
+
+  // No `currentBlock` carried in: this isolate is not durable across
+  // invocations (the OS may kill it between runs, and there is nowhere to
+  // persist a device block that is deliberately device-memory-only --
+  // `device_block.dart`'s own rule). A block from a prior pass simply
+  // re-derives itself from a fresh 401 if the reason for it still holds.
+  final block = await engine.drainPass(
+    captures: captures,
+    token: token,
+    serverUrl: serverUrl,
+    tokenDigest: _digest(token),
+    currentBlock: null,
+  );
+
+  await prunePass(
+    captures: captures,
+    transport: gate,
+    deviceBlock: block,
+    now: now,
+    enabled: pruneEnabled,
+  );
 }
 
 // Matches QueueController's own _digest exactly -- the same token must
