@@ -113,6 +113,13 @@ func realMemos(t *testing.T) *memoDBRig {
 // the layout says they go.
 func (rig *memoDBRig) memo(t *testing.T, author store.User, body, filename string) store.Memo {
 	t.Helper()
+	return rig.memoRecordedAt(t, author, body, filename, nil)
+}
+
+// memoRecordedAt is memo with the client's recording-time assertion (CHRN-118),
+// which only an upload arrival carries.
+func (rig *memoDBRig) memoRecordedAt(t *testing.T, author store.User, body, filename string, recorded *time.Time) store.Memo {
+	t.Helper()
 	sum := sha256.Sum256([]byte(body))
 	res, err := rig.st.IngestMemo(rig.ctx, store.Arrival{
 		AuthorID:         author.ID,
@@ -121,6 +128,7 @@ func (rig *memoDBRig) memo(t *testing.T, author store.User, body, filename strin
 		Source:           store.SourceUpload,
 		SourceRef:        "test",
 		OriginalFilename: filename,
+		RecordedAt:       recorded,
 	})
 	if err != nil {
 		t.Fatalf("IngestMemo: %v", err)
@@ -239,6 +247,54 @@ func TestProvenanceOverTheRealStore(t *testing.T) {
 	rec = rig.get(t, "/notes/"+typed.Ref()+"/provenance", rig.ownerTok, "getNoteProvenance", http.StatusOK)
 	if items := decodeInto[wire.ProvenanceList](t, rec).Items; len(items) != 0 {
 		t.Errorf("items = %d for a typed note", len(items))
+	}
+}
+
+// CHRN-123, over the real store: the instant a client asserted comes back on the
+// provenance entry, and a memo that never sent one comes back null. Through
+// Postgres rather than the fake because it is the memoColumns Scan list that
+// carries the column to `store.Memo` -- the two hand-rolled lists CHRN-118
+// had to fix show that a new column is easy to leave off one of them.
+func TestProvenanceCarriesRecordedAtOverTheRealStore(t *testing.T) {
+	rig := realMemos(t)
+
+	// Microsecond precision is what timestamptz keeps, so assert with one.
+	asserted := time.Now().Add(-26 * time.Hour).UTC().Truncate(time.Microsecond)
+	recorded := rig.memoRecordedAt(t, rig.owner, "recorded yesterday, uploaded today", "train.ogg", &asserted)
+	plain := rig.memo(t, rig.owner, "no opinion on when", "watcher.m4a")
+
+	n, _, err := rig.st.CreateNote(rig.ctx, store.NewNote{
+		PageID: rig.page.ID, AuthorID: rig.agent.ID, ConfirmedBy: rig.owner.ID,
+		Title: "Offline capture", Body: "From the train.",
+		MemoID: &recorded.ID, Verb: ptrTo(store.VerbCreate),
+	})
+	if err != nil {
+		t.Fatalf("CreateNote: %v", err)
+	}
+	if _, err := rig.st.AppendRevision(rig.ctx, n.ID, store.NewRevision{
+		AuthorID: rig.agent.ID, ConfirmedBy: rig.owner.ID,
+		Title: "Offline capture", Body: "And from the watcher.",
+		MemoID: &plain.ID, Verb: ptrTo(store.VerbAppend),
+	}); err != nil {
+		t.Fatalf("AppendRevision: %v", err)
+	}
+
+	rec := rig.get(t, "/notes/"+n.Ref()+"/provenance", rig.ownerTok, "getNoteProvenance", http.StatusOK)
+	items := decodeInto[wire.ProvenanceList](t, rec).Items
+	if len(items) != 2 {
+		t.Fatalf("items = %d, want 2", len(items))
+	}
+	if items[0].RecordedAt == nil || !items[0].RecordedAt.Equal(asserted) {
+		t.Errorf("recorded_at = %v, want the asserted %v", items[0].RecordedAt, asserted)
+	}
+	if items[1].RecordedAt != nil {
+		t.Errorf("recorded_at = %v for a memo that never sent one, want null", items[1].RecordedAt)
+	}
+	// The two are different facts and stay different: the arrival is when the
+	// server first saw the bytes, and it is what retention reads.
+	if !items[0].CapturedAt.Equal(recorded.CapturedAt) || items[0].CapturedAt.Equal(asserted) {
+		t.Errorf("captured_at = %v, want the arrival %v and not the asserted %v",
+			items[0].CapturedAt, recorded.CapturedAt, asserted)
 	}
 }
 

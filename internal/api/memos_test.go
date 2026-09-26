@@ -189,6 +189,9 @@ func filename(name string) memoOpt {
 func codec(c string) memoOpt {
 	return func(m *store.Memo) { m.Codec = &c }
 }
+func recordedAt(at time.Time) memoOpt {
+	return func(m *store.Memo) { m.RecordedAt = &at }
+}
 
 // memo seeds one recording and puts its bytes where the layout says they go.
 // Every memo in the live corpus is m4a with a NULL codec, so that is the
@@ -392,6 +395,61 @@ func TestProvenanceListsEveryMemoBearingRevisionOldestFirst(t *testing.T) {
 	}
 	if rec := rig.get("/notes/"+typed.Ref()+"/provenance", "author-token"); !strings.Contains(rec.Body.String(), `"items":[]`) {
 		t.Errorf("body = %s; an empty list serialises as [] rather than null", rec.Body.String())
+	}
+}
+
+// CHRN-123. `recorded_at` rides on the provenance entry exactly as the store
+// holds it, and rides there as a KEY WITH A NULL, never an omitted one: a
+// generated client that treats the field as required-but-nullable is entitled
+// to expect it. Nothing is filtered on the way out -- the upload path's only
+// bound is the one the encoder needs -- so a value that is wrong but inside it
+// arrives as asserted, and telling the reader not to trust it is the reader's
+// job (web/src/lib/provenanceBlock.ts). Pinned here so a well-meaning
+// "sanitise it in the handler" cannot pass while the web read still assumes
+// it has to defend itself.
+func TestProvenanceCarriesRecordedAtAsTheClientAssertedIt(t *testing.T) {
+	rig := newMemoRig(t)
+
+	// A memo that never had one: every memo captured before CHRN-118, and
+	// every watcher delivery.
+	none := rig.memo(t, rig.author, "no opinion on when")
+	// A day earlier than it arrived: the offline case the field exists for.
+	yesterday := rig.memo(t, rig.author, "recorded on the train",
+		recordedAt(time.Date(2026, 8, 20, 23, 50, 0, 0, time.UTC)))
+	// Wrong, and inside the only bound anything enforces: after arrival, which
+	// no real recording can be, and a year the encoder still accepts.
+	future := rig.memo(t, rig.author, "a clock running ahead",
+		recordedAt(time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)))
+	ancient := rig.memo(t, rig.author, "a clock reset to nothing",
+		recordedAt(time.Date(100, 1, 1, 12, 0, 0, 0, time.UTC)))
+
+	n := rig.note(t, rig.author, &none, &yesterday, &future, &ancient)
+
+	rec := rig.get("/notes/"+n.Ref()+"/provenance", "author-token")
+	mustStatus(t, rec, http.StatusOK, "getNoteProvenance")
+	if got := strings.Count(rec.Body.String(), `"recorded_at":`); got != 4 {
+		t.Errorf("recorded_at appears %d times in %s, want once per entry -- required-but-nullable is a key, not an omission",
+			got, rec.Body.String())
+	}
+	items := decodeInto[wire.ProvenanceList](t, rec).Items
+
+	if items[0].RecordedAt != nil {
+		t.Errorf("recorded_at = %v for a memo that never sent one, want null and NOT a value derived from captured_at",
+			items[0].RecordedAt)
+	}
+	for i, m := range []store.Memo{yesterday, future, ancient} {
+		got := items[i+1].RecordedAt
+		if got == nil || !got.Equal(*m.RecordedAt) {
+			t.Errorf("entry %d recorded_at = %v, want the asserted instant %v back unaltered", i+1, got, *m.RecordedAt)
+		}
+	}
+
+	// DISPLAY ONLY. Retention still reads the arrival: an asserted recording
+	// time that says "a year ago" or "next year" moves no prune date.
+	for i, m := range []store.Memo{none, yesterday, future, ancient} {
+		if !items[i].CapturedAt.Equal(m.CapturedAt) {
+			t.Errorf("entry %d captured_at = %v, want %v -- recorded_at must never stand in for it", i, items[i].CapturedAt, m.CapturedAt)
+		}
 	}
 }
 
