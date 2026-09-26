@@ -41,3 +41,10 @@ final metaApiProvider = Provider<MetaApi>(
 final uploadsApiProvider = Provider<UploadsApi>(
   (ref) => UploadsApi(ref.watch(apiClientProvider)),
 );
+
+/// CHRN-120's prune pass asks the server one question about each acknowledged
+/// memo (`GET /audio/{id}`), through this. Watches [apiClientProvider] for the
+/// same reason [uploadsApiProvider] does.
+final memosApiProvider = Provider<MemosApi>(
+  (ref) => MemosApi(ref.watch(apiClientProvider)),
+);

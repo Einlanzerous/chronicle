@@ -115,16 +115,24 @@ happen, never batched to the end of an epic.
 |---|---|---|
 | **A · evidence** | the `Done when` claim and green CI — not the diff | tier `sonnet` / `haiku` |
 | **B · decision first** | a written decision *before* any code; the PR is then mechanical | tier `opus` |
-| **C · full diff** | every line | the five below |
+| **C · full diff** | every line | the six below |
 
-**Mode C is exactly five tickets, and the list does not grow by habit:**
+**Mode C is exactly six tickets, and the list does not grow by habit:**
 CHRN-22 (retention pruner), CHRN-39 (revisions), CHRN-52 (tier isolation),
-CHRN-65 (MCP transport), CHRN-67 (MCP write scopes). The rule that generates that
+CHRN-65 (MCP transport), CHRN-67 (MCP write scopes), CHRN-120 (the phone's own
+prune of its local audio). The rule that generates that
 list: *anything that can destroy authored data, or hand an agent write access to
 it.* CHRN-68's restore drill is reviewed as a result rather than as a diff.
 
 > CHRN-16 was Mode C in the original six and was moved to Mode A by decision on
 > 2026-08-23. Recorded here so the change reads as a decision rather than drift.
+
+> CHRN-120 was added as the sixth by decision on 2026-09-25 (ruling 1 of its
+> approved plan). It deletes the phone's copy of a recording — the only copy
+> until the server has one — and it does so on the server's own prune, so its
+> bug surface is new Dart (a wrong response read, a mark/unlink ordering, the
+> wrong file) that CHRN-22's Mode C review never saw. Recorded here for the same
+> reason as the note above.
 
 Mode B is where the leverage is. Discovering in a 900-line diff that the wrong
 idempotency key was chosen is the most expensive possible moment to find out;
