@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.23.0](https://github.com/Einlanzerous/chronicle/compare/v1.22.0...v1.23.0) (2026-09-26)
+
+
+### Features
+
+* **mobile:** prune local audio only on the server's own prune, default-off (CHRN-120) ([#128](https://github.com/Einlanzerous/chronicle/issues/128)) ([27ef45f](https://github.com/Einlanzerous/chronicle/commit/27ef45f74fe860b04b777f67086d77bd48a35bcc))
+
 ## [1.22.0](https://github.com/Einlanzerous/chronicle/compare/v1.21.0...v1.22.0) (2026-09-25)
 
 
