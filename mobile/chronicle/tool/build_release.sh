@@ -27,7 +27,7 @@ app=$(dirname -- "$here")
 . "$here/release_lib.sh"
 
 cd "$app"
-rl_flutter_build "$name" "$code"
+flutter build apk --release --build-name="$name" --build-number="$code" --dart-define=CHRONICLE_BASE_URL=http://10.0.0.20:4009
 
 mkdir -p build/release
 out="build/release/chronicle-$name.apk"
