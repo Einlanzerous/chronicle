@@ -240,6 +240,18 @@ func TestEverySurfaceStatesTheSameDuration(t *testing.T) {
 			if d.MemoID == ids[i] {
 				found = true
 				same("deferred list", s, d.DurationMS)
+
+				// THE EXCERPT STAYS ON THE DURABLE ROW while the duration moved
+				// off it. A memo with no durable transcript is still listed here
+				// (LEFT JOIN), with an empty excerpt and a real length: routing
+				// evidence is gated on durability and the length is not. Without
+				// this, only a reading of the SQL says the two were separated.
+				if s.notInBatch && d.Excerpt != "" {
+					t.Errorf("deferred list: %s carries excerpt %q from a transcript that is not durable", s.name, d.Excerpt)
+				}
+				if !s.notInBatch && d.Excerpt == "" {
+					t.Errorf("deferred list: %s has a durable transcript and no excerpt", s.name)
+				}
 			}
 		}
 		if !found {
