@@ -11,10 +11,16 @@ import 'api/session.dart';
 import 'app.dart';
 import 'capture/capture_controller.dart';
 import 'queue/background.dart';
+import 'queue/prune.dart' show pruneBuildMarker;
 import 'queue/queue_controller.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Which kind of build this is, once, in the device log. Also what keeps the
+  // marker in the snapshot for the release guard to find (see
+  // [pruneBuildMarker]); debugPrint is not stripped from a release build.
+  debugPrint(pruneBuildMarker);
 
   // Both of these are read before the first frame on purpose. The address lives
   // in SharedPreferences and the token in the keystore, and both reads are

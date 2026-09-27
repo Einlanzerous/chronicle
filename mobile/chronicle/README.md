@@ -205,7 +205,7 @@ device](#verifying-it-on-a-device) below, then:
 
 1. **Ten memos, offline.** Airplane mode. Record ten short memos. Expect ten
    `QUEUED` rows, `0` acknowledged, no file removed.
-2. **Force-stop, and confirm nothing runs.** `am force-stop dev.dodson.chronicle`.
+2. **Force-stop, and confirm nothing runs.** `am force-stop dev.dodson.chronicle.dev`.
    Reconnect the network. Wait several minutes. Expect **all ten still
    `QUEUED`** — this is not a failure, it is the platform fact the plan's
    finding 7 names.
@@ -325,11 +325,12 @@ default-off: the code is landed, reviewed and tested, and what is
 deferred is storage reclamation. `test/queue/prune_test.dart` pins the default,
 so changing it fails CI; flipping it is the follow-up that closes the gap.
 
-**This is a default, not a lock.** Chronicle has no APK release track yet, so
-nothing rejects a release build that passes the define. Lyceum's
-`tool/check_store_build.sh` fails on any `--dart-define` in its release workflow;
-the ticket that adds Chronicle's release track (see `server_url.dart`) owns the
-equivalent, and it must reject this define too.
+**Since CHRN-125 it is checked, not just defaulted.** A release APK is made by
+`tool/build_release.sh` and nothing else, and `tool/check_release_build.sh`
+fails the release if that path passes any `--dart-define` -- this one included
+-- and then reads `pruneBuildMarker` back out of the built APK and requires
+`chronicle: local-audio prune off` in every snapshot. See
+[Releases](#releases-chrn-125).
 
 ### The gate: the server's own prune, and nothing else
 
@@ -422,14 +423,15 @@ reachable quickly by ordinary use, because `captured_at` is immutable and only a
 
 1. Record a memo and choose **DISCARD NOW** on the confirm (CHRN-62). Before
    CHRN-62 this step meant hand-setting `retention` in `meta.json` over
-   `adb shell run-as dev.dodson.chronicle`.
+   `adb shell run-as` on the debug build.
 2. Let it send: one `SENT` row, and one `206` probe straight after the ack.
 3. On the test database make sure a durable transcript exists (model
    `whisper.cpp/small.en`, `partial` false), then run `chronicle prune` against
    it (or wait for the server's hourly sweep).
 4. The once-per-24-hours cap now blocks the second probe, so clear
-   `last_polled_at` in that capture's `upload.json` with the same adb edit as
-   step 1 — or wait 24 hours.
+   `last_polled_at` in that capture's `upload.json` over
+   `adb shell run-as dev.dodson.chronicle.dev` (a debug build is `.dev` since
+   CHRN-125, and the released app refuses `run-as`) — or wait 24 hours.
 5. Wake the queue (open the app). Expect `audio.opus` gone from
    `<filesDir>/captures/<id>/` while `meta.json`, `upload.json` and `pruned`
    remain, and one `chronicle: pruned local audio memo=… gate=audio_pruned`
@@ -438,6 +440,154 @@ reachable quickly by ordinary use, because `captured_at` is immutable and only a
 Evidence belongs on the CHRN-120 Switchyard ticket as a comment. If hardware or
 time does not allow the pass, say so there as a deviation rather than skipping it
 silently.
+
+## Releases (CHRN-125)
+
+The app ships as a **signed APK attached to a GitHub Release** and is
+sideloaded. There is one device and one user; a Play account, Play's own key
+custody and review latency buy nothing here.
+
+### Installing
+
+Download `chronicle-<version>.apk` from the newest **`mobile-v*`** Release on
+<https://github.com/Einlanzerous/chronicle/releases> -- the server's `v*`
+Releases carry no APK -- and check it against the `.sha256` beside it. Then
+either open it on the device (allow the installer once) or:
+
+```sh
+adb install -r chronicle-<version>.apk
+```
+
+A fresh install knows no server. Scan *Account -> Add device* on a signed-in
+browser, as in the [device pass](#the-device-pass).
+
+### Updating
+
+**Obtainium**, pointed at `https://github.com/Einlanzerous/chronicle` with the
+APK asset filter `^chronicle-.*\.apk$`. Obtainium has no tag filter; the asset
+filter alone skips the server's releases, because they carry no matching file.
+It checks on a schedule and notifies. The signature check is Android's own, not
+Obtainium's: the installer accepts an update only when it is signed within the
+app's lineage, the same rule as `adb install -r`.
+
+The fallback with no app on the phone is GitHub's *Watch -> Custom ->
+Releases* email, then install as above.
+
+### How a release is cut
+
+`mobile/chronicle` is its own release-please component, `mobile`, with its own
+`CHANGELOG.md` and **`mobile-vX.Y.Z` tags** -- the way `asr/` is versioned
+apart from the server (CHRN-82), and for the same reason: an Android-only
+commit no longer cuts a server release, and a server-only one no longer
+implies a new APK. The root package excludes `mobile/`.
+
+Merging the `mobile` release PR pushes the tag, and the tag runs
+`.github/workflows/mobile-release.yml`:
+
+1. the guard's self-test, then its config check (below);
+2. **it waits for magos's approval** -- the `mobile-release` environment has a
+   required reviewer, because the environment's `mobile-v*` rule limits the
+   ref's *name* and not who pushed it, and the key is the only thing between
+   repo write access and code on the phone;
+3. `tool/build_release.sh <version> <unix-time>` builds, signs and asserts;
+4. the guard's artifact scan on that APK;
+5. the APK and its `.sha256` go onto the Release.
+
+`versionName` is the tag's version; `versionCode` is a Unix timestamp
+(Lyceum's rule), so a re-dispatch of the same tag still counts as newer. To
+rebuild a tag, run the workflow by hand **from that tag** (the *Use workflow
+from* selector), or the environment refuses it.
+
+**A contract change still deploys the server first.** A `mobile-v*` Release
+built from a tree whose generated client sends a new field is installed only
+after the server release carrying that field is promoted (see
+[above](#the-server-deploys-first-on-any-contract-change-the-client-always-sends)).
+
+### The guard: no `--dart-define` in a release
+
+`CHRONICLE_BASE_URL` would point every install at whoever built it;
+`CHRONICLE_PRUNE_LOCAL_AUDIO` turns on the phone's deletion of its own audio,
+which ships off until the database has a backup. Neither may reach a release,
+and nothing in the Dart source can hold that line -- it is a property of the
+build command. `tool/check_release_build.sh` (a port of Lyceum's
+`check_store_build.sh`) checks four things:
+
+| check | what it catches |
+|---|---|
+| config | any `dart-define` (`--dart-define`, `--dart-define-from-file`, `-Pdart-defines`) in `mobile-release.yml`, `tool/build_release.sh`, `tool/release_lib.sh` or the Gradle files |
+| hostnames | the estate's domain or `chronicle-direct.zerogravity…` in a shipped file or the APK |
+| origins | any absolute URL in the Dart snapshot that is not on its allowlist -- a baked base URL, whatever it points at |
+| marker | `pruneBuildMarker`: every `libapp.so` must say `chronicle: local-audio prune off` and none `…prune ON` |
+
+The last exists because the prune define is a `bool`: const-folded, it leaves
+no string in the snapshot, so no scan could tell a build with it from one
+without. `pruneBuildMarker` is folded the same way, so exactly one of its two
+literals survives, and `main()` logs it once at startup.
+
+It runs **config-only in `mobile.yml` on every PR** -- advisory, since `main`
+has no required checks -- and **in full before upload in `mobile-release.yml`**,
+which is the hard stop. `--self-test` proves each check fails on what it exists
+to catch; `tool/test_release_lib.sh` does the same for the signing assertions.
+
+### Signing, and the key
+
+The release key lives in **Signet**, project `chronicle`
+(`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`,
+`ANDROID_KEY_PASSWORD`), synced to the **`mobile-release` environment only**:
+no PR and no push to `main` can read it. No copy is in the repository or on
+disk.
+
+The app installed before CHRN-125 was a debug build, signed by this machine's
+`~/.android/debug.keystore`. Android refuses an update across a signature
+change -- and an uninstall would destroy every unsent capture, the session, and
+the local audio that is the only second copy of each memo while the database has
+no backup. So the release key was introduced by **key rotation**:
+`android/signing/lineage.bin` (certificates and signatures, no private key)
+records the debug key handing over to the release key, and every release is
+signed by the release key **with that lineage**:
+
+```sh
+apksigner sign --ks <release> --lineage android/signing/lineage.bin \
+  --rotation-min-sdk-version 30 --v1-signing-enabled false --v2-signing-enabled false …
+```
+
+That is APK Signature Scheme v3, release key alone. v1/v2 would need the
+lineage's oldest signer -- the debug key -- in CI, and the minSdk-30 rotation
+means every device the app supports sees the same rotated signer.
+`tool/release_lib.sh` asserts, before upload, that the APK is signed by the
+release key alone, **carries the debug -> release lineage** (read from the APK;
+`apksigner verify` cannot see it), is `dev.dodson.chronicle` at the tag's
+version, is not debuggable, and holds all three ABIs.
+
+Consequences worth knowing:
+
+* **Nothing signed by the debug key installs over the released app any more**
+  (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`, measured). That is why debug builds are
+  `.dev`.
+* The debug keystore's only role was writing the lineage. A copy is in Signet as
+  `chronicle/ANDROID_DEBUG_KEYSTORE_BASE64` with no target, so the lineage can
+  be reproduced; CI never sees it.
+* **A lost release key costs this:** no further update can be signed. Recovery
+  is a new key and an uninstall -- drain the queue first, and accept that the
+  phone's local audio copies and the session go with it (a release build has no
+  `run-as` to back them up from). Signet is the only copy of the key, and
+  Signet's own store is inside the estate's open backup gap.
+
+### Scratch releases for a device pass
+
+`tool/build_rotcheck.sh` builds the same release, signs it the same way and
+runs the same assertions and scan, as `dev.dodson.chronicle.rotcheck`
+("Chronicle rotcheck"), together with a debug build of that package -- so a
+pass can install the release OVER the debug build and walk the key rotation on
+an app that holds nothing. The package change is made in a copy of the app;
+the release path has no knob for it, and the script refuses to run in CI.
+
+```sh
+signet exec --secret chronicle/ANDROID_KEYSTORE_BASE64 \
+  --secret chronicle/ANDROID_KEYSTORE_PASSWORD \
+  --secret chronicle/ANDROID_KEY_ALIAS \
+  --secret chronicle/ANDROID_KEY_PASSWORD -- tool/build_rotcheck.sh /tmp/rotcheck
+```
 
 ## Verifying it on a device
 
@@ -465,6 +615,12 @@ adb mdns services                        # _adb-tls-connect._tcp -> the connect 
 adb devices                              # auto-connects
 flutter install --debug                  # --debug: `flutter install` defaults to release
 ```
+
+A debug build installs as **`dev.dodson.chronicle.dev`, "Chronicle dev"**,
+beside the released app and with its own data -- it can never overwrite the real
+install, and the real install refuses it anyway (see
+[Releases](#releases-chrn-125)). A pass that needs the real app's own data works
+on a released build, which is not debuggable, so `run-as` is not available on it.
 
 The app logs nothing on purpose (`avoid_print`), so **screenshots are the
 observability**: `adb exec-out screencap -p > shot.png`.
@@ -527,7 +683,8 @@ second invite. The session list showed the device as **Pixel 9 Pro**, which is
 
 ## Named deferrals
 
-Both are deliberate, and both are recorded rather than left to be discovered:
+Deliberate, and recorded rather than left to be discovered (the APK release
+track that used to be listed here is [Releases](#releases-chrn-125)):
 
 * **The canvas's typefaces are not bundled.** Hanken Grotesk, JetBrains Mono and
   Newsreader come to the web client from `@fontsource`, which ships **woff2
@@ -537,11 +694,6 @@ Both are deliberate, and both are recorded rather than left to be discovered:
   faces later is one edit in one file. This follows CHRN-54, which left the type
   scale to "whichever ticket builds the first real screen and can see what sizes
   it actually needs."
-* **No APK release track.** CI builds a debug APK and stops. A signed release
-  needs a keystore this repo does not have, and the ticket that adds one also
-  owns Lyceum's `tool/check_store_build.sh` guard — the one that fails a store
-  build carrying any `--dart-define`, so that no installer ships pointed at
-  whoever built it.
 
 ## Layout
 

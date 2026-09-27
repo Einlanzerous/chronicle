@@ -15,6 +15,11 @@ name: mobile
 # from both sides -- Dart reproduces the trim, Go probes the result. A PR that
 # edits only the fixtures touches nothing under mobile/, and is precisely the
 # PR that would break that pin while showing green here.
+#
+# .github/workflows/mobile-release.yml is in because the release-build guard
+# below reads it (CHRN-125): a PR that edited only the release workflow -- to
+# add an inline `--dart-define`, say -- would otherwise never run this file and
+# be caught first at tag time.
 on:
   pull_request:
     paths:
@@ -23,6 +28,7 @@ on:
       - "internal/audio/testdata/**"
       - "scripts/gen-dartapi.sh"
       - ".github/workflows/mobile.yml"
+      - ".github/workflows/mobile-release.yml"
   push:
     branches: [main]
     paths:
@@ -31,6 +37,7 @@ on:
       - "internal/audio/testdata/**"
       - "scripts/gen-dartapi.sh"
       - ".github/workflows/mobile.yml"
+      - ".github/workflows/mobile-release.yml"
 
 permissions:
   contents: read
@@ -73,11 +80,31 @@ jobs:
 
       - run: flutter test
 
+      # The release-build guard, config half (CHRN-125): nothing on the release
+      # build path may pass a dart-define, and no shipped file names a private
+      # host. ADVISORY here -- main has no required checks, so red warns a
+      # human rather than blocking a merge. The hard stop is the same script in
+      # mobile-release.yml, which fails before anything is uploaded. The
+      # self-test first: a guard that cannot fail reads as proof.
+      - name: release-build hygiene
+        run: |
+          tool/check_release_build.sh --self-test
+          tool/check_release_build.sh
+
       # A DEBUG apk, not a release one. It proves the Android half compiles --
       # the plugin manifests merge, the camera permission resolves, Gradle is
-      # happy -- without needing a signing key, which this repo does not have
-      # and which an APK release track (not this ticket) would own.
+      # happy -- without the signing key, which lives in the mobile-release
+      # environment and only a `mobile-v*` tag can reach (mobile-release.yml).
       - run: flutter build apk --debug
+
+      # The release signing assertions, proven able to fail on throwaway keys and
+      # aapt2-built fixtures -- an APK with no lineage above all, which
+      # `apksigner verify` cannot tell from a good one. After the debug build,
+      # which is what puts platforms/android-36 on the runner.
+      - name: release signing self-test
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;36.0.0" > /dev/null
+          tool/test_release_lib.sh
 
   # mobile/chronicle/packages/chronicle_api is GENERATED from openapi.yaml by
   # scripts/gen-dartapi.sh (openapi-generator, pinned twice -- the npm launcher

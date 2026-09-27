@@ -285,7 +285,14 @@ jobs:
       # E9 to the expensive tier; `.github/review-ignore` excludes only the
       # generated client, so that is a sizeable side effect on unrelated tickets
       # and is not taken.
-      sensitive_paths: '^(internal/store/|internal/scribe/|internal/triage/|asr/|internal/transcribe/|internal/api/(session|cfaccess|ratelimit|router|policy|contract|storage|upload|transcription)|internal/(invite|config|audio|watch|upload|retention)/|cmd/chronicle/|migrations/|deploy/|scripts/|verify\.sh|openapi\.yaml|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore|mobile/chronicle/(lib|test)/capture/capture_record|mobile/chronicle/(lib|test)/queue/(prune|ack|audio_gate|engine_prune|background|queue_controller))'
+      #
+      # `mobile/chronicle/tool/`, `android/signing/` and `android/app/
+      # build.gradle.kts` are the release path (CHRN-125): the build command the
+      # dart-define guard reads, the guard itself, the signing and its
+      # assertions, the lineage, and the application id and build types. A
+      # weakened guard or a dropped `--lineage` passes every other check and
+      # surfaces only on the phone, so they read at the expensive tier.
+      sensitive_paths: '^(internal/store/|internal/scribe/|internal/triage/|asr/|internal/transcribe/|internal/api/(session|cfaccess|ratelimit|router|policy|contract|storage|upload|transcription)|internal/(invite|config|audio|watch|upload|retention)/|cmd/chronicle/|migrations/|deploy/|scripts/|verify\.sh|openapi\.yaml|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore|mobile/chronicle/(lib|test)/capture/capture_record|mobile/chronicle/(lib|test)/queue/(prune|ack|audio_gate|engine_prune|background|queue_controller)|mobile/chronicle/tool/|mobile/chronicle/android/(signing/|app/build\.gradle\.kts))'
 
       # No `docs_skip_extra`: this repo commits no knowledge-graph cache, and
       # the one generated artifact it does carry is excluded outright in

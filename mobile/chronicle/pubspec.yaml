@@ -1,12 +1,13 @@
 name: chronicle
 description: "Chronicle — voice-note capture and the evening triage pass (Android client)."
-# Not published, and not versioned by release-please either: the repo's release
-# pipeline ships a server image, and an APK release is its own workflow nobody
-# has asked for yet (CHRN-59 builds a debug APK in CI and stops there). When a
-# release track exists, this line gets the `# x-release-please-version` marker
-# Argosy's carries.
+# Not published to pub.dev. Versioned by release-please as its own component
+# (CHRN-125): `mobile` in release-please-config.json, `mobile-v*` tags, its own
+# CHANGELOG.md here -- the way asr/ is versioned apart from the server. The
+# marker below is how release-please rewrites this line; the version a release
+# APK carries comes from its tag (mobile-release.yml), and this line is kept in
+# step so a local build says the same thing.
 publish_to: "none"
-version: 0.1.0
+version: 0.1.0 # x-release-please-version
 
 # Pinned toolchain, matching the estate: Flutter 3.44.2 (stable) / Dart 3.12.2,
 # installed user-local under ~/dev-tools. `source ~/dev-tools/env.sh` and the

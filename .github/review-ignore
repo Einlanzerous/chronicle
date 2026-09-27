@@ -104,6 +104,7 @@
 # target there cannot silently un-match the release skip.
 ^CHANGELOG\.md$
 ^asr/CHANGELOG\.md$
+^mobile/chronicle/CHANGELOG\.md$
 
 # NOT excluded, deliberately, and each for a reason:
 #

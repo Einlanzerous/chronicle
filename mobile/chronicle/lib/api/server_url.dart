@@ -47,10 +47,11 @@ const _serverKey = 'chronicle.server_url';
 /// **Never in a build that leaves this machine.** An installed app must start
 /// with no address, because the invite QR is what supplies one — baking a
 /// default in points every install at whoever built the APK and hides the
-/// connect prompt that scanning starts from. Lyceum enforces that with
-/// `tool/check_store_build.sh` failing on any `--dart-define` in its release
-/// workflow; Chronicle has no APK release track yet, and the ticket that adds
-/// one owns that guard.
+/// connect prompt that scanning starts from. Enforced since CHRN-125 by
+/// `tool/check_release_build.sh` (a port of Lyceum's `check_store_build.sh`):
+/// the release workflow fails if its build path passes any `--dart-define`, and
+/// again if the built APK's Dart snapshot holds an absolute URL that is not on
+/// the guard's allowlist -- which a baked value of this define would be.
 const _compileDefault = String.fromEnvironment('CHRONICLE_BASE_URL');
 
 /// The configured base URL, normalised. Empty means "not configured yet", and
