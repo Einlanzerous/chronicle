@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.24.0](https://github.com/Einlanzerous/chronicle/compare/v1.23.0...v1.24.0) (2026-09-27)
+
+
+### Features
+
+* **mobile:** an Android release track -- signed APKs on mobile-v* tags, with a guard that rejects --dart-define (CHRN-125) ([#134](https://github.com/Einlanzerous/chronicle/issues/134)) ([d91a825](https://github.com/Einlanzerous/chronicle/commit/d91a825eddd89858aa9254c02d1250088261933b))
+* **web:** show when a memo was recorded, not when it arrived (CHRN-123) ([#130](https://github.com/Einlanzerous/chronicle/issues/130)) ([7aff29d](https://github.com/Einlanzerous/chronicle/commit/7aff29d1e6c5b3fc932fcadb08f751d775c91bfa))
+
+
+### Bug Fixes
+
+* **api:** state one duration for a memo on every surface that shows one (CHRN-85) ([#132](https://github.com/Einlanzerous/chronicle/issues/132)) ([1b3d1ec](https://github.com/Einlanzerous/chronicle/commit/1b3d1ecd0f2a88d725368001a86d621c3885c68c))
+
+
+### Maintenance
+
+* **main:** release mobile 0.2.0 ([#138](https://github.com/Einlanzerous/chronicle/issues/138)) ([baeacdd](https://github.com/Einlanzerous/chronicle/commit/baeacdd6afa1ba1e8dd8be7818ace7b65feee2a0))
+
 ## [1.23.0](https://github.com/Einlanzerous/chronicle/compare/v1.22.0...v1.23.0) (2026-09-26)
 
 
