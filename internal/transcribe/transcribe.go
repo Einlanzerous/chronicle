@@ -561,6 +561,40 @@ func (s *Service) observe(ctx context.Context, job store.MemoJob, memo store.Mem
 	}
 }
 
+// durationGapWarnMS is how far a memo's header duration and the transcript's
+// measured one may differ before it is worth a line in the log (CHRN-85).
+//
+// One second, because that is the resolution anything displays a length at, and
+// because the two were measured on prod (2026-09-26) to differ by a CONSTANT
+// 19 ms across every memo that has both -- one Opus frame. A gap of a second is
+// fifty times that: not rounding and not an encoder's padding, but a file that
+// is not the length its own header claims (truncated, or the wrong audio for the
+// row). It is one number to defend, and it only ever produces a log line.
+const durationGapWarnMS = 1000
+
+// warnOnDurationGap is the tripwire under store.ResolveDuration's header-first
+// rule. That rule shows the header and reconciles nothing, which is right for a
+// 19 ms difference and would hide a real fault; this is where a real fault gets
+// said out loud, at the one moment both values are in hand.
+//
+// Log only. It carries the memo id and both numbers and NOTHING ELSE: no
+// filename, which is authored text this codebase declines to log
+// (REVIEW.md §8), and no verdict about which value is right.
+func (s *Service) warnOnDurationGap(ctx context.Context, memo store.Memo, transcriptMS *int64) {
+	if memo.DurationMS == nil || transcriptMS == nil {
+		return // one side is unmeasured: nothing to disagree with
+	}
+	gap := int64(*memo.DurationMS) - *transcriptMS
+	if gap < 0 {
+		gap = -gap
+	}
+	if gap <= durationGapWarnMS {
+		return
+	}
+	s.logger.WarnContext(ctx, "a recording's header duration and its transcript's measured duration disagree by more than a second; the header is the one shown",
+		"memo", memo.ID, "header_ms", *memo.DurationMS, "transcript_ms", *transcriptMS, "gap_ms", gap)
+}
+
 // fetch collects a succeeded result and writes the transcript.
 func (s *Service) fetch(ctx context.Context, job store.MemoJob, memo store.Memo) {
 	resp, err := s.asr.GetJobResultWithResponse(ctx, *job.JobID)
@@ -617,6 +651,11 @@ func (s *Service) fetch(ctx context.Context, job store.MemoJob, memo store.Memo)
 		s.logError(ctx, "could not record a transcript", err, "memo", memo.ID)
 		return
 	}
+
+	// After the write, so a transcript that failed to land does not also
+	// announce a disagreement about it, and before anything can return: this
+	// observes and never gates. The transcript is stored whatever it says.
+	s.warnOnDurationGap(ctx, memo, res.AudioDurationMs)
 
 	// Collected AFTER the transcript is written, never before. If the process
 	// dies between the two, the next sweep collects again and the tier-2

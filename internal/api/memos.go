@@ -279,25 +279,33 @@ func prunesAtFor(status string, at *time.Time) *time.Time {
 // Two columns hold one and they are measured differently -- memos.duration_ms
 // is Ogg granule arithmetic and is populated for Ogg Opus only, while
 // transcripts.audio_duration_ms is measured off the normalised 16 kHz mono WAV
-// and is populated for everything that transcribes. Every memo in the live
-// corpus is m4a with a NULL header duration, so reading the memo column alone
-// would render a dash for the whole corpus with no error anywhere.
+// and is populated for everything that transcribes. A memo that is not Ogg Opus
+// (the m4a eval corpus of 2026-08-30) has a NULL header duration, so reading
+// the memo column alone renders a dash for it with no error anywhere.
 //
-// It decides nothing for CHRN-85. Whichever way that ticket goes, this
-// collapses to one value and the contract does not change.
+// CHRN-85 settled which one wins and put the rule where every surface can call
+// it: store.ResolveDuration, header first. This is that call plus the wire's
+// spelling of its answer, and it is no longer the only place that resolves one
+// -- the triage batch, the deferred list and the hold response ask the same
+// function -- which is the whole of what that ticket changed here.
 func durationOf(m store.Memo, t store.Transcript, present bool) (*int64, *wire.MemoProvenanceDurationSource) {
-	source := func(v wire.MemoProvenanceDurationSource) *wire.MemoProvenanceDurationSource { return &v }
-	if m.DurationMS != nil {
-		ms := int64(*m.DurationMS)
-		return &ms, source(wire.MemoProvenanceDurationSourceMemoHeader)
+	var transcriptMS *int64
+	if present {
+		transcriptMS = t.AudioDurationMS
 	}
-	if present && t.AudioDurationMS != nil {
-		ms := *t.AudioDurationMS
-		return &ms, source(wire.MemoProvenanceDurationSourceTranscript)
+	// Nil is the pre-transcription window with no Ogg header: null, and no
+	// source at all, rather than a zero that renders as 0:00.
+	d := store.ResolveDuration(m.DurationMS, transcriptMS)
+	if d == nil {
+		return nil, nil
 	}
-	// Neither an Ogg header nor a transcript: the pre-transcription window.
-	// Null, and no source at all, rather than a zero that renders as 0:00.
-	return nil, nil
+	// A cast, and the two enums are one vocabulary: store.DurationSource's
+	// strings ARE the wire's. TestDurationSourceIsTheWiresEnum pins that, so a
+	// source added on one side alone fails a test rather than being dropped here
+	// -- a switch with a default would turn that into a silent null, which is
+	// the blank this rule exists to remove.
+	source := wire.MemoProvenanceDurationSource(d.Source)
+	return &d.MS, &source
 }
 
 // ── the transcript ──────────────────────────────────────────────────────────

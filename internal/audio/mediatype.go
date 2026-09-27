@@ -29,9 +29,10 @@ import (
 // derive anything. The extension is the fallback for a memo whose headers
 // could not be read.
 //
-// THE FINAL FALLBACK IS A GUESS AND SHOULD BE READ AS ONE. CHRN-85 found every
-// memo in the live corpus arriving m4a with a NULL codec, so the extension
-// branch is the one that fires; audio/ogg is reached only by a memo with
+// THE FINAL FALLBACK IS A GUESS AND SHOULD BE READ AS ONE. CHRN-85 found the
+// m4a eval corpus of 2026-08-30 arriving with a NULL codec, so for those the
+// extension branch is the one that fires (a phone's Ogg Opus has a codec and
+// never reaches it); audio/ogg is reached only by a memo with
 // neither column, and it is the right guess because every recording either
 // ingest path has produced is Opus in Ogg and the ASR service probes the
 // content anyway. Sniffing the first twelve bytes would beat it — and would be

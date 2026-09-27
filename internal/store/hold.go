@@ -81,6 +81,13 @@ type DeferredMemo struct {
 	Memo    Memo
 	Excerpt string
 
+	// TranscriptDurationMS is UntriagedMemo's: the BEST transcript's duration,
+	// not the durable row's, and an input to ResolveDuration rather than an
+	// answer. It matters most HERE, where a memo with no durable transcript is
+	// still listed (LEFT JOIN below), so the excerpt can be empty while the
+	// recording still has a length.
+	TranscriptDurationMS *int64
+
 	// Age is how long it has been deferred, computed IN SQL from now() rather
 	// than in Go from HeldAt.
 	//
@@ -207,7 +214,7 @@ func (s *Store) DeferredMemos(ctx context.Context, authorID uuid.UUID, limit int
 		`SELECT `+prefixed(memoColumns, "m")+`,
 		        h.held_by, h.reason, h.held_at,
 		        EXTRACT(EPOCH FROM (now() - h.held_at)),
-		        COALESCE(t.excerpt, '')
+		        COALESCE(t.excerpt, ''), `+bestTranscriptDuration("m")+`
 		   FROM tier1.triage_holds h
 		   JOIN tier2.memos m ON m.id = h.memo_id
 		   LEFT JOIN LATERAL (
@@ -252,7 +259,8 @@ func (s *Store) DeferredMemos(ctx context.Context, authorID uuid.UUID, limit int
 			&m.State, &m.StateReason, &m.Retention, &m.AudioPrunedAt,
 			&m.DurationMS, &m.Codec, &m.SampleRateHz, &m.OriginalFilename,
 			&m.CreatedAt, &m.UpdatedAt,
-			&it.Hold.HeldBy, &reason, &it.Hold.HeldAt, &ageSeconds, &it.Excerpt); err != nil {
+			&it.Hold.HeldBy, &reason, &it.Hold.HeldAt, &ageSeconds, &it.Excerpt,
+			&it.TranscriptDurationMS); err != nil {
 			return nil, fmt.Errorf("store: deferred memos: %w", err)
 		}
 		it.Hold.MemoID = m.ID

@@ -106,6 +106,9 @@ const itemBudget = switchyard.DefaultTimeout + 15*time.Second
 // Store is the tier-2 surface: the corpus, and the decisions written about it.
 type Store interface {
 	GetMemo(ctx context.Context, id uuid.UUID) (store.Memo, error)
+	// TranscriptAudioDuration is the one number Hold needs from a transcript
+	// (CHRN-85), read narrowly so a tap does not move the whole text.
+	TranscriptAudioDuration(ctx context.Context, memoID uuid.UUID) (*int64, error)
 	UntriagedMemos(ctx context.Context, authorID uuid.UUID, limit int) ([]store.UntriagedMemo, error)
 	MemoLinkFor(ctx context.Context, memoID uuid.UUID) (store.MemoLink, error)
 	ClaimMemoLink(ctx context.Context, d store.Decision) (store.MemoLink, store.LinkClaim, error)

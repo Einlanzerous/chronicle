@@ -58,7 +58,7 @@ class Memo {
   /// When the audio was deleted, and null until it is. Set exactly when `retention_status` is `pruned`, which is also when `audio_pruned` is true — the boolean says whether, this says when. 
   DateTime? audioPrunedAt;
 
-  /// Null until something has decoded the file; a declaration is not a measurement.
+  /// **The header's duration only**, so null for anything that is not Ogg Opus: null until something has decoded the file, and a declaration is not a measurement. It is not \"how long is this recording\" — that answer is resolved, header first and then the transcript's measurement, and it lives on `MemoProvenance.duration_ms`, `BatchItem.duration_ms` and `DeferredItem.duration_ms` (CHRN-85). This payload is only returned when an upload completes, before any transcript can exist, so a resolved value here could never differ from this one. 
   int? durationMs;
 
   String? codec;
