@@ -105,6 +105,8 @@ jobs:
 
       - run: flutter pub get
 
+      - run: flutter build apk --release --dart-define=CHRONICLE_PRUNE_LOCAL_AUDIO=true
+
       - name: build, sign, assert
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
