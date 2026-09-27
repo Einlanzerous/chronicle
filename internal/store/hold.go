@@ -81,8 +81,11 @@ type DeferredMemo struct {
 	Memo    Memo
 	Excerpt string
 
-	// TranscriptDurationMS is UntriagedMemo's, for the same reason and off the
-	// same lateral row: an input to ResolveDuration, never shown on its own.
+	// TranscriptDurationMS is UntriagedMemo's: the BEST transcript's duration,
+	// not the durable row's, and an input to ResolveDuration rather than an
+	// answer. It matters most HERE, where a memo with no durable transcript is
+	// still listed (LEFT JOIN below), so the excerpt can be empty while the
+	// recording still has a length.
 	TranscriptDurationMS *int64
 
 	// Age is how long it has been deferred, computed IN SQL from now() rather
@@ -211,11 +214,11 @@ func (s *Store) DeferredMemos(ctx context.Context, authorID uuid.UUID, limit int
 		`SELECT `+prefixed(memoColumns, "m")+`,
 		        h.held_by, h.reason, h.held_at,
 		        EXTRACT(EPOCH FROM (now() - h.held_at)),
-		        COALESCE(t.excerpt, ''), t.audio_duration_ms
+		        COALESCE(t.excerpt, ''), `+bestTranscriptDuration("m")+`
 		   FROM tier1.triage_holds h
 		   JOIN tier2.memos m ON m.id = h.memo_id
 		   LEFT JOIN LATERAL (
-		         SELECT left(text, $4) AS excerpt, audio_duration_ms
+		         SELECT left(text, $4) AS excerpt
 		           FROM tier2.transcripts
 		          WHERE memo_id = m.id AND `+DurableClause+`
 		          ORDER BY transcribed_at DESC

@@ -53,14 +53,15 @@ type Duration struct {
 // again; the transcript has no such CHECK, and a silent file's `0` must not
 // render as a length.
 //
-// WHICH TRANSCRIPT ROW is the caller's, and it is not the same row everywhere:
-// MemoProvenance and the hold response read the memo's best transcript (a
-// complete one, else the latest partial -- GetTranscript's choice), while the
-// two triage lists read the latest DURABLE one, the row that also supplies the
-// excerpt. That is accepted rather than unified: `audio_duration_ms` measures
-// the AUDIO and not the run, so any two rows for one memo agree unless the
-// audio was re-normalised differently, and unifying the row choice would bend
-// the lists' durable floor to serve a display value.
+// WHICH TRANSCRIPT ROW is the caller's, and it is the SAME row on every
+// surface: the memo's best transcript, a complete one else the latest partial,
+// from any model (GetTranscript's choice, written once as bestTranscriptOrder).
+// It is not the durable row the triage excerpt comes from. Durability decides
+// whether a transcript may license deleting audio; a recording's length is a
+// fact about the audio, so a memo whose only transcript is partial, or from a
+// model outside the durable set, still has one. An earlier draft read the lists'
+// duration off the durable row and a review found the cost: a held memo in that
+// state showed a length in the hold response and none in the deferred list.
 func ResolveDuration(header *int32, transcript *int64) *Duration {
 	if header != nil && *header > 0 {
 		return &Duration{MS: int64(*header), Source: DurationFromHeader}

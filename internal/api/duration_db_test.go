@@ -68,6 +68,8 @@ func (durNoTickets) TicketURL(string) string { return "" }
 
 type durNoCatalogue struct{}
 
+func ptrInt64(v int64) *int64 { return &v }
+
 func (durNoCatalogue) Fetch(context.Context) (*catalogue.Snapshot, error) {
 	return nil, errors.New("durNoCatalogue: Fetch is not part of this test")
 }
@@ -91,13 +93,21 @@ func (rig *memoDBRig) toTranscribed(t *testing.T, id uuid.UUID) {
 // deferred list and its provenance -- because they all ask store.ResolveDuration
 // and none of them chooses a column.
 //
-// The three memos are the shapes prod actually has (measured 2026-09-26):
+// The first three memos are the shapes prod actually has (measured 2026-09-26):
 //
 //	legacy    the m4a eval corpus: NULL header, transcript 34773 -> 34773
 //	ogg       a phone's Ogg Opus: header 104000, transcript 104019, the constant
 //	          19 ms the two columns differ by -> the header, 104000
 //	unmeasured  no header and a transcript that recorded no duration -> null,
 //	          and never a 0 that renders as 0:00
+//
+// The last two are reachable and not on prod yet, and they are what a review of
+// this PR found: HoldForTriage gates on `transcribed` alone, so a memo whose only
+// transcript is PARTIAL, or complete but from a model outside the durable set,
+// can be held. The triage batch omits it (its durable floor, by design), and the
+// deferred list still lists it -- so the duration cannot ride on the durable row
+// the excerpt comes from, or the hold response and the list disagree about the
+// same memo.
 //
 // Over real Postgres, because the risk this guards is a Scan list that drops
 // the new column -- CHRN-118's trap -- and only a real query has one.
@@ -118,6 +128,13 @@ func TestEverySurfaceStatesTheSameDuration(t *testing.T) {
 		transcript *int64
 		wantMS     *int32
 		wantSource *wire.MemoProvenanceDurationSource
+
+		// model and partial default to a complete small.en, the durable case.
+		model   string
+		partial bool
+		// notInBatch: the triage batch OMITS a memo with no durable transcript,
+		// so this shape is only judged on the surfaces that can show it.
+		notInBatch bool
 	}
 	fromTranscript := wire.MemoProvenanceDurationSourceTranscript
 	fromHeader := wire.MemoProvenanceDurationSourceMemoHeader
@@ -127,6 +144,11 @@ func TestEverySurfaceStatesTheSameDuration(t *testing.T) {
 		{name: "ogg", body: "an opus from the phone", header: ptrTo(int32(104000)), transcript: ptrTo(int64(104019)),
 			wantMS: ptrTo(int32(104000)), wantSource: &fromHeader},
 		{name: "unmeasured", body: "a transcript that measured nothing"},
+		{name: "partial-only", body: "half of a th", transcript: ptrInt64(30000), partial: true, notInBatch: true,
+			wantMS: ptrTo(int32(30000)), wantSource: &fromTranscript},
+		{name: "not-a-durable-model", body: "a base.en transcript", transcript: ptrInt64(45000),
+			model: "whisper.cpp/base.en", notInBatch: true,
+			wantMS: ptrTo(int32(45000)), wantSource: &fromTranscript},
 	}
 
 	ids := make([]uuid.UUID, len(shapes))
@@ -140,8 +162,12 @@ func TestEverySurfaceStatesTheSameDuration(t *testing.T) {
 				t.Fatalf("SetMemoAudioInfo(%s): %v", s.name, err)
 			}
 		}
+		model := s.model
+		if model == "" {
+			model = "whisper.cpp/small.en"
+		}
 		if _, err := rig.st.RecordTranscript(rig.ctx, store.TranscriptInput{
-			MemoID: m.ID, Text: s.body, Model: "whisper.cpp/small.en", Backend: "vulkan",
+			MemoID: m.ID, Text: s.body, Model: model, Backend: "vulkan", Partial: s.partial,
 			AudioDurationMS: s.transcript,
 		}); err != nil {
 			t.Fatalf("RecordTranscript(%s): %v", s.name, err)
@@ -177,6 +203,14 @@ func TestEverySurfaceStatesTheSameDuration(t *testing.T) {
 		t.Fatalf("Batch: %v", err)
 	}
 	for i, s := range shapes {
+		if s.notInBatch {
+			for _, it := range batch {
+				if it.MemoID == ids[i] {
+					t.Errorf("batch: %s is offered for triage, but it has no durable transcript", s.name)
+				}
+			}
+			continue
+		}
 		same("batch", s, byID(batch, ids[i]).DurationMS)
 	}
 

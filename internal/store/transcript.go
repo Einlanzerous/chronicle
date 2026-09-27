@@ -333,6 +333,29 @@ func (s *Store) PartialTranscripts(ctx context.Context, limit int) (int64, []Par
 	return total, out, rows.Err()
 }
 
+// bestTranscriptOrder is which of a memo's transcript rows is THE transcript: a
+// complete one if there is one, otherwise the latest partial, from any model.
+// It is written once because GetTranscript, TranscriptAudioDuration and the
+// duration subquery in both triage lists must choose the same row, and they
+// are four places that could drift apart (CHRN-85).
+//
+// It is deliberately NOT the durable clause. Durability is about whether a
+// transcript may license deleting audio, and it gates the triage EXCERPT; a
+// recording's length is a fact about the audio, and the same fact whichever run
+// measured it.
+const bestTranscriptOrder = `ORDER BY partial ASC, transcribed_at DESC`
+
+// bestTranscriptDuration is the SQL for that row's `audio_duration_ms`, as a
+// scalar subquery over the memo aliased `alias`, for the triage lists (CHRN-85).
+// A list query that took the duration off the DURABLE lateral it already joins
+// for the excerpt would state no duration for a held memo whose only transcript
+// is partial, while the hold response and provenance state one -- the lists and
+// the response would disagree about one memo.
+func bestTranscriptDuration(alias string) string {
+	return `(SELECT audio_duration_ms FROM tier2.transcripts
+		         WHERE memo_id = ` + alias + `.id ` + bestTranscriptOrder + ` LIMIT 1)`
+}
+
 // TranscriptAudioDuration is `audio_duration_ms` of the row GetTranscript would
 // return -- complete first, otherwise the latest partial -- and NOTHING ELSE of
 // it: not the text, not the segments. Nil when the memo has no transcript or its
@@ -347,7 +370,7 @@ func (s *Store) TranscriptAudioDuration(ctx context.Context, memoID uuid.UUID) (
 	err := s.pool.QueryRow(ctx, `
 		SELECT audio_duration_ms FROM tier2.transcripts
 		 WHERE memo_id = $1
-		 ORDER BY partial ASC, transcribed_at DESC
+		 `+bestTranscriptOrder+`
 		 LIMIT 1`, memoID).Scan(&ms)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -364,7 +387,7 @@ func (s *Store) GetTranscript(ctx context.Context, memoID uuid.UUID) (Transcript
 	t, err := scanTranscript(s.pool.QueryRow(ctx, `
 		SELECT `+transcriptColumns+` FROM tier2.transcripts
 		 WHERE memo_id = $1
-		 ORDER BY partial ASC, transcribed_at DESC
+		 `+bestTranscriptOrder+`
 		 LIMIT 1`, memoID))
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return Transcript{}, fmt.Errorf("store: get transcript: %w", err)
