@@ -225,11 +225,15 @@ func (a *api) provenanceEntry(ctx context.Context, rv store.NoteRevision, memoID
 	}
 
 	readable := mayReadMemo(caller, m)
+	// RecordedAt (CHRN-123) goes out exactly as stored. The only bound
+	// upload.go enforces is the one the encoder needs, so this is whatever a
+	// client's clock said: display only, and the reader's to distrust.
 	entry := wire.MemoProvenance{
 		RevisionSeq:     rv.Seq,
 		RevisionId:      rv.ID,
 		MemoId:          m.ID,
 		CapturedAt:      m.CapturedAt,
+		RecordedAt:      m.RecordedAt,
 		AudioReadable:   readable,
 		RetentionStatus: wire.MemoProvenanceRetentionStatus(status),
 		// RULING 7, on this payload and on Memo: prunes_at names a FUTURE

@@ -9,9 +9,13 @@
 // IS READ OFF A FAILED REQUEST.
 // ============================================================================
 //
-// Two rules, and they are the whole reason this file exists rather than the
+// Three rules, and they are the whole reason this file exists rather than the
 // logic living inline in a `<template>`:
 //
+//  0. `recorded_at` IS A CLAIM, NOT A FACT (CHRN-123). A client's clock asserted
+//     it and nothing upstream filters it, so it is used only where it can be
+//     checked against `captured_at`, and shown with its date wherever that
+//     date is not the arrival's own. See `recordingInstant`.
 //  1. NO DATE IS DERIVED FROM `captured_at`. `prunes_at` is null on four of the
 //     five retention statuses, and `awaiting_transcript` means "prunes WHEN
 //     TRANSCRIBED" — there is no date, and rendering `captured_at + 30 days`
@@ -27,7 +31,7 @@
 // The render itself is CHRN-109. This is the obligation CHRN-107 owes it: a
 // contract it can draw from with no computed date and no second request.
 import type { components } from '@/api/schema.d.ts'
-import { formatClock, formatDate } from './format'
+import { formatClock, formatDate, formatTimestamp } from './format'
 
 export type MemoProvenance = components['schemas']['MemoProvenance']
 export type RevisionMeta = components['schemas']['RevisionMeta']
@@ -49,8 +53,62 @@ export function formatDurationMs(ms: number | null | undefined): string | null {
   return `${hours > 0 ? `${hours}:` : ''}${mm}:${String(seconds).padStart(2, '0')}`
 }
 
+// What the Go server emits for a `date-time`: RFC 3339, with an offset. A value
+// that is not this shape is not something the contract can have sent.
+const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/
+
+/**
+ * The instant the header names: `recorded_at ?? captured_at`, except that
+ * `recorded_at` is only believed where it can be checked.
+ *
+ * `recorded_at` is whatever a client's clock said. The upload path refuses a
+ * UTC year outside 100–9900 because the response encoder needs it to, and
+ * nothing else (CHRN-118 ruling 2), so year 100, year 9900 and a plausible-but
+ * -wrong 2019 all arrive here as stored. Two things are checkable from the
+ * payload alone, and either failing sends the read back to `captured_at`:
+ *
+ *  - it is a well-formed RFC 3339 instant, and
+ *  - it does not postdate `captured_at`. A recording cannot be made after its
+ *    own bytes arrived, so that value is wrong whatever the reason. There is
+ *    deliberately no tolerance for clock skew: the fallback IS the arrival, so
+ *    a phone running a little fast costs the reader a few seconds and nothing
+ *    else, and a threshold would be one more number nobody has evidence for.
+ *
+ * What is NOT checkable is a value in the past, and it gets no floor. An
+ * offline capture can wait on a phone for as long as it likes, and an import
+ * path would make an old date legitimate, so any floor discards a true value
+ * to catch a false one. Those are made visible instead — see
+ * `provenanceHeaderLine`, which prints the date whenever it is not the
+ * arrival's own.
+ *
+ * Nothing here is written back or feeds retention: `captured_at` stays the
+ * prune clock, and this is the display's choice of which instant to show.
+ */
+export function recordingInstant(entry: Pick<MemoProvenance, 'captured_at' | 'recorded_at'>): string {
+  const claimed = entry.recorded_at
+  // `== null`: the contract says null, but a key that is absent (a server that
+  // predates CHRN-123) reads the same and must not throw.
+  if (claimed == null || !RFC3339.test(claimed)) return entry.captured_at
+  const recorded = Date.parse(claimed)
+  const arrived = Date.parse(entry.captured_at)
+  // Unverifiable is not the same as trusted: with no arrival to check against,
+  // the claim is left unused.
+  if (!Number.isFinite(recorded) || !Number.isFinite(arrived) || recorded > arrived) return entry.captured_at
+  return claimed
+}
+
 /**
  * Board 1c's header line: `FROM MEMO 12:55 · 1:44 · ROUTED BY SCRIBE`.
+ *
+ * The time is the recording's own where `recordingInstant` believes one and the
+ * arrival's otherwise. It is a bare clock — the date is "already on the note"
+ * — for as long as that holds, which is when the recording and its arrival fall
+ * on the same day, and it is always true of `captured_at`. It stops being true
+ * for exactly the memos `recorded_at` exists for: recorded on a train last
+ * night and uploaded this morning would read `FROM MEMO 23:50` beside a note
+ * dated today, a time that has not happened yet. So a different day prints the
+ * whole `2026-08-20 23:50`. That is also what keeps a wrong clock visible: a
+ * bare `12:55` off a phone reset to 1970 would pass for a real one.
  *
  * `ROUTED BY SCRIBE` is the revision's `verb`, which is non-null exactly when
  * a person confirmed a Scribe proposal — so it is read off `RevisionMeta` and
@@ -58,10 +116,13 @@ export function formatDurationMs(ms: number | null | undefined): string | null {
  * than faked when there is no duration.
  */
 export function provenanceHeaderLine(
-  entry: Pick<MemoProvenance, 'captured_at' | 'duration_ms'>,
+  entry: Pick<MemoProvenance, 'captured_at' | 'recorded_at' | 'duration_ms'>,
   revision?: Pick<RevisionMeta, 'verb'> | null,
 ): string {
-  const parts = [`FROM MEMO ${formatClock(entry.captured_at)}`]
+  const at = recordingInstant(entry)
+  // Both are rendered in the server's one zone, so their date parts compare.
+  const sameDay = formatDate(at) === formatDate(entry.captured_at)
+  const parts = [`FROM MEMO ${sameDay ? formatClock(at) : formatTimestamp(at)}`]
   const duration = formatDurationMs(entry.duration_ms)
   if (duration) parts.push(duration)
   if (revision?.verb) parts.push('ROUTED BY SCRIBE')

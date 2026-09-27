@@ -952,10 +952,10 @@ type MemoProvenance struct {
 
 	// CapturedAt When Chronicle first saw the bytes — arrival time, not recording
 	// time (CHRN-118 gave the two names separate meanings; this one is
-	// **not** `recorded_at`, and `MemoProvenance` does not carry that
-	// field). Immutable — `CH002` refuses an UPDATE that moves it —
-	// which is also why it is what the audio stream's `Last-Modified`
-	// is built from.
+	// **not** `recorded_at`, which is the next field). Immutable —
+	// `CH002` refuses an UPDATE that moves it — which is also why it is
+	// what the audio stream's `Last-Modified` is built from, and what
+	// retention reads.
 	CapturedAt time.Time `json:"captured_at"`
 
 	// DurationMs How long the recording is. Null for a memo with neither a header
@@ -989,6 +989,22 @@ type MemoProvenance struct {
 	// exactly the label CHRN-22 §3 forbids — one that passes while
 	// nothing happens.
 	PrunesAt *time.Time `json:"prunes_at"`
+
+	// RecordedAt When a person says this was recorded — `Memo.recorded_at`, carried
+	// here so the note view can show it (CHRN-123). **Client-asserted and
+	// never verified, and nothing upstream filters it**: the upload path
+	// refuses only a UTC year outside 100–9900 (the bound the response
+	// encoder needs, CHRN-118 ruling 2), so a client's clock can put any
+	// other instant here. A reader MUST treat it as a claim rather than a
+	// fact — in particular it can postdate `captured_at`, which a real
+	// recording cannot.
+	//
+	// Null for a memo whose arrival never sent one: every memo captured
+	// before CHRN-118, every watcher delivery, and any phone build that
+	// predates its sender. A reader falls back to `captured_at`, never
+	// derives a value, and never lets this stand in for `captured_at`
+	// anywhere retention or ordering is decided — it is display only.
+	RecordedAt *time.Time `json:"recorded_at"`
 
 	// RetentionStatus What will happen to this memo's audio, from `store.RetentionStatus`
 	// — the same clause the pruner sweeps with, which is what makes the

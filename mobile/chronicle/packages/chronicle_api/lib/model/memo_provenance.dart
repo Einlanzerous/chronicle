@@ -17,6 +17,7 @@ class MemoProvenance {
     required this.revisionId,
     required this.memoId,
     required this.capturedAt,
+    required this.recordedAt,
     required this.durationMs,
     this.durationSource,
     required this.audioReadable,
@@ -34,8 +35,11 @@ class MemoProvenance {
   /// Pass it to `getMemoTranscript` or `getMemoAudio`.
   String memoId;
 
-  /// When Chronicle first saw the bytes — arrival time, not recording time (CHRN-118 gave the two names separate meanings; this one is **not** `recorded_at`, and `MemoProvenance` does not carry that field). Immutable — `CH002` refuses an UPDATE that moves it — which is also why it is what the audio stream's `Last-Modified` is built from. 
+  /// When Chronicle first saw the bytes — arrival time, not recording time (CHRN-118 gave the two names separate meanings; this one is **not** `recorded_at`, which is the next field). Immutable — `CH002` refuses an UPDATE that moves it — which is also why it is what the audio stream's `Last-Modified` is built from, and what retention reads. 
   DateTime capturedAt;
+
+  /// When a person says this was recorded — `Memo.recorded_at`, carried here so the note view can show it (CHRN-123). **Client-asserted and never verified, and nothing upstream filters it**: the upload path refuses only a UTC year outside 100–9900 (the bound the response encoder needs, CHRN-118 ruling 2), so a client's clock can put any other instant here. A reader MUST treat it as a claim rather than a fact — in particular it can postdate `captured_at`, which a real recording cannot.  Null for a memo whose arrival never sent one: every memo captured before CHRN-118, every watcher delivery, and any phone build that predates its sender. A reader falls back to `captured_at`, never derives a value, and never lets this stand in for `captured_at` anywhere retention or ordering is decided — it is display only. 
+  DateTime? recordedAt;
 
   /// How long the recording is. Null for a memo with neither a header duration nor a transcript — the pre-transcription window, and honest rather than a zero. 
   int? durationMs;
@@ -63,6 +67,7 @@ class MemoProvenance {
     other.revisionId == revisionId &&
     other.memoId == memoId &&
     other.capturedAt == capturedAt &&
+    other.recordedAt == recordedAt &&
     other.durationMs == durationMs &&
     other.durationSource == durationSource &&
     other.audioReadable == audioReadable &&
@@ -78,6 +83,7 @@ class MemoProvenance {
     (revisionId.hashCode) +
     (memoId.hashCode) +
     (capturedAt.hashCode) +
+    (recordedAt == null ? 0 : recordedAt!.hashCode) +
     (durationMs == null ? 0 : durationMs!.hashCode) +
     (durationSource == null ? 0 : durationSource!.hashCode) +
     (audioReadable.hashCode) +
@@ -87,7 +93,7 @@ class MemoProvenance {
     (transcript.hashCode);
 
   @override
-  String toString() => 'MemoProvenance[revisionSeq=$revisionSeq, revisionId=$revisionId, memoId=$memoId, capturedAt=$capturedAt, durationMs=$durationMs, durationSource=$durationSource, audioReadable=$audioReadable, retentionStatus=$retentionStatus, prunesAt=$prunesAt, audioPrunedAt=$audioPrunedAt, transcript=$transcript]';
+  String toString() => 'MemoProvenance[revisionSeq=$revisionSeq, revisionId=$revisionId, memoId=$memoId, capturedAt=$capturedAt, recordedAt=$recordedAt, durationMs=$durationMs, durationSource=$durationSource, audioReadable=$audioReadable, retentionStatus=$retentionStatus, prunesAt=$prunesAt, audioPrunedAt=$audioPrunedAt, transcript=$transcript]';
 
   Map<String, dynamic> toJson() {
     final json = <String, dynamic>{};
@@ -95,6 +101,11 @@ class MemoProvenance {
       json[r'revision_id'] = this.revisionId;
       json[r'memo_id'] = this.memoId;
       json[r'captured_at'] = this.capturedAt.toUtc().toIso8601String();
+    if (this.recordedAt != null) {
+      json[r'recorded_at'] = this.recordedAt!.toUtc().toIso8601String();
+    } else {
+      json[r'recorded_at'] = null;
+    }
     if (this.durationMs != null) {
       json[r'duration_ms'] = this.durationMs;
     } else {
@@ -140,6 +151,7 @@ class MemoProvenance {
         assert(json[r'memo_id'] != null, 'Required key "MemoProvenance[memo_id]" has a null value in JSON.');
         assert(json.containsKey(r'captured_at'), 'Required key "MemoProvenance[captured_at]" is missing from JSON.');
         assert(json[r'captured_at'] != null, 'Required key "MemoProvenance[captured_at]" has a null value in JSON.');
+        assert(json.containsKey(r'recorded_at'), 'Required key "MemoProvenance[recorded_at]" is missing from JSON.');
         assert(json.containsKey(r'duration_ms'), 'Required key "MemoProvenance[duration_ms]" is missing from JSON.');
         assert(json.containsKey(r'audio_readable'), 'Required key "MemoProvenance[audio_readable]" is missing from JSON.');
         assert(json[r'audio_readable'] != null, 'Required key "MemoProvenance[audio_readable]" has a null value in JSON.');
@@ -157,6 +169,7 @@ class MemoProvenance {
         revisionId: mapValueOfType<String>(json, r'revision_id')!,
         memoId: mapValueOfType<String>(json, r'memo_id')!,
         capturedAt: mapDateTime(json, r'captured_at', r'')!,
+        recordedAt: mapDateTime(json, r'recorded_at', r''),
         durationMs: mapValueOfType<int>(json, r'duration_ms'),
         durationSource: MemoProvenanceDurationSourceEnum.fromJson(json[r'duration_source']),
         audioReadable: mapValueOfType<bool>(json, r'audio_readable')!,
@@ -215,6 +228,7 @@ class MemoProvenance {
     'revision_id',
     'memo_id',
     'captured_at',
+    'recorded_at',
     'duration_ms',
     'audio_readable',
     'retention_status',

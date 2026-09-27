@@ -5,6 +5,7 @@ import {
   leadProvenance,
   provenanceBlock,
   provenanceHeaderLine,
+  recordingInstant,
   retentionLabel,
   transcriptStateFor,
   type MemoProvenance,
@@ -23,6 +24,7 @@ function entry(overrides: Partial<MemoProvenance> = {}): MemoProvenance {
     revision_id: '11111111-1111-4111-8111-111111111111',
     memo_id: '22222222-2222-4222-8222-222222222222',
     captured_at: '2026-08-21T12:55:00Z',
+    recorded_at: null,
     duration_ms: 104000,
     duration_source: 'transcript',
     audio_readable: true,
@@ -65,6 +67,97 @@ describe('provenanceHeaderLine', () => {
   it('drops the duration rather than faking one', () => {
     expect(provenanceHeaderLine(entry({ duration_ms: null, duration_source: undefined }), { verb: 'append' }))
       .toBe('FROM MEMO 12:55 · ROUTED BY SCRIBE')
+  })
+
+  // CHRN-123: the time is the recording's own where one is believed.
+  it('shows the recording time, not the arrival, when the phone sent one', () => {
+    // A minute of speech, uploaded straight away: same day, so still a bare clock.
+    expect(provenanceHeaderLine(entry({ recorded_at: '2026-08-21T12:53:30Z' }), { verb: 'create' }))
+      .toBe('FROM MEMO 12:53 · 1:44 · ROUTED BY SCRIBE')
+  })
+
+  it('prints the whole date when the recording is on another day than its arrival', () => {
+    // Recorded on the train last night, uploaded this morning. A bare 23:50
+    // beside a note dated today would be a time that has not happened yet.
+    expect(provenanceHeaderLine(entry({ recorded_at: '2026-08-20T23:50:00Z' }), null))
+      .toBe('FROM MEMO 2026-08-20 23:50 · 1:44')
+  })
+
+  it('leaves the line exactly as it was for a memo with no recorded_at', () => {
+    // Every memo on prod today: the field exists since 1.23 and the phone
+    // sender is newer than the installed build.
+    expect(provenanceHeaderLine(entry({ recorded_at: null }), { verb: 'create' }))
+      .toBe('FROM MEMO 12:55 · 1:44 · ROUTED BY SCRIBE')
+  })
+})
+
+describe('recordingInstant', () => {
+  const captured = '2026-08-21T12:55:00Z'
+
+  it('is recorded_at ?? captured_at', () => {
+    expect(recordingInstant({ captured_at: captured, recorded_at: '2026-08-20T23:50:00Z' })).toBe('2026-08-20T23:50:00Z')
+    expect(recordingInstant({ captured_at: captured, recorded_at: null })).toBe(captured)
+  })
+
+  it('reads a key that is absent as null, for a server that predates the field', () => {
+    // The contract says required-but-nullable. A payload without the key is
+    // not the contract, and it must not throw.
+    const older = { captured_at: captured } as Parameters<typeof recordingInstant>[0]
+    expect(recordingInstant(older)).toBe(captured)
+  })
+
+  it('accepts what Go emits: fractional seconds, and an offset instead of Z', () => {
+    expect(recordingInstant({ captured_at: captured, recorded_at: '2026-08-21T12:40:11.123456Z' }))
+      .toBe('2026-08-21T12:40:11.123456Z')
+    // 14:00+02:00 is 12:00Z, before the 12:55Z arrival.
+    expect(recordingInstant({ captured_at: captured, recorded_at: '2026-08-21T14:00:00+02:00' }))
+      .toBe('2026-08-21T14:00:00+02:00')
+  })
+
+  it('does not believe a recording made after its own bytes arrived', () => {
+    // No real recording postdates its arrival, so this is wrong whatever the
+    // cause: a clock running ahead, or a client that lies.
+    for (const recorded_at of [
+      '2026-08-21T12:55:01Z', // one second after: no skew allowance, the fallback is the arrival
+      '2027-01-01T00:00:00Z',
+      '9900-12-31T23:59:59Z', // the upload bound's far edge
+    ]) {
+      expect(recordingInstant({ captured_at: captured, recorded_at }), recorded_at).toBe(captured)
+    }
+    // The same instant is not later.
+    expect(recordingInstant({ captured_at: captured, recorded_at: captured })).toBe(captured)
+  })
+
+  it('does not throw on, or believe, anything that is not an RFC 3339 instant', () => {
+    for (const recorded_at of ['', 'yesterday', '2026-08-20', '2026-08-20T23:50:00', '12:55', 'NaN', '  ']) {
+      expect(recordingInstant({ captured_at: captured, recorded_at }), JSON.stringify(recorded_at)).toBe(captured)
+    }
+  })
+
+  it('leaves a claim unused when there is no arrival to check it against', () => {
+    expect(recordingInstant({ captured_at: 'not a date', recorded_at: '2026-08-20T23:50:00Z' })).toBe('not a date')
+  })
+
+  it('does NOT floor a value in the past — it makes it visible instead', () => {
+    // Year 100 is the far edge of what the server accepts, and 2019 is a
+    // plausible clock reset. Neither can be told from a legitimate old capture
+    // (an offline queue, or a future import), so neither is discarded...
+    expect(recordingInstant({ captured_at: captured, recorded_at: '0100-01-01T12:00:00Z' })).toBe('0100-01-01T12:00:00Z')
+    expect(recordingInstant({ captured_at: captured, recorded_at: '2019-03-01T09:00:00Z' })).toBe('2019-03-01T09:00:00Z')
+    // ...and the header prints their dates, so a wrong clock reads as one
+    // rather than passing for a bare time of day.
+    expect(provenanceHeaderLine(entry({ recorded_at: '0100-01-01T12:00:00Z' }), null))
+      .toBe('FROM MEMO 0100-01-01 12:00 · 1:44')
+    expect(provenanceHeaderLine(entry({ recorded_at: '2019-03-01T09:00:00Z' }), null))
+      .toBe('FROM MEMO 2019-03-01 09:00 · 1:44')
+  })
+
+  it('is display only: nothing else the entry says moves with it', () => {
+    // captured_at is the prune clock and the contract hands over prunes_at
+    // itself. A recording time a year ago moves neither.
+    const hostile = entry({ recorded_at: '2020-01-01T00:00:00Z' })
+    expect(retentionLabel(hostile)).toBe('PRUNES 2026-09-20')
+    expect(audioControlFor(hostile)).toEqual(audioControlFor(entry()))
   })
 })
 
