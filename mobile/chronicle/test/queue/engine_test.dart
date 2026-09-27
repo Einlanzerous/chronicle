@@ -386,6 +386,7 @@ void main() {
         state: CaptureState.ready,
         contentHash: 'different-hash-entirely',
         byteSize: 4,
+        retentionSkippedAt: DateTime(2026, 1, 2),
       );
       await captureDir.writeMeta(colliding);
       await captureDir.audio.writeAsBytes([9, 9, 9, 9], flush: true);
@@ -591,11 +592,11 @@ void main() {
         id: 'a',
         bytes: [1, 2, 3],
         startedAt: now,
-        // Strictly after "now": the shipped grace is zero, so only a
-        // future enqueuedAt can close the gate -- proves the engine's
-        // wiring without needing a non-zero grace, which
-        // `retention_gate_test.dart` already covers at the unit level.
+        // Strictly after "now", so the gate is closed whatever the shipped
+        // grace is -- this proves the engine's wiring, and
+        // `retention_gate_test.dart` covers the grace itself.
         enqueuedAt: now.add(const Duration(hours: 1)),
+        undecided: true,
       );
 
       await engine.drainPass(
@@ -607,6 +608,73 @@ void main() {
 
       expect(transport.calls, 0);
       expect(await capture.queueDir.read(), isNull);
+    });
+
+    group('CHRN-62: what the gate lets through, and what it declares', () {
+      final now = DateTime(2026, 1, 1, 12);
+      Future<void> pass(QueueEngine engine, QueueCapture capture) => engine.drainPass(
+            captures: [capture],
+            token: 'tok',
+            serverUrl: 'https://chronicle-direct.example.com',
+            tokenDigest: 'digest',
+          );
+
+      test('an undecided capture is not declared inside the shipped grace, '
+          'and goes with no opinion once it ends', () async {
+        final server = FakeChronicleServer();
+        final transport = FakeUploadTransport(server);
+        var clock = now;
+        final engine = QueueEngine(transport: transport, now: () => clock);
+        final capture = await writeFixtureCapture(
+          _root,
+          id: 'a',
+          bytes: [1, 2, 3],
+          startedAt: now,
+          enqueuedAt: now,
+          undecided: true,
+        );
+
+        clock = now.add(const Duration(hours: 23, minutes: 59));
+        await pass(engine, capture);
+        expect(transport.calls, 0, reason: 'nothing may reach the server before the person decides');
+
+        clock = now.add(const Duration(hours: 24));
+        await pass(engine, capture);
+        expect(server.declaredRetentions, [null]);
+        expect(server.memos, hasLength(1));
+      });
+
+      test('a chosen retention is declared at once, carrying the choice', () async {
+        for (final wire in ['discard_now', 'days_30', 'forever']) {
+          final server = FakeChronicleServer();
+          final engine = QueueEngine(transport: FakeUploadTransport(server), now: () => now);
+          final capture = await writeFixtureCapture(
+            _root,
+            id: 'c-$wire',
+            bytes: [1, 2, 3],
+            startedAt: now,
+            enqueuedAt: now,
+            retention: wire,
+          );
+          await pass(engine, capture);
+          expect(server.declaredRetentions, [wire]);
+        }
+      });
+
+      test('a skipped capture is declared at once, with no opinion', () async {
+        final server = FakeChronicleServer();
+        final engine = QueueEngine(transport: FakeUploadTransport(server), now: () => now);
+        final capture = await writeFixtureCapture(
+          _root,
+          id: 's',
+          bytes: [1, 2, 3],
+          startedAt: now,
+          enqueuedAt: now,
+        ); // the fixture's default: skipped
+        expect(capture.capture.retentionSkippedAt, isNotNull);
+        await pass(engine, capture);
+        expect(server.declaredRetentions, [null]);
+      });
     });
 
     test('backoff not yet elapsed skips a retry; elapsing it lets the retry through', () async {

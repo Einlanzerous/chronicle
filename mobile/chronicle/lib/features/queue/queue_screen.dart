@@ -13,6 +13,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../capture/capture_controller.dart';
 import '../../capture/capture_record.dart';
+import '../../capture/retention_choice.dart';
 import '../../queue/device_block.dart';
 import '../../queue/queue_controller.dart';
 import '../../queue/queue_label.dart';
@@ -20,6 +21,7 @@ import '../../queue/queue_record.dart';
 import '../../router/router.dart';
 import '../../theme/theme.dart';
 import '../../theme/tokens.dart';
+import '../capture/retention_confirm.dart';
 import '../shared/bottom_tabs.dart';
 
 class QueueScreen extends ConsumerWidget {
@@ -91,9 +93,32 @@ class QueueScreen extends ConsumerWidget {
                             onRetry: () => ref
                                 .read(queueControllerProvider.notifier)
                                 .retryCapture(capture.captureId),
+                            // CHRN-62: an undecided capture can still be
+                            // decided here until its grace is nearly over
+                            // -- the capture screen's card only ever offers
+                            // the newest one.
+                            onChoose: retentionChoosable(
+                              capture,
+                              queue.records[capture.captureId],
+                              DateTime.now(),
+                            )
+                                ? () => _chooseRetention(context, capture)
+                                : null,
                           ),
                       ],
                     ),
+            ),
+            // The rule, stated outright -- the epic's own words, and board
+            // 1a's screen 03 footer.
+            Padding(
+              padding: const EdgeInsets.fromLTRB(space4, space2, space4, space2),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('TRANSCRIPT IS THE DURABLE ARTEFACT', style: microLabel()),
+                  Text('AUDIO PRUNES AT 30 DAYS', style: microLabel(color: chText2)),
+                ],
+              ),
             ),
             const BottomCaptureQueueTabs(current: queueRoute),
           ],
@@ -101,6 +126,21 @@ class QueueScreen extends ConsumerWidget {
       ),
     );
   }
+
+  static Future<void> _chooseRetention(BuildContext context, CaptureRecord capture) =>
+      showModalBottomSheet<void>(
+        context: context,
+        backgroundColor: chBase,
+        builder: (sheet) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(space4),
+            child: RetentionConfirm(
+              capture: capture,
+              onSettled: () => Navigator.of(sheet).pop(),
+            ),
+          ),
+        ),
+      );
 }
 
 class _Banner extends StatelessWidget {
@@ -174,6 +214,7 @@ class _QueueRow extends StatelessWidget {
     required this.deviceBlock,
     required this.sendingCaptureId,
     required this.onRetry,
+    this.onChoose,
   });
 
   final CaptureRecord capture;
@@ -188,6 +229,10 @@ class _QueueRow extends StatelessWidget {
   /// this is the sole way back.
   final VoidCallback onRetry;
 
+  /// Opens the retention confirm for this capture. Null unless the choice
+  /// can still reach the server (`retentionChoosable`).
+  final VoidCallback? onChoose;
+
   @override
   Widget build(BuildContext context) {
     final at = capture.startedAt.toLocal();
@@ -200,6 +245,7 @@ class _QueueRow extends StatelessWidget {
       deviceBlock: deviceBlock,
       sendingCaptureId: sendingCaptureId,
       retention: capture.retention,
+      retentionSkipped: capture.retentionSkippedAt != null,
       enqueuedAt: record?.enqueuedAt ?? capture.startedAt,
       now: DateTime.now(),
     );
@@ -212,9 +258,15 @@ class _QueueRow extends StatelessWidget {
           SizedBox(width: 44, child: Text(clock, style: monoMeta(size: sizeXs))),
           const SizedBox(width: space2),
           Expanded(
-            child: Text(
-              capture.durationMs != null ? _duration(capture.durationMs!) : 'nothing recovered',
-              style: const TextStyle(fontSize: sizeBody, color: chText),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  capture.durationMs != null ? _duration(capture.durationMs!) : 'nothing recovered',
+                  style: const TextStyle(fontSize: sizeBody, color: chText),
+                ),
+                Text(_audioLine(capture, onChoose != null), style: monoMeta(size: sizeXxs)),
+              ],
             ),
           ),
           const SizedBox(width: space2),
@@ -225,6 +277,16 @@ class _QueueRow extends StatelessWidget {
               size: sizeXxs,
             ),
           ),
+          if (onChoose != null) ...[
+            const SizedBox(width: space2),
+            InkWell(
+              onTap: onChoose,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: space1),
+                child: Text('CHOOSE', style: microLabel(color: chSignal, size: sizeXxs)),
+              ),
+            ),
+          ],
           if (rejected) ...[
             const SizedBox(width: space2),
             InkWell(
@@ -247,6 +309,17 @@ class _QueueRow extends StatelessWidget {
   static String _duration(int ms) {
     final total = ms ~/ 1000;
     return total >= 60 ? '${total ~/ 60}m ${total % 60}s' : '${total}s';
+  }
+
+  /// What this capture's audio was declared with, or will be. A capture with
+  /// no choice and no skip, whose choice has closed, goes with the server's
+  /// default -- which is 30 days, and is said as such rather than as a
+  /// choice somebody made.
+  static String _audioLine(CaptureRecord capture, bool choosable) {
+    final choice = RetentionChoice.fromWire(capture.retention);
+    if (choice != null) return 'AUDIO · ${choice.chip}';
+    if (choosable) return 'AUDIO · NOT YET CHOSEN';
+    return 'AUDIO · DEFAULT (30 DAYS)';
   }
 }
 

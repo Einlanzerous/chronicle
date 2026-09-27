@@ -188,11 +188,10 @@ void main() {
     // The tap handler kicks off retryCapture()'s real file I/O
     // synchronously; per this file's own header note, that has to happen
     // inside runAsync too, or it hangs rather than throws.
-    await tester.runAsync(() async {
-      await tester.tap(find.text('TRY AGAIN'));
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-    });
-    await tester.pump();
+    await tester.runAsync(() => tester.tap(find.text('TRY AGAIN')));
+    // Polled, not a fixed delay: the resend runs on the real event loop and
+    // took longer than 50 ms under a loaded, parallel full-suite run.
+    await _pumpUntil(tester, () => find.text('SENT').evaluate().isNotEmpty);
 
     expect(find.text('SENT'), findsOneWidget);
     expect(find.text('NOT SENT — KEY CONFLICT'), findsNothing);

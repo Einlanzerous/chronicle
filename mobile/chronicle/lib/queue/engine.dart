@@ -136,6 +136,7 @@ class QueueEngine {
       }
       if (!retentionGateOpen(
         retention: qc.capture.retention,
+        skipped: qc.capture.retentionSkippedAt != null,
         enqueuedAt: qc.queueRecord.enqueuedAt,
         now: now,
       )) {
