@@ -19,9 +19,11 @@ import 'package:chronicle/api/session.dart';
 import 'package:chronicle/capture/capture_controller.dart';
 import 'package:chronicle/capture/capture_record.dart';
 import 'package:chronicle/features/capture/capture_screen.dart';
+import 'package:chronicle/features/capture/retention_confirm.dart';
 import 'package:chronicle/features/queue/queue_screen.dart';
 import 'package:chronicle/queue/engine.dart';
 import 'package:chronicle/queue/queue_controller.dart';
+import 'package:chronicle/queue/queue_record.dart';
 import 'package:chronicle_api/api.dart' as gen;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -232,5 +234,60 @@ void main() {
       expect(find.text('CHOOSE'), findsNothing, reason: 'the choice is made once');
       expect(find.text('AUDIO · FOREVER'), findsOneWidget);
     });
+  });
+
+  testWidgets('a refused choice says so and waits -- it never closes like a success',
+      (tester) async {
+    // PR #133's review: the card that closed the same way on a refusal as on
+    // a write would be a choice the screen accepted and the server never
+    // heard. Here the queue has already tried the capture between the card
+    // being drawn and the tap.
+    phone(tester);
+    late CaptureRecord capture;
+    await tester.runAsync(() async {
+      root = await Directory.systemTemp.createTemp('chrn62-refused');
+      final qc = await writeFixtureCapture(
+        root,
+        id: 'late',
+        bytes: [1, 2, 3],
+        startedAt: DateTime.now(),
+        undecided: true,
+      );
+      capture = qc.capture;
+      await qc.queueDir.write(QueueRecord(
+        status: QueueStatus.pending,
+        enqueuedAt: DateTime.now(),
+        attemptCount: 1,
+        lastAttemptAt: DateTime.now(),
+      ));
+    });
+    final local = ProviderContainer(overrides: [
+      capturePlatformProvider.overrideWithValue(NoRecorderPlatform(root)),
+      captureOwnerProvider.overrideWithValue(NoOwner()),
+    ]);
+    addTearDown(local.dispose);
+    var settled = 0;
+    await tester.pumpWidget(UncontrolledProviderScope(
+      container: local,
+      child: MaterialApp(
+        home: Scaffold(
+          body: RetentionConfirm(capture: capture, onSettled: () => settled++),
+        ),
+      ),
+    ));
+
+    await tester.runAsync(() => tester.tap(find.text('CONFIRM · 30 DAYS')));
+    await _pumpUntil(
+      tester,
+      () => find.text('Too late to choose for this memo.').evaluate().isNotEmpty,
+    );
+    expect(settled, 0, reason: 'a refusal is not a decision');
+    expect(find.text('CONFIRM · 30 DAYS'), findsNothing);
+    await tester.runAsync(() async {
+      expect((await CaptureDir(root, 'late').readMeta())!.retention, isNull);
+    });
+
+    await tester.tap(find.text('OK'));
+    expect(settled, 1);
   });
 }

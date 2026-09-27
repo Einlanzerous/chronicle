@@ -33,9 +33,8 @@ class RetentionConfirm extends ConsumerStatefulWidget {
 
   final CaptureRecord capture;
 
-  /// Called once a choice or a skip has been written -- or refused, because
-  /// the moment to choose had already passed. The card has nothing left to
-  /// offer either way.
+  /// Called once a choice or a skip has been written, or -- after the card
+  /// has said so -- once the person has acknowledged that it was refused.
   final VoidCallback? onSettled;
 
   @override
@@ -46,6 +45,13 @@ class _RetentionConfirmState extends ConsumerState<RetentionConfirm> {
   RetentionChoice _selected = RetentionChoice.days30;
   bool _busy = false;
 
+  /// The write was refused: the moment to choose had passed between this
+  /// card being drawn and the tap. Said outright, never closed over -- a
+  /// card that vanished the same way on a refusal as on a success would be
+  /// a choice the screen accepted and the server never heard, the exact
+  /// thing this ticket exists to prevent.
+  bool _refused = false;
+
   @override
   void didUpdateWidget(RetentionConfirm old) {
     super.didUpdateWidget(old);
@@ -54,17 +60,51 @@ class _RetentionConfirmState extends ConsumerState<RetentionConfirm> {
     if (old.capture.captureId != widget.capture.captureId) {
       _selected = RetentionChoice.days30;
       _busy = false;
+      _refused = false;
     }
   }
 
   Future<void> _settle(Future<bool> Function() write) async {
     if (_busy) return;
     setState(() => _busy = true);
-    await write();
+    final written = await write();
     if (!mounted) return;
-    setState(() => _busy = false);
-    widget.onSettled?.call();
+    setState(() {
+      _busy = false;
+      _refused = !written;
+    });
+    if (written) widget.onSettled?.call();
   }
+
+  Widget _refusal() => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      const Text(
+        'Too late to choose for this memo.',
+        style: TextStyle(fontSize: sizeMd, color: chText),
+      ),
+      const SizedBox(height: space1 / 2),
+      Text(
+        'It is already on its way to the server with what it had -- the '
+        '30-day default, unless a choice was made for it elsewhere. '
+        'Retention can be raised later, never lowered.',
+        style: monoMeta(size: sizeXs, color: chTextMeta),
+      ),
+      const SizedBox(height: space2),
+      InkWell(
+        onTap: () => widget.onSettled?.call(),
+        child: Container(
+          constraints: const BoxConstraints(minHeight: minTapTarget, minWidth: 72),
+          alignment: Alignment.centerLeft,
+          child: Text(
+            'OK',
+            style: microLabel(color: chSignal, size: sizeSm),
+          ),
+        ),
+      ),
+    ],
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -91,69 +131,80 @@ class _RetentionConfirmState extends ConsumerState<RetentionConfirm> {
             ],
           ),
           const SizedBox(height: space2),
-          Text(
-            _selected.title,
-            style: const TextStyle(fontSize: sizeMd, color: chText),
-          ),
-          const SizedBox(height: space1 / 2),
-          Text(_selected.detail, style: monoMeta(size: sizeXs, color: chTextMeta)),
-          const SizedBox(height: space2),
-          Row(
-            children: [
-              for (final choice in RetentionChoice.values) ...[
-                if (choice != RetentionChoice.values.first) const SizedBox(width: space1),
-                Expanded(
-                  child: _Chip(
-                    choice: choice,
-                    selected: choice == _selected,
-                    onTap: _busy ? null : () => setState(() => _selected = choice),
-                  ),
-                ),
-              ],
-            ],
-          ),
-          const SizedBox(height: space2),
-          Row(
-            children: [
-              InkWell(
-                onTap: _busy ? null : () => _settle(() => controller.skipRetention(id)),
-                child: Container(
-                  constraints: const BoxConstraints(minHeight: minTapTarget, minWidth: 72),
-                  alignment: Alignment.center,
-                  child: Text('SKIP', style: microLabel(color: chText2, size: sizeSm)),
-                ),
-              ),
-              const SizedBox(width: space2),
-              Expanded(
-                child: InkWell(
-                  onTap: _busy
-                      ? null
-                      : () => _settle(() => controller.chooseRetention(id, _selected)),
-                  child: Container(
-                    constraints: const BoxConstraints(minHeight: minTapTarget),
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      color: chSignal,
-                      borderRadius: BorderRadius.circular(space1),
-                    ),
-                    child: Text(
-                      'CONFIRM · ${_selected.chip}',
-                      style: microLabel(color: chBase, size: sizeSm),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: space2),
-          // The rule, stated outright where the choice is made -- the epic's
-          // own words.
-          Text('TRANSCRIPT IS THE DURABLE ARTEFACT', style: microLabel(size: sizeXxs)),
-          Text('AUDIO PRUNES AT 30 DAYS', style: microLabel(size: sizeXxs, color: chText2)),
+          if (_refused) _refusal() else ..._choosing(controller, id),
         ],
       ),
     );
   }
+
+  List<Widget> _choosing(CaptureController controller, String id) => [
+    Text(
+      _selected.title,
+      style: const TextStyle(fontSize: sizeMd, color: chText),
+    ),
+    const SizedBox(height: space1 / 2),
+    Text(
+      _selected.detail,
+      style: monoMeta(size: sizeXs, color: chTextMeta),
+    ),
+    const SizedBox(height: space2),
+    Row(
+      children: [
+        for (final choice in RetentionChoice.values) ...[
+          if (choice != RetentionChoice.values.first) const SizedBox(width: space1),
+          Expanded(
+            child: _Chip(
+              choice: choice,
+              selected: choice == _selected,
+              onTap: _busy ? null : () => setState(() => _selected = choice),
+            ),
+          ),
+        ],
+      ],
+    ),
+    const SizedBox(height: space2),
+    Row(
+      children: [
+        InkWell(
+          onTap: _busy ? null : () => _settle(() => controller.skipRetention(id)),
+          child: Container(
+            constraints: const BoxConstraints(minHeight: minTapTarget, minWidth: 72),
+            alignment: Alignment.center,
+            child: Text(
+              'SKIP',
+              style: microLabel(color: chText2, size: sizeSm),
+            ),
+          ),
+        ),
+        const SizedBox(width: space2),
+        Expanded(
+          child: InkWell(
+            onTap: _busy ? null : () => _settle(() => controller.chooseRetention(id, _selected)),
+            child: Container(
+              constraints: const BoxConstraints(minHeight: minTapTarget),
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: chSignal,
+                borderRadius: BorderRadius.circular(space1),
+              ),
+              child: Text(
+                'CONFIRM · ${_selected.chip}',
+                style: microLabel(color: chBase, size: sizeSm),
+              ),
+            ),
+          ),
+        ),
+      ],
+    ),
+    const SizedBox(height: space2),
+    // The rule, stated outright where the choice is made -- the epic's
+    // own words.
+    Text('TRANSCRIPT IS THE DURABLE ARTEFACT', style: microLabel(size: sizeXxs)),
+    Text(
+      'AUDIO PRUNES AT 30 DAYS',
+      style: microLabel(size: sizeXxs, color: chText2),
+    ),
+  ];
 
   static String _facts(CaptureRecord c) {
     final parts = <String>[];
@@ -164,9 +215,11 @@ class _RetentionConfirmState extends ConsumerState<RetentionConfirm> {
     }
     final bytes = c.byteSize;
     if (bytes != null) {
-      parts.add(bytes < 1024 * 1024
-          ? '${(bytes / 1024).round()} KB'
-          : '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB');
+      parts.add(
+        bytes < 1024 * 1024
+            ? '${(bytes / 1024).round()} KB'
+            : '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB',
+      );
     }
     return parts.join(' · ');
   }
@@ -181,24 +234,22 @@ class _Chip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Semantics(
-        selected: selected,
-        button: true,
-        child: InkWell(
-          onTap: onTap,
-          child: Container(
-            constraints: const BoxConstraints(minHeight: minTapTarget),
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: selected ? chSignal.withValues(alpha: 0.10) : null,
-              border: Border.all(
-                color: selected ? chSignal.withValues(alpha: 0.40) : chLine,
-              ),
-            ),
-            child: Text(
-              choice.chip,
-              style: microLabel(color: selected ? chText : chTextMeta, size: sizeXs),
-            ),
-          ),
+    selected: selected,
+    button: true,
+    child: InkWell(
+      onTap: onTap,
+      child: Container(
+        constraints: const BoxConstraints(minHeight: minTapTarget),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: selected ? chSignal.withValues(alpha: 0.10) : null,
+          border: Border.all(color: selected ? chSignal.withValues(alpha: 0.40) : chLine),
         ),
-      );
+        child: Text(
+          choice.chip,
+          style: microLabel(color: selected ? chText : chTextMeta, size: sizeXs),
+        ),
+      ),
+    ),
+  );
 }
