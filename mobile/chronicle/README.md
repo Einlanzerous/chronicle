@@ -205,7 +205,7 @@ device](#verifying-it-on-a-device) below, then:
 
 1. **Ten memos, offline.** Airplane mode. Record ten short memos. Expect ten
    `QUEUED` rows, `0` acknowledged, no file removed.
-2. **Force-stop, and confirm nothing runs.** `am force-stop dev.dodson.chronicle`.
+2. **Force-stop, and confirm nothing runs.** `am force-stop dev.dodson.chronicle.dev`.
    Reconnect the network. Wait several minutes. Expect **all ten still
    `QUEUED`** — this is not a failure, it is the platform fact the plan's
    finding 7 names.
@@ -351,7 +351,8 @@ reachable by ordinary use, because `captured_at` is immutable and declared
 retention is null on every capture today, so the route is:
 
 1. Record a memo. Before its first send, hand-set `retention` to `discard_now` in
-   its `meta.json` (`adb shell run-as dev.dodson.chronicle`).
+   its `meta.json` (`adb shell run-as dev.dodson.chronicle.dev` -- a debug build
+   is `.dev` since CHRN-125, and the released app refuses `run-as`).
 2. Let it send: one `SENT` row, and one `206` probe straight after the ack.
 3. On the test database make sure a durable transcript exists (model
    `whisper.cpp/small.en`, `partial` false), then run `chronicle prune` against
