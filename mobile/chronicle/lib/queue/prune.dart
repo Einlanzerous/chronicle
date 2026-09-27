@@ -56,15 +56,34 @@ import 'queue_record.dart';
 /// is closed this ships default-off: the code lands and is reviewed and tested,
 /// what is deferred is storage reclamation.
 ///
-/// **This is a default, not a lock.** Chronicle has no APK release track yet
-/// and so no guard against a release build passing this define (Lyceum's
-/// `tool/check_store_build.sh` rejects any `--dart-define`; the ticket that
-/// adds Chronicle's release track owns the equivalent, per `server_url.dart`).
-/// `test/queue/prune_test.dart` pins the default to false so a change to it
-/// fails CI, and the follow-up that flips it is the one that closes the backup
-/// gap.
+/// **Off is checked, not just defaulted, since CHRN-125.** A release APK is
+/// built by `tool/build_release.sh` and nothing else, and
+/// `tool/check_release_build.sh` fails the release (and warns on every PR) if
+/// that build path passes any `--dart-define` -- this one included. It then
+/// reads [pruneBuildMarker] back out of the built APK, so "off" is a property of
+/// the artifact and not only of the files that produced it.
+/// `test/queue/prune_test.dart` still pins the default to false, and the
+/// follow-up that flips it (CHRN-124) is the one that closes the backup gap.
 const bool pruneLocalAudioEnabled =
     bool.fromEnvironment('CHRONICLE_PRUNE_LOCAL_AUDIO');
+
+/// What this build says about [pruneLocalAudioEnabled], in a form a scan of the
+/// APK can see.
+///
+/// A `bool.fromEnvironment` leaves no trace in the compiled snapshot -- `true`
+/// and `false` are const-folded into branches, not strings -- so a release built
+/// with the define and one built without it are indistinguishable to anything
+/// that reads the artifact. This constant is folded the same way, which is the
+/// point: exactly ONE of the two literals survives into `libapp.so`, and
+/// `tool/check_release_build.sh` asserts it is the off one. `main()` logs it once
+/// at startup, which is what keeps the tree-shaker from dropping it and is worth
+/// having anyway: a device's log then says which kind of build it is running.
+///
+/// CHRN-124 flips the default in source; the same PR flips the scan's
+/// expectation, and the define stays banned either way.
+const String pruneBuildMarker = pruneLocalAudioEnabled
+    ? 'chronicle: local-audio prune ON'
+    : 'chronicle: local-audio prune off';
 
 /// Whether the foreground prunes at all. Exactly [pruneLocalAudioEnabled] --
 /// the compile-time constant, false unless a build opts in -- and a provider

@@ -1,0 +1,129 @@
+name: mobile-release
+
+# The Android app's release track (CHRN-125). A `mobile-v*` tag -- cut by
+# release-please's `mobile` component when its release PR merges -- builds a
+# signed release APK and attaches it, with its checksum, to that tag's Release.
+# The server's `v*` tags never reach this file.
+#
+# TRIGGERED BY THE TAG, not called from release.yml, and that is what makes the
+# key's environment mean anything. A `mobile-release` environment holds the
+# signing key and admits only `mobile-v*` refs; GitHub matches that rule against
+# the run's GITHUB_REF, and a job called from push-to-main release.yml runs at
+# refs/heads/main, where the rule would refuse it. publish-asr.yml proves the
+# App-token tag fires `tags:` workflows here (asr-v0.1.2: event push).
+#
+# The environment also has a REQUIRED REVIEWER (CHRN-125, magos's call): the tag
+# rule scopes the ref's NAME, not who pushed it, and a tag-triggered run executes
+# the workflow file at the tagged commit -- so without the reviewer, anyone able
+# to push a `mobile-v*` tag at an edited copy of this file could read the key.
+# That key is the only thing between repo write access and code on the phone that
+# holds the corpus, so each release waits for one click, like `promote`.
+#
+# `workflow_dispatch` rebuilds an existing tag. Dispatch it ON THE TAG REF (the
+# "Use workflow from" selector), or the environment refuses it; the input only
+# names the version, and must match the ref.
+on:
+  push:
+    tags: ["mobile-v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to rebuild, e.g. mobile-v0.2.0 -- dispatch from that same tag"
+        required: true
+        type: string
+
+permissions:
+  contents: write # upload assets onto the release-please GitHub Release
+
+concurrency:
+  group: mobile-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # The same pins as mobile.yml and ~/dev-tools/env.sh.
+  FLUTTER_VERSION: "3.44.2"
+  JAVA_VERSION: "17"
+
+jobs:
+  android:
+    name: signed APK
+    runs-on: ubuntu-latest
+    environment: mobile-release
+    defaults:
+      run:
+        working-directory: mobile/chronicle
+    steps:
+      - uses: actions/checkout@v4
+
+      # The tag this run builds, from the ref -- never from the input alone, so a
+      # dispatch whose input disagrees with its ref builds nothing. Anchored at
+      # both ends: an rc or a stray suffix is not a release.
+      - name: derive version
+        id: ver
+        run: |
+          ref="${GITHUB_REF#refs/tags/}"
+          if [ "$ref" = "$GITHUB_REF" ]; then
+            echo "::error::not a tag ref: $GITHUB_REF (dispatch from the tag, not a branch)"
+            exit 1
+          fi
+          if [ "${{ github.event_name }}" = workflow_dispatch ] && [ "${{ inputs.tag }}" != "$ref" ]; then
+            echo "::error::input tag '${{ inputs.tag }}' does not match the ref '$ref'"
+            exit 1
+          fi
+          if ! [[ "$ref" =~ ^mobile-v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "::error::'$ref' is not mobile-vX.Y.Z"
+            exit 1
+          fi
+          echo "tag=$ref" >> "$GITHUB_OUTPUT"
+          echo "name=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          # A Unix timestamp, Lyceum's rule: it increases on every path, a
+          # re-dispatch of the same tag included, and is far above the
+          # installed debug build's 1.
+          echo "code=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      # Before anything is built: the guard proves it can fail, then reads the
+      # build path for a dart-define. Nothing below this line can add one.
+      - name: release-build hygiene (self-test + config)
+        run: |
+          tool/check_release_build.sh --self-test
+          tool/check_release_build.sh
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      # apksigner and aapt2 at the version tool/release_lib.sh pins.
+      - name: build-tools
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;36.0.0" > /dev/null
+
+      - run: flutter pub get
+
+      - name: build, sign, assert
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: tool/build_release.sh "${{ steps.ver.outputs.name }}" "${{ steps.ver.outputs.code }}"
+
+      # The artifact half: hostnames, origins and the prune marker, read out of
+      # the APK that is about to be uploaded. The hard stop -- a red here means
+      # nothing reaches the Release.
+      - name: release-build hygiene (artifact)
+        run: tool/check_release_build.sh "build/release/chronicle-${{ steps.ver.outputs.name }}.apk"
+
+      - name: attach to the Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ steps.ver.outputs.tag }}" \
+            "build/release/chronicle-${{ steps.ver.outputs.name }}.apk" \
+            "build/release/chronicle-${{ steps.ver.outputs.name }}.apk.sha256" \
+            --clobber

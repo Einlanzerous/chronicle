@@ -4,12 +4,20 @@
   "separate-pull-requests": true,
   "packages": {
     ".": {
-      "exclude-paths": ["asr"]
+      "exclude-paths": ["asr", "mobile"]
     },
     "asr": {
       "component": "asr",
       "initial-version": "0.1.0",
       "bump-minor-pre-major": true
+    },
+    "mobile/chronicle": {
+      "component": "mobile",
+      "initial-version": "0.2.0",
+      "bump-minor-pre-major": true,
+      "extra-files": [
+        { "type": "generic", "path": "pubspec.yaml" }
+      ]
     }
   },
   "changelog-sections": [

@@ -75,6 +75,14 @@ void main() {
       expect(pruneLocalAudioEnabled, isFalse);
     });
 
+    test('the build marker is the exact off string the release guard scans for',
+        () {
+      // tool/check_release_build.sh greps the APK for this literal, byte for
+      // byte. Rewording it here without rewording it there turns every release
+      // red on "no marker" -- which fails safe, but this says why first.
+      expect(pruneBuildMarker, 'chronicle: local-audio prune off');
+    });
+
     test('with no explicit opt-in the pass asks nothing and deletes nothing', () async {
       final qc = await writeAckedCapture(_root, id: 'a', bytes: _bytes, startedAt: _old);
       final gate = FakeAudioGate({'memo-a': Answers.pruned});
