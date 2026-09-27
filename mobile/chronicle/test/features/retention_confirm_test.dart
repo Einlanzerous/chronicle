@@ -107,6 +107,14 @@ void main() {
       );
     });
     addTearDown(container.dispose);
+    // Registered after dispose, so it runs BEFORE it (tear-downs run last
+    // first): a decision wakes the queue on the real event loop, and a pass
+    // still writing upload.json when the temp directory is deleted throws
+    // after the test has finished. wake() coalesces onto any pass in flight
+    // and returns once the queue is quiet.
+    addTearDown(() => tester.runAsync(
+          () => container.read(queueControllerProvider.notifier).wake(),
+        ));
 
     await tester.pumpWidget(
       UncontrolledProviderScope(container: container, child: MaterialApp(home: screen)),
@@ -145,6 +153,9 @@ void main() {
 
       expect(server.declaredRetentions, ['days_30']);
       await _pumpUntil(tester, () => find.text('THE AUDIO').evaluate().isEmpty);
+      // The server holds the declaration before the ack is back and the
+      // queue's state reaches the screen, so this waits too, never assumes.
+      await _pumpUntil(tester, () => find.text('SENT').evaluate().isNotEmpty);
       expect(find.text('SENT'), findsOneWidget);
     });
 
@@ -186,6 +197,8 @@ void main() {
       await _pumpUntil(tester, () => server.declaredRetentions.isNotEmpty);
 
       expect(server.declaredRetentions, [null]);
+      // Declared is not yet finalised: the chunks and the completion follow.
+      await _pumpUntil(tester, () => server.memos.isNotEmpty);
       expect(server.memos.single.retention, gen.MemoRetentionEnum.days30);
       await tester.runAsync(() async {
         final record = (await meta())!;
