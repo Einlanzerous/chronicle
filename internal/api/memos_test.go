@@ -194,8 +194,9 @@ func recordedAt(at time.Time) memoOpt {
 }
 
 // memo seeds one recording and puts its bytes where the layout says they go.
-// Every memo in the live corpus is m4a with a NULL codec, so that is the
-// default here.
+// The default is the m4a eval corpus of 2026-08-30 -- a NULL codec and a NULL
+// header duration -- because it is the shape the fallbacks exist for. (The
+// phone's Ogg Opus has both; codec() and headerDuration() build that.)
 func (rig *memoRig) memo(t *testing.T, author store.User, body string, opts ...memoOpt) store.Memo {
 	t.Helper()
 	sum := sha256.Sum256([]byte(body))
@@ -863,7 +864,7 @@ func TestTheReadabilityFlagsFollowTheCaller(t *testing.T) {
 func TestTheDurationNamesWhichColumnAnsweredIt(t *testing.T) {
 	rig := newMemoRig(t)
 
-	// m4a, NULL header duration, transcribed: all seventeen live memos.
+	// m4a, NULL header duration, transcribed: the eval corpus's shape.
 	fromTranscript := rig.memo(t, rig.author, "m4a from a phone")
 	tr := rig.transcribe(fromTranscript, "words", false, "whisper.cpp/small.en", fromTranscript.CapturedAt.Add(time.Minute))
 	tr.AudioDurationMS = ptrTo(int64(104000))

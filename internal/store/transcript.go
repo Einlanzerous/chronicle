@@ -333,6 +333,31 @@ func (s *Store) PartialTranscripts(ctx context.Context, limit int) (int64, []Par
 	return total, out, rows.Err()
 }
 
+// TranscriptAudioDuration is `audio_duration_ms` of the row GetTranscript would
+// return -- complete first, otherwise the latest partial -- and NOTHING ELSE of
+// it: not the text, not the segments. Nil when the memo has no transcript or its
+// transcript recorded no duration; both mean "nothing has measured this".
+//
+// It exists for the hold response (CHRN-85), which has a memo and needs one
+// number for ResolveDuration. GetTranscript would answer it too, and would move
+// the whole transcript -- forty minutes of speech can be megabytes -- to read a
+// single bigint, on a path a person taps.
+func (s *Store) TranscriptAudioDuration(ctx context.Context, memoID uuid.UUID) (*int64, error) {
+	var ms *int64
+	err := s.pool.QueryRow(ctx, `
+		SELECT audio_duration_ms FROM tier2.transcripts
+		 WHERE memo_id = $1
+		 ORDER BY partial ASC, transcribed_at DESC
+		 LIMIT 1`, memoID).Scan(&ms)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: transcript audio duration: %w", err)
+	}
+	return ms, nil
+}
+
 // GetTranscript returns a memo's best transcript: a complete one if there is
 // one, otherwise the most recent partial. ErrNotFound when there is none.
 func (s *Store) GetTranscript(ctx context.Context, memoID uuid.UUID) (Transcript, error) {

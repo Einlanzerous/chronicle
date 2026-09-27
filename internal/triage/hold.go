@@ -28,7 +28,9 @@ import (
 type DeferredItem struct {
 	MemoID     uuid.UUID `json:"memo_id"`
 	CapturedAt time.Time `json:"captured_at"`
-	DurationMS *int32    `json:"duration_ms,omitempty"`
+	// DurationMS is BatchItem's: resolved, and the same number whether it comes
+	// from the hold response or from the list (CHRN-85).
+	DurationMS *int32 `json:"duration_ms,omitempty"`
 
 	// Excerpt labels the card, exactly as it does on the triage screen. A
 	// deferred memo the operator cannot recognise is one they cannot decide,
@@ -77,6 +79,15 @@ func (s *Service) Hold(ctx context.Context, actor store.User, memoID uuid.UUID, 
 		return DeferredItem{}, ErrNoSuchMemo
 	}
 
+	// READ BEFORE THE HOLD IS WRITTEN. GetMemo carries the header and no
+	// transcript, so this is the one extra read that lets the response state
+	// the same length GET /triage/deferred states for the same memo (CHRN-85);
+	// failing here leaves nothing held rather than a hold with a wrong answer.
+	transcriptMS, err := s.store.TranscriptAudioDuration(ctx, memoID)
+	if err != nil {
+		return DeferredItem{}, err
+	}
+
 	h, err := s.store.HoldForTriage(ctx, memoID, actor.ID, reason)
 	if err != nil {
 		return DeferredItem{}, err
@@ -84,7 +95,7 @@ func (s *Service) Hold(ctx context.Context, actor store.User, memoID uuid.UUID, 
 	return DeferredItem{
 		MemoID:     h.MemoID,
 		CapturedAt: memo.CapturedAt,
-		DurationMS: memo.DurationMS,
+		DurationMS: store.ResolveDuration(memo.DurationMS, transcriptMS).Int32MS(),
 		Reason:     h.Reason,
 		HeldBy:     h.HeldBy,
 		HeldAt:     h.HeldAt,
@@ -142,7 +153,7 @@ func (s *Service) Deferred(ctx context.Context, actor store.User, limit int) ([]
 		out = append(out, DeferredItem{
 			MemoID:     h.Memo.ID,
 			CapturedAt: h.Memo.CapturedAt,
-			DurationMS: h.Memo.DurationMS,
+			DurationMS: store.ResolveDuration(h.Memo.DurationMS, h.TranscriptDurationMS).Int32MS(),
 			Excerpt:    h.Excerpt,
 			Reason:     h.Hold.Reason,
 			HeldBy:     h.Hold.HeldBy,

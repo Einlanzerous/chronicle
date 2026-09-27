@@ -27,6 +27,7 @@ class DeferredItem {
 
   DateTime capturedAt;
 
+  /// `BatchItem.duration_ms`: resolved, header first and then the transcript's measurement (CHRN-85). The same number for one memo whether it comes from the hold response or from this list. 
   ///
   /// Please note: This property should have been non-nullable! Since the specification file
   /// does not include a default value (using the "default:" property), however, the generated

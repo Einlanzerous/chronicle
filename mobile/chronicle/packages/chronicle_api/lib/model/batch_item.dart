@@ -31,6 +31,7 @@ class BatchItem {
 
   DateTime capturedAt;
 
+  /// How long the recording is, RESOLVED: the header's duration when there is one, otherwise the transcript's measurement — the same rule as `MemoProvenance.duration_ms`, whose `duration_source` says which answered (CHRN-85). So an m4a memo carries a value here although its header is NULL. Absent only when nothing has measured the recording, and never a zero. It carries no `duration_source` of its own: a triage row has no use for which column answered. 
   ///
   /// Please note: This property should have been non-nullable! Since the specification file
   /// does not include a default value (using the "default:" property), however, the generated

@@ -267,3 +267,88 @@ func TestSegmentsRoundTrip(t *testing.T) {
 		t.Fatal("Durable() disagreed with HasDurableTranscript on an empty complete run")
 	}
 }
+
+// CHRN-85. TranscriptAudioDuration is the hold response's one read off a
+// transcript, and it must be the number of the row GetTranscript would return --
+// complete first, otherwise the latest partial -- because MemoProvenance reads
+// that row and the two are meant to state one length. It is compared against
+// GetTranscript here rather than against a literal, so a change to either
+// ordering shows up as a disagreement and not as two tests each still passing.
+func TestTranscriptAudioDurationIsTheRowGetTranscriptReturns(t *testing.T) {
+	s, ctx := newTestStore(t)
+	ms := func(v int64) *int64 { return &v }
+
+	check := func(t *testing.T, m Memo, want *int64) {
+		t.Helper()
+		got, err := s.TranscriptAudioDuration(ctx, m.ID)
+		if err != nil {
+			t.Fatalf("TranscriptAudioDuration: %v", err)
+		}
+		switch {
+		case want == nil && got != nil:
+			t.Fatalf("got %d, want nil", *got)
+		case want != nil && got == nil:
+			t.Fatalf("got nil, want %d", *want)
+		case want != nil && *got != *want:
+			t.Fatalf("got %d, want %d", *got, *want)
+		}
+		// And it is what GetTranscript's row says, when there is a row.
+		tr, err := s.GetTranscript(ctx, m.ID)
+		if errors.Is(err, ErrNotFound) {
+			if got != nil {
+				t.Fatalf("no transcript row, yet a duration of %d", *got)
+			}
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (tr.AudioDurationMS == nil) != (got == nil) || (got != nil && *tr.AudioDurationMS != *got) {
+			t.Fatalf("GetTranscript's row says %v, TranscriptAudioDuration says %v", tr.AudioDurationMS, got)
+		}
+	}
+
+	t.Run("no transcript is nil, not an error", func(t *testing.T) {
+		check(t, newTranscribableMemo(t, s, ctx, "tad-none@example.test"), nil)
+	})
+
+	t.Run("a transcript that measured nothing is nil", func(t *testing.T) {
+		m := newTranscribableMemo(t, s, ctx, "tad-null@example.test")
+		if _, err := s.RecordTranscript(ctx, TranscriptInput{
+			MemoID: m.ID, Text: "x", Model: "whisper.cpp/small.en", Backend: "vulkan",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		check(t, m, nil)
+	})
+
+	t.Run("a complete row beats a partial one, whichever came last", func(t *testing.T) {
+		m := newTranscribableMemo(t, s, ctx, "tad-both@example.test")
+		// Complete first, then a LATER partial from another model: GetTranscript
+		// still answers the complete one, so this must too.
+		if _, err := s.RecordTranscript(ctx, TranscriptInput{
+			MemoID: m.ID, Text: "whole", Model: "whisper.cpp/small.en", Backend: "vulkan",
+			AudioDurationMS: ms(60000),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.RecordTranscript(ctx, TranscriptInput{
+			MemoID: m.ID, Text: "hal", Partial: true, Model: "whisper.cpp/base.en", Backend: "vulkan",
+			AudioDurationMS: ms(30000),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		check(t, m, ms(60000))
+	})
+
+	t.Run("with only a partial, the partial's", func(t *testing.T) {
+		m := newTranscribableMemo(t, s, ctx, "tad-partial@example.test")
+		if _, err := s.RecordTranscript(ctx, TranscriptInput{
+			MemoID: m.ID, Text: "hal", Partial: true, Model: "whisper.cpp/small.en", Backend: "vulkan",
+			AudioDurationMS: ms(30000),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		check(t, m, ms(30000))
+	})
+}

@@ -33,6 +33,12 @@ type UntriagedMemo struct {
 	// the first line would move megabytes to discard them.
 	Excerpt string
 
+	// TranscriptDurationMS is `audio_duration_ms` of the SAME transcript row
+	// the excerpt came from -- one more column off a join that was already
+	// there (CHRN-85). It is an INPUT to ResolveDuration and not an answer:
+	// Memo.DurationMS is the header's, and neither is shown on its own.
+	TranscriptDurationMS *int64
+
 	// Link is the decision already recorded against this memo, or nil.
 	//
 	// A memo appearing here WITH a link row is not a contradiction. A confirmed
@@ -78,10 +84,10 @@ func (s *Store) UntriagedMemos(ctx context.Context, authorID uuid.UUID, limit in
 	}
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT `+prefixed(memoColumns, "m")+`, t.excerpt
+		`SELECT `+prefixed(memoColumns, "m")+`, t.excerpt, t.audio_duration_ms
 		   FROM tier2.memos m
 		   JOIN LATERAL (
-		         SELECT left(text, $4) AS excerpt
+		         SELECT left(text, $4) AS excerpt, audio_duration_ms
 		           FROM tier2.transcripts
 		          WHERE memo_id = m.id AND `+DurableClause+`
 		          ORDER BY transcribed_at DESC
@@ -117,7 +123,7 @@ func (s *Store) UntriagedMemos(ctx context.Context, authorID uuid.UUID, limit in
 		if err := rows.Scan(&m.ID, &m.AuthorID, &m.ContentHash, &m.ByteSize, &m.CapturedAt, &m.RecordedAt,
 			&m.State, &m.StateReason, &m.Retention, &m.AudioPrunedAt,
 			&m.DurationMS, &m.Codec, &m.SampleRateHz, &m.OriginalFilename,
-			&m.CreatedAt, &m.UpdatedAt, &it.Excerpt); err != nil {
+			&m.CreatedAt, &m.UpdatedAt, &it.Excerpt, &it.TranscriptDurationMS); err != nil {
 			return nil, fmt.Errorf("store: untriaged memos: %w", err)
 		}
 		it.Memo = m

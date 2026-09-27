@@ -1,6 +1,7 @@
 package transcribe
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -848,3 +850,97 @@ func TestTheRetryDelayDoublesAndIsCapped(t *testing.T) {
 		t.Fatalf("a far-out attempt waited %s; the doubling must cap rather than overflow", got)
 	}
 }
+
+// CHRN-85: the tripwire under store.ResolveDuration's header-first rule.
+//
+// Driven through the real fetch, not through warnOnDurationGap alone: the
+// requirement is that it fires AT COLLECTION, and a helper nobody calls would
+// pass a unit test of itself. What is asserted is what the plan approved: a gap
+// over 1000 ms logs one warning carrying the memo id and both values and no
+// filename; the 19 ms gap prod actually has, a gap of exactly 1000 ms and a memo
+// with no header log nothing; and it observes without gating -- the transcript
+// is stored either way, and the transcript's number is never copied onto the
+// memo.
+func TestADurationGapOverASecondIsLoggedAtCollection(t *testing.T) {
+	ms := func(v int64) *int64 { return &v }
+
+	for _, c := range []struct {
+		name       string
+		header     *int32
+		transcript *int64
+		wantWarn   bool
+	}{
+		{"the constant 19 ms prod has says nothing", ptrInt32(104000), ms(104019), false},
+		{"exactly a second is not over a second", ptrInt32(60000), ms(61000), false},
+		{"a second and a millisecond is", ptrInt32(60000), ms(61001), true},
+		{"a transcript SHORTER than its header says so too", ptrInt32(60000), ms(57500), true},
+		{"no header (the m4a corpus) has nothing to disagree with", nil, ms(34773), false},
+		{"no transcript duration has nothing to disagree with", ptrInt32(60000), nil, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newHarness(t)
+			asr := newFakeASR()
+			asr.result.AudioDurationMs = c.transcript
+
+			var logs bytes.Buffer
+			p := h.pump(t, asr.serve(t), func(o *Options) {
+				o.Logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+			})
+			memo := h.memo(t, "gap@example.test", "pretend opus")
+			if c.header != nil {
+				if _, err := h.store.SetMemoAudioInfo(h.ctx, memo.ID, store.AudioInfo{
+					DurationMS: *c.header, Codec: "opus", SampleRateHz: 48000,
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			p.Tick(h.ctx)
+
+			// It observes and never gates: the transcript is stored and the memo
+			// advances whether or not the gap was worth a line.
+			if got := h.state(t, memo.ID); got.State != store.StateTranscribed {
+				t.Fatalf("state %q after collection, want transcribed: a duration gap must never stop a transcript landing", got.State)
+			}
+
+			warned := strings.Count(logs.String(), "disagree by more than a second")
+			switch {
+			case c.wantWarn && warned != 1:
+				t.Fatalf("logged %d warnings, want exactly 1:\n%s", warned, logs.String())
+			case !c.wantWarn && warned != 0:
+				t.Fatalf("logged a warning for a gap that is not worth one:\n%s", logs.String())
+			}
+			if c.wantWarn {
+				out := logs.String()
+				for _, want := range []string{
+					"memo=" + memo.ID.String(),
+					"header_ms=" + itoa64(int64(*c.header)),
+					"transcript_ms=" + itoa64(*c.transcript),
+				} {
+					if !strings.Contains(out, want) {
+						t.Errorf("warning lacks %q:\n%s", want, out)
+					}
+				}
+				// A filename is authored text this codebase declines to log.
+				if strings.Contains(strings.ToLower(out), "filename") || strings.Contains(out, ".m4a") || strings.Contains(out, ".ogg") {
+					t.Errorf("warning carries a filename:\n%s", out)
+				}
+			}
+
+			// NOTHING IS COPIED. Whatever the transcript measured, the memo's
+			// own column is exactly what the header probe left it.
+			after := h.state(t, memo.ID)
+			switch {
+			case c.header == nil && after.DurationMS != nil:
+				t.Errorf("memos.duration_ms = %d after collecting a transcript for a memo with no header: "+
+					"the transcript's duration is read where it is shown, never written onto the memo", *after.DurationMS)
+			case c.header != nil && (after.DurationMS == nil || *after.DurationMS != *c.header):
+				t.Errorf("memos.duration_ms = %v, want the header's %d untouched", after.DurationMS, *c.header)
+			}
+		})
+	}
+}
+
+func ptrInt32(v int32) *int32 { return &v }
+
+func itoa64(v int64) string { return strconv.FormatInt(v, 10) }

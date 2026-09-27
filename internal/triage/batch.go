@@ -45,7 +45,10 @@ const (
 type BatchItem struct {
 	MemoID     uuid.UUID `json:"memo_id"`
 	CapturedAt time.Time `json:"captured_at"`
-	DurationMS *int32    `json:"duration_ms,omitempty"`
+	// DurationMS is the RESOLVED length -- store.ResolveDuration: the header's
+	// when there is one, else the transcript's (CHRN-85). Nil only when nothing
+	// has measured the recording, and never a zero.
+	DurationMS *int32 `json:"duration_ms,omitempty"`
 
 	// Excerpt is the transcript's opening. It is also the LABEL FOR A DISCARD,
 	// which carries no title by design — the model is not asked to invent an
@@ -163,7 +166,11 @@ func (s *Service) Batch(ctx context.Context, actor store.User, limit int) ([]Bat
 		it := BatchItem{
 			MemoID:     m.Memo.ID,
 			CapturedAt: m.Memo.CapturedAt,
-			DurationMS: m.Memo.DurationMS,
+			// The resolved length, not the header's alone (CHRN-85): the header
+			// is NULL for anything that is not Ogg Opus, and a row that reads
+			// `18:22 · —` for a memo that has been transcribed is a blank with no
+			// error behind it. store.ResolveDuration is the one rule.
+			DurationMS: store.ResolveDuration(m.Memo.DurationMS, m.TranscriptDurationMS).Int32MS(),
 			Excerpt:    m.Excerpt,
 			Proposer:   s.proposer,
 			Status:     ProposalAbsent,

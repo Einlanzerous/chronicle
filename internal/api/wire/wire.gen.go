@@ -547,7 +547,15 @@ type BatchItem struct {
 	// ticket filed against nothing, and the person confirming is the only
 	// one who can tell whether the clearing was right.
 	ClearedFields []ClearedField `json:"cleared_fields,omitempty"`
-	DurationMs    *int32         `json:"duration_ms,omitempty"`
+
+	// DurationMs How long the recording is, RESOLVED: the header's duration when
+	// there is one, otherwise the transcript's measurement — the same
+	// rule as `MemoProvenance.duration_ms`, whose `duration_source`
+	// says which answered (CHRN-85). So an m4a memo carries a value here
+	// although its header is NULL. Absent only when nothing has measured
+	// the recording, and never a zero. It carries no `duration_source`
+	// of its own: a triage row has no use for which column answered.
+	DurationMs *int32 `json:"duration_ms,omitempty"`
 
 	// Error Why this memo has no usable proposal, when it has none.
 	Error *string `json:"error,omitempty"`
@@ -615,8 +623,12 @@ type DeferredItem struct {
 	// AgeSeconds Computed SERVER-SIDE. The question is "how long has this been
 	// waiting", and a client computing it from two clocks would get a
 	// different answer from the one the backlog report gives.
-	AgeSeconds int64              `json:"age_seconds"`
-	CapturedAt time.Time          `json:"captured_at"`
+	AgeSeconds int64     `json:"age_seconds"`
+	CapturedAt time.Time `json:"captured_at"`
+
+	// DurationMs `BatchItem.duration_ms`: resolved, header first and then the
+	// transcript's measurement (CHRN-85). The same number for one memo
+	// whether it comes from the hold response or from this list.
 	DurationMs *int32             `json:"duration_ms,omitempty"`
 	Excerpt    *string            `json:"excerpt,omitempty"`
 	HeldAt     time.Time          `json:"held_at"`
@@ -888,7 +900,15 @@ type Memo struct {
 	Codec         *string    `json:"codec"`
 	ContentHash   string     `json:"content_hash"`
 
-	// DurationMs Null until something has decoded the file; a declaration is not a measurement.
+	// DurationMs **The header's duration only**, so null for anything that is not Ogg
+	// Opus: null until something has decoded the file, and a declaration
+	// is not a measurement. It is not "how long is this recording" — that
+	// answer is resolved, header first and then the transcript's
+	// measurement, and it lives on `MemoProvenance.duration_ms`,
+	// `BatchItem.duration_ms` and `DeferredItem.duration_ms` (CHRN-85).
+	// This payload is only returned when an upload completes, before any
+	// transcript can exist, so a resolved value here could never differ
+	// from this one.
 	DurationMs       *int32             `json:"duration_ms"`
 	Id               openapi_types.UUID `json:"id"`
 	OriginalFilename *string            `json:"original_filename,omitempty"`
@@ -958,24 +978,32 @@ type MemoProvenance struct {
 	// retention reads.
 	CapturedAt time.Time `json:"captured_at"`
 
-	// DurationMs How long the recording is. Null for a memo with neither a header
-	// duration nor a transcript — the pre-transcription window, and
+	// DurationMs How long the recording is, RESOLVED: the header's duration when
+	// there is one, otherwise the transcript's measurement (CHRN-85, the
+	// one rule `BatchItem` and `DeferredItem` share). Null for a memo with
+	// neither a header duration nor a transcript's — the
+	// pre-transcription window for anything that is not Ogg Opus, and
 	// honest rather than a zero.
 	DurationMs *int64 `json:"duration_ms"`
 
 	// DurationSource WHICH COLUMN ANSWERED, because two hold a duration and they are
 	// measured differently: `memos.duration_ms` is Ogg granule
-	// arithmetic, exact, and populated for Ogg Opus only, while
-	// `transcripts.audio_duration_ms` is measured off the normalised
-	// 16 kHz mono WAV and is populated for everything that transcribes.
-	// Every memo in the live corpus arrives m4a with a NULL header
-	// duration, so today this says `transcript` — and reading the header
-	// column alone would render a blank where a number should be, for the
-	// whole corpus, with no error anywhere.
+	// arithmetic, exact, and populated for Ogg Opus only (the phone's
+	// recordings), while `transcripts.audio_duration_ms` is measured off
+	// the normalised 16 kHz mono WAV and is populated for everything that
+	// transcribes. A memo that is not Ogg Opus, such as the m4a eval
+	// corpus, has a NULL header duration, so this says `transcript` for
+	// it — and reading the header column alone would render a blank where
+	// a number should be, with no error anywhere.
 	//
-	// Stating the source rather than quietly preferring one is what keeps
-	// CHRN-85's question open: whichever of its three shapes wins, this
-	// field collapses to a single value and the contract does not change.
+	// The rule is settled (CHRN-85): **the header wins whenever it
+	// exists**, so a memo's length does not shift when it is transcribed,
+	// and the transcript's value is only ever the fallback. Where both
+	// exist they differ by well under a second; a larger gap is logged by
+	// the server and is never reconciled, and nothing is copied between
+	// the two columns. `BatchItem.duration_ms` and
+	// `DeferredItem.duration_ms` are resolved by the same rule but do not
+	// carry this field: a triage row has no use for which column answered.
 	// Absent exactly when `duration_ms` is null.
 	DurationSource *MemoProvenanceDurationSource `json:"duration_source,omitempty"`
 
@@ -1036,17 +1064,22 @@ type MemoProvenance struct {
 
 // MemoProvenanceDurationSource WHICH COLUMN ANSWERED, because two hold a duration and they are
 // measured differently: `memos.duration_ms` is Ogg granule
-// arithmetic, exact, and populated for Ogg Opus only, while
-// `transcripts.audio_duration_ms` is measured off the normalised
-// 16 kHz mono WAV and is populated for everything that transcribes.
-// Every memo in the live corpus arrives m4a with a NULL header
-// duration, so today this says `transcript` — and reading the header
-// column alone would render a blank where a number should be, for the
-// whole corpus, with no error anywhere.
+// arithmetic, exact, and populated for Ogg Opus only (the phone's
+// recordings), while `transcripts.audio_duration_ms` is measured off
+// the normalised 16 kHz mono WAV and is populated for everything that
+// transcribes. A memo that is not Ogg Opus, such as the m4a eval
+// corpus, has a NULL header duration, so this says `transcript` for
+// it — and reading the header column alone would render a blank where
+// a number should be, with no error anywhere.
 //
-// Stating the source rather than quietly preferring one is what keeps
-// CHRN-85's question open: whichever of its three shapes wins, this
-// field collapses to a single value and the contract does not change.
+// The rule is settled (CHRN-85): **the header wins whenever it
+// exists**, so a memo's length does not shift when it is transcribed,
+// and the transcript's value is only ever the fallback. Where both
+// exist they differ by well under a second; a larger gap is logged by
+// the server and is never reconciled, and nothing is copied between
+// the two columns. `BatchItem.duration_ms` and
+// `DeferredItem.duration_ms` are resolved by the same rule but do not
+// carry this field: a triage row has no use for which column answered.
 // Absent exactly when `duration_ms` is null.
 type MemoProvenanceDurationSource string
 
