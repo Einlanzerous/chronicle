@@ -7,9 +7,12 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../queue/queue_record.dart';
+import '../queue/retention_gate.dart';
 import 'capture_channel.dart';
 import 'capture_record.dart';
 import 'recovery.dart';
+import 'retention_choice.dart';
 
 /// Leave this much of the phone free whatever happens.
 ///
@@ -253,6 +256,44 @@ class CaptureController extends Notifier<CaptureUiState> {
     await refresh();
   }
 
+  /// Records the person's retention choice for [captureId]: CHRN-62's
+  /// confirm. Returns whether it was written.
+  ///
+  /// Written into `meta.json`, which the queue reads on its next pass and
+  /// declares from -- the refresh below is what wakes that pass. Refused,
+  /// writing nothing, for anything the choice can no longer honestly reach:
+  /// a capture that is not sendable, one already decided or skipped, and one
+  /// the queue may already have declared (see [_choiceStillOpen]).
+  Future<bool> chooseRetention(String captureId, RetentionChoice choice) =>
+      _decide(captureId, (r) => r.copyWith(retention: choice.wire));
+
+  /// Records that the person saw the confirm for [captureId] and chose not
+  /// to choose -- the "skipped" half of CHRN-62's marker. The capture is then
+  /// declared at once with no opinion, which the server reads as its
+  /// deployment default (30 days). Same refusals as [chooseRetention].
+  Future<bool> skipRetention(String captureId) =>
+      _decide(captureId, (r) => r.copyWith(retentionSkippedAt: DateTime.now()));
+
+  Future<bool> _decide(
+    String captureId,
+    CaptureRecord Function(CaptureRecord) apply,
+  ) async {
+    final root = await _platform.capturesRoot();
+    final capture = CaptureDir(root, captureId);
+    final record = await capture.readMeta();
+    if (record == null || !await _choiceStillOpen(capture, record)) return false;
+    // meta.json's other writers -- finalise and recovery -- touch only a
+    // capture still marked `recording`, and [_choiceStillOpen] has just
+    // required `ready` or `salvaged`, so this write never races them.
+    await capture.writeMeta(apply(record));
+    if (!ref.mounted) return true;
+    await refresh();
+    return true;
+  }
+
+  static Future<bool> _choiceStillOpen(CaptureDir capture, CaptureRecord record) async =>
+      retentionChoosable(record, await QueueDir(capture).read(), DateTime.now());
+
   /// The idle screen's primary control: start, or stop if already running.
   Future<void> toggle() async {
     if (state.isRecording) {
@@ -385,6 +426,34 @@ class CaptureController extends Notifier<CaptureUiState> {
   Future<void> resume() => _platform.resume();
 
   static String _mb(int bytes) => '${(bytes / (1024 * 1024)).round()} MB';
+}
+
+/// Whether a retention choice for [record] can still change what the server
+/// is told -- the one rule the confirm card's visibility and
+/// [CaptureController.chooseRetention]'s refusal both read.
+///
+/// [queued] is the capture's `upload.json`, if the queue has written one.
+/// Once the queue has made any attempt, a declaration may already be on the
+/// server, which keeps a session's first declaration and never lowers a
+/// memo's retention -- so a choice written now would be shown as made and
+/// not honoured. With no record the queue has not seen the capture yet, and
+/// its grace has not even started.
+bool retentionChoosable(CaptureRecord record, QueueRecord? queued, DateTime now) {
+  if (record.state != CaptureState.ready && record.state != CaptureState.salvaged) {
+    return false;
+  }
+  if (queued != null &&
+      (queued.status != QueueStatus.pending ||
+          queued.attemptCount > 0 ||
+          queued.lastAttemptAt != null)) {
+    return false;
+  }
+  return retentionChoiceOpen(
+    retention: record.retention,
+    skipped: record.retentionSkippedAt != null,
+    enqueuedAt: queued?.enqueuedAt ?? now,
+    now: now,
+  );
 }
 
 final capturePlatformProvider =

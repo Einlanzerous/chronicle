@@ -12,6 +12,11 @@ import 'package:chronicle/queue/engine.dart';
 import 'package:chronicle/queue/queue_record.dart';
 import 'package:crypto/crypto.dart';
 
+///
+/// **Settled on retention by default.** With no [retention], the capture
+/// carries CHRN-62's skip marker, so the queue sends it at once with no
+/// opinion -- exactly what every capture declared before CHRN-62 restored
+/// the 24-hour grace. A test about the grace itself passes [undecided].
 Future<QueueCapture> writeFixtureCapture(
   Directory root, {
   required String id,
@@ -19,6 +24,7 @@ Future<QueueCapture> writeFixtureCapture(
   DateTime? startedAt,
   DateTime? enqueuedAt,
   String? retention,
+  bool undecided = false,
   CaptureState state = CaptureState.ready,
   String? contentHashOverride,
 }) async {
@@ -30,6 +36,7 @@ Future<QueueCapture> writeFixtureCapture(
     startedAt: started,
     state: state,
     retention: retention,
+    retentionSkippedAt: retention == null && !undecided ? started : null,
     contentHash: contentHashOverride ?? sha256.convert(bytes).toString(),
     byteSize: bytes.length,
   );

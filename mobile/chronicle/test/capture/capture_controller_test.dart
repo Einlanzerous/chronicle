@@ -5,6 +5,9 @@ import 'package:chronicle/capture/capture_channel.dart';
 import 'package:chronicle/capture/capture_controller.dart';
 import 'package:chronicle/capture/capture_record.dart';
 import 'package:chronicle/capture/recovery.dart';
+import 'package:chronicle/capture/retention_choice.dart';
+import 'package:chronicle/queue/queue_record.dart';
+import 'package:chronicle/queue/retention_gate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -336,6 +339,114 @@ void main() {
     test('dismissing an id with no capture does nothing', () async {
       await ctl().dismiss('does-not-exist');
       // No throw is the assertion; there is nothing else to check.
+    });
+  });
+
+  group('the retention choice (CHRN-62)', () {
+    Future<CaptureDir> writeReady(String id, {CaptureState state = CaptureState.ready}) async {
+      final capture = CaptureDir(root, id);
+      await capture.writeMeta(CaptureRecord(
+        captureId: id,
+        idempotencyKey: 'chr-cap-$id',
+        startedAt: DateTime.now(),
+        state: state,
+        contentHash: 'h',
+        byteSize: 3,
+      ));
+      if (state != CaptureState.empty) {
+        await capture.audio.writeAsBytes([1, 2, 3], flush: true);
+      }
+      return capture;
+    }
+
+    test('a choice is written to meta.json and read back as that choice', () async {
+      for (final choice in RetentionChoice.values) {
+        final capture = await writeReady('c-${choice.name}');
+        expect(await ctl().chooseRetention(capture.captureId, choice), isTrue);
+        final record = await capture.readMeta();
+        expect(record!.retention, choice.wire);
+        expect(record.retentionSkippedAt, isNull);
+        // Nothing else in the record moved: the key the server knows the
+        // capture by, above all.
+        expect(record.idempotencyKey, 'chr-cap-${capture.captureId}');
+        expect(record.state, CaptureState.ready);
+      }
+    });
+
+    test('a skip writes the marker and leaves retention as no opinion', () async {
+      final capture = await writeReady('s');
+      expect(await ctl().skipRetention('s'), isTrue);
+      final record = await capture.readMeta();
+      expect(record!.retention, isNull, reason: 'skipped is not days_30 -- the server decides');
+      expect(record.retentionSkippedAt, isNotNull);
+    });
+
+    test('the choice is made once: a second choice or a skip afterwards is refused', () async {
+      final capture = await writeReady('once');
+      await ctl().chooseRetention('once', RetentionChoice.discardNow);
+      expect(await ctl().chooseRetention('once', RetentionChoice.forever), isFalse);
+      expect(await ctl().skipRetention('once'), isFalse);
+      expect((await capture.readMeta())!.retention, 'discard_now');
+
+      final skipped = await writeReady('once-skipped');
+      await ctl().skipRetention('once-skipped');
+      expect(await ctl().chooseRetention('once-skipped', RetentionChoice.discardNow), isFalse);
+      expect((await skipped.readMeta())!.retention, isNull);
+    });
+
+    test('refused once the queue has made any attempt -- the server may already hold a declaration',
+        () async {
+      final capture = await writeReady('tried');
+      await QueueDir(capture).write(QueueRecord(
+        status: QueueStatus.pending,
+        enqueuedAt: DateTime.now(),
+        attemptCount: 1,
+        lastAttemptAt: DateTime.now(),
+      ));
+      expect(await ctl().chooseRetention('tried', RetentionChoice.discardNow), isFalse);
+      expect((await capture.readMeta())!.retention, isNull);
+    });
+
+    test('refused once the grace is within retentionChoiceCloses of opening the gate', () async {
+      final capture = await writeReady('late');
+      await QueueDir(capture).write(QueueRecord(
+        status: QueueStatus.pending,
+        enqueuedAt: DateTime.now()
+            .subtract(retentionGrace)
+            .add(retentionChoiceCloses)
+            .subtract(const Duration(seconds: 1)),
+      ));
+      expect(await ctl().chooseRetention('late', RetentionChoice.discardNow), isFalse);
+      expect((await capture.readMeta())!.retention, isNull);
+    });
+
+    test('accepted while the queue has enqueued it but made no attempt', () async {
+      final capture = await writeReady('enqueued');
+      await QueueDir(capture).write(QueueRecord.fresh(DateTime.now()));
+      expect(await ctl().chooseRetention('enqueued', RetentionChoice.forever), isTrue);
+      expect((await capture.readMeta())!.retention, 'forever');
+    });
+
+    test('refused for a capture with nothing to send, or none at all', () async {
+      final empty = await writeReady('e', state: CaptureState.empty);
+      expect(await ctl().chooseRetention('e', RetentionChoice.forever), isFalse);
+      expect((await empty.readMeta())!.retention, isNull);
+      expect(await ctl().chooseRetention('does-not-exist', RetentionChoice.forever), isFalse);
+    });
+
+    test('a salvaged capture can be decided like a ready one', () async {
+      final capture = await writeReady('sal', state: CaptureState.salvaged);
+      expect(await ctl().chooseRetention('sal', RetentionChoice.days30), isTrue);
+      expect((await capture.readMeta())!.retention, 'days_30');
+    });
+
+    test('the decision refreshes RECENT, which is what wakes the queue', () async {
+      await writeReady('r');
+      await ctl().refresh();
+      final before = st().recent;
+      await ctl().chooseRetention('r', RetentionChoice.days30);
+      expect(identical(st().recent, before), isFalse);
+      expect(st().recent.single.retention, 'days_30');
     });
   });
 }

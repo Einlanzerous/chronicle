@@ -31,6 +31,7 @@ import '../../router/router.dart';
 import '../../theme/theme.dart';
 import '../../theme/tokens.dart';
 import '../shared/bottom_tabs.dart';
+import 'retention_confirm.dart';
 
 /// How many amplitude samples the waveform keeps.
 const _waveSamples = 48;
@@ -118,6 +119,10 @@ class _CaptureScreenState extends ConsumerState<CaptureScreen> {
             _Refusal(message: state.refusal!),
           ],
           const Spacer(),
+          if (_undecided(state) case final capture?) ...[
+            RetentionConfirm(capture: capture),
+            const SizedBox(height: space4),
+          ],
           Text('RECENT', style: microLabel()),
           const SizedBox(height: space2),
           Expanded(
@@ -134,6 +139,27 @@ class _CaptureScreenState extends ConsumerState<CaptureScreen> {
           ),
         ],
       );
+
+  /// The newest capture whose retention can still be chosen, if any --
+  /// normally the one just stopped (CHRN-62). Older undecided captures are
+  /// chosen from their queue rows; this card offers one decision at a time,
+  /// and never covers the control that starts the next memo.
+  CaptureRecord? _undecided(CaptureUiState state) {
+    // Most of the time nothing is undecided, and then there is no reason to
+    // depend on the queue's state at all.
+    if (!state.recent.any((r) =>
+        (r.state == CaptureState.ready || r.state == CaptureState.salvaged) &&
+        r.retention == null &&
+        r.retentionSkippedAt == null)) {
+      return null;
+    }
+    final queue = ref.watch(queueControllerProvider);
+    final now = DateTime.now();
+    for (final record in state.recent) {
+      if (retentionChoosable(record, queue.records[record.captureId], now)) return record;
+    }
+    return null;
+  }
 
   // ── 02 · RECORDING ─────────────────────────────────────────────────────────
 
@@ -364,6 +390,7 @@ class _RecentRow extends ConsumerWidget {
         deviceBlock: queue.deviceBlock,
         sendingCaptureId: queue.sending,
         retention: record.retention,
+        retentionSkipped: record.retentionSkippedAt != null,
         enqueuedAt: queue.records[record.captureId]?.enqueuedAt ?? record.startedAt,
         now: DateTime.now(),
       );
