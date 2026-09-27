@@ -12,6 +12,7 @@ void main() {
     DeviceBlock? deviceBlock,
     String? sendingCaptureId,
     String? retention,
+    bool retentionSkipped = false,
     DateTime? enqueuedAt,
   }) =>
       queueLabel(
@@ -21,7 +22,10 @@ void main() {
         deviceBlock: deviceBlock,
         sendingCaptureId: sendingCaptureId,
         retention: retention,
-        enqueuedAt: enqueuedAt ?? now,
+        retentionSkipped: retentionSkipped,
+        // Long past by default, so the retention gate is open unless a test
+        // is about the gate: every label below the gate assumes it is.
+        enqueuedAt: enqueuedAt ?? now.subtract(const Duration(days: 30)),
         now: now,
       );
 
@@ -181,6 +185,27 @@ void main() {
         record: QueueRecord(status: QueueStatus.pending, enqueuedAt: now),
         retention: 'days_30',
         enqueuedAt: now.add(const Duration(hours: 1)),
+      ),
+      'QUEUED',
+    );
+  });
+
+  test('an undecided capture inside its grace reads AWAITING RETENTION -- CHRN-62', () {
+    expect(
+      label(
+        record: QueueRecord(status: QueueStatus.pending, enqueuedAt: now),
+        enqueuedAt: now.subtract(const Duration(hours: 1)),
+      ),
+      'AWAITING RETENTION',
+    );
+  });
+
+  test('a skipped capture never reads AWAITING RETENTION -- it goes at once', () {
+    expect(
+      label(
+        record: QueueRecord(status: QueueStatus.pending, enqueuedAt: now),
+        retentionSkipped: true,
+        enqueuedAt: now,
       ),
       'QUEUED',
     );

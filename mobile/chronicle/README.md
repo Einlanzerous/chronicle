@@ -225,6 +225,77 @@ Evidence for all five belongs on the CHRN-61 Switchyard ticket as a comment,
 posted alongside the transition — never assumed from CI alone, per the
 epic's own `Done when`.
 
+## The retention choice (CHRN-62)
+
+The epic puts retention "at the moment of decision, not in a settings screen":
+the only time the person knows whether a memo's audio matters is right after
+recording it. So when a recording stops, the capture screen shows a **THE AUDIO**
+card with three chips, **DISCARD NOW · 30 DAYS · FOREVER**, and the rule
+underneath: *transcript is the durable artefact, audio prunes at 30 days.* The
+queue screen states the same rule at its foot.
+
+### Why here, and not where the canvas draws it
+
+Board 1a draws the `THE AUDIO` block on screen 06, after routing. It cannot live
+there. By the time a memo is routed, the server already holds its declaration,
+and the server's ratchet (`store.Arrival`) only ever **raises** retention. A
+DISCARD NOW offered after the first send would be a button the server can never
+honour. So the card comes straight after recording, before anything is sent. It
+reuses screen 06's block: the title line, its caption, and the chips with 30 DAYS
+selected.
+
+### Three states, one gate
+
+| the person… | `meta.json` | the queue |
+|---|---|---|
+| taps a chip, then **CONFIRM** | `retention` set | declares at once, carrying it |
+| taps **SKIP** | `retention_skipped_at` set, `retention` null | declares at once with no opinion, which is the server's 30-day default |
+| does neither (leaves the card, or never saw it) | both null | holds for **24 hours** from first sight, then declares with no opinion |
+
+That third row is the "skipped versus not yet seen" distinction CHRN-61's plan
+(ruling 3) left for this ticket. `retentionGrace` in `lib/queue/retention_gate.dart`
+went from zero to 24 hours in the same change that added the card, and
+`test/queue/retention_gate_test.dart` pins it. At zero, a capture was declared
+the instant it was ready. That was correct while nothing could ask the question,
+and it becomes wrong as soon as something can.
+
+**30 DAYS is the fast path, and the other two are not the same tap.** A chip only
+selects and CONFIRM commits, so keeping 30 days takes one tap and discarding or
+pinning takes two. A single mis-tap can never throw audio away. The card never
+covers the capture control, so a person can go straight into the next memo. The
+one they leave undecided waits out its grace, and they can still decide it from
+its queue row.
+
+### The choice is made once
+
+`retentionChoosable` (`lib/capture/capture_controller.dart`) is the single rule
+behind both the card's visibility and the write's refusal. A capture can be
+decided only while:
+
+* it is `ready` or `salvaged`;
+* it has no choice and no skip yet;
+* the queue has made **no attempt** on it (`upload.json` is absent, or pending with
+  zero attempts);
+* its grace has more than `retentionChoiceCloses` (5 minutes) left.
+
+The last rule exists because a drain pass reads `meta.json` once, at its start. A
+choice written in the grace's final seconds could land after a pass had already
+read "no opinion, grace over" and declared it. The server keeps a session's first
+declaration, so the choice would appear made and never be honoured. Closing the
+choice five minutes early means the two windows cannot overlap, and
+`retention_gate_test.dart` checks every minute of the day for exactly that.
+
+An undecided capture is held, so the queue also schedules a foreground wake for
+the moment its grace ends. Otherwise it would wait for the next resume. With the
+app closed, the periodic WorkManager task picks it up.
+
+### Seeing the choice later
+
+On the phone, each queue row carries `AUDIO · 30 DAYS` / `FOREVER` / `DISCARD
+NOW`, or `DEFAULT (30 DAYS)` for a skip or an expired grace. On the web, the note's
+provenance block already renders the server's own reading of it:
+`PRUNES <date>`, `PINNED — KEPT`, or `PRUNES AT THE NEXT SWEEP`.
+
 ## Pruning the phone's copy (CHRN-120)
 
 CHRN-61 shipped no deletion path on purpose: an acknowledged capture's audio
@@ -347,19 +418,20 @@ independently, and `QueueDir.readOrEnqueue` (used by both scans) rebuilds an
 ### The device pass for CHRN-120
 
 Run against a real server with a debug build carrying the define. The 410 is not
-reachable by ordinary use, because `captured_at` is immutable and declared
-retention is null on every capture today, so the route is:
+reachable quickly by ordinary use, because `captured_at` is immutable and only a
+`discard_now` memo is pruned before 30 days, so the route is:
 
-1. Record a memo. Before its first send, hand-set `retention` to `discard_now` in
-   its `meta.json` (`adb shell run-as dev.dodson.chronicle.dev` -- a debug build
-   is `.dev` since CHRN-125, and the released app refuses `run-as`).
+1. Record a memo and choose **DISCARD NOW** on the confirm (CHRN-62). Before
+   CHRN-62 this step meant hand-setting `retention` in `meta.json` over
+   `adb shell run-as` on the debug build.
 2. Let it send: one `SENT` row, and one `206` probe straight after the ack.
 3. On the test database make sure a durable transcript exists (model
    `whisper.cpp/small.en`, `partial` false), then run `chronicle prune` against
    it (or wait for the server's hourly sweep).
 4. The once-per-24-hours cap now blocks the second probe, so clear
-   `last_polled_at` in that capture's `upload.json` with the same adb edit as
-   step 1 — or wait 24 hours.
+   `last_polled_at` in that capture's `upload.json` over
+   `adb shell run-as dev.dodson.chronicle.dev` (a debug build is `.dev` since
+   CHRN-125, and the released app refuses `run-as`) — or wait 24 hours.
 5. Wake the queue (open the app). Expect `audio.opus` gone from
    `<filesDir>/captures/<id>/` while `meta.json`, `upload.json` and `pruned`
    remain, and one `chronicle: pruned local audio memo=… gate=audio_pruned`
@@ -640,7 +712,8 @@ lib/
   capture/             CHRN-60: one-tap capture, recovery, the on-disk record
     capture_record.dart   meta.json, CaptureDir, the idempotency key, the prune tombstone
     capture_channel.dart  the Dart half of the seam to CaptureService
-    capture_controller.dart
+    capture_controller.dart  also CHRN-62's chooseRetention / skipRetention
+    retention_choice.dart   CHRN-62: the three answers and their wire values
     recovery.dart      classify() and finalise() -- never guesses about a live recorder
     ogg.dart
   queue/               CHRN-61: the durable offline queue -- see the section above
@@ -659,7 +732,7 @@ lib/
   features/
     signin/            scan, or paste the link
     home/               account, address, connection state
-    capture/           board 1a screens 01/02 -- idle, recording
+    capture/           board 1a screens 01/02 -- idle, recording; CHRN-62's retention card
     queue/              board 1a screen 03's CHRN-61 slice
     shared/            the CAPTURE / QUEUE tab bar
 packages/chronicle_api/  GENERATED -- do not edit

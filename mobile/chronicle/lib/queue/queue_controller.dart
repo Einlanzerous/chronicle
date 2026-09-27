@@ -31,6 +31,7 @@ import 'device_block.dart';
 import 'engine.dart';
 import 'prune.dart';
 import 'queue_record.dart';
+import 'retention_gate.dart';
 import 'upload_transport.dart';
 import 'uploads_api_transport.dart';
 
@@ -273,7 +274,23 @@ class QueueController extends Notifier<QueueUiState> {
     );
     if (!ref.mounted) return;
 
-    _scheduleNextWake(records.values);
+    _scheduleNextWake(records.values, _graceEnds(captures, records));
+  }
+
+  /// When each still-undecided capture's retention grace runs out -- the
+  /// moment it becomes sendable with nobody touching the phone. Without a
+  /// wake at that instant, a capture whose grace ended with the app open
+  /// would sit until the next launch, resume or background run.
+  static Iterable<DateTime> _graceEnds(
+    List<QueueCapture> captures,
+    Map<String, QueueRecord> records,
+  ) sync* {
+    for (final qc in captures) {
+      final record = records[qc.capture.captureId] ?? qc.queueRecord;
+      if (record.status != QueueStatus.pending) continue;
+      if (qc.capture.retention != null || qc.capture.retentionSkippedAt != null) continue;
+      yield retentionGraceEndsAt(record.enqueuedAt);
+    }
   }
 
   /// Moves a `rejected` capture back to `pending` -- the only way one ever
@@ -305,7 +322,11 @@ class QueueController extends Notifier<QueueUiState> {
   /// instant, never late -- `drainPass`'s own `backoffElapsed` check is
   /// still the authority, so an early wake just finds nothing eligible yet
   /// and reschedules.
-  void _scheduleNextWake(Iterable<QueueRecord> records) {
+  ///
+  /// [graceEnds] adds the retention gate's own thresholds (CHRN-62): a
+  /// capture held for its grace has made no attempt, so nothing above would
+  /// otherwise wake the queue when that grace ends.
+  void _scheduleNextWake(Iterable<QueueRecord> records, Iterable<DateTime> graceEnds) {
     _retryTimer?.cancel();
     // A device block lifts via a sign-in, a re-scan, or `/auth/me`
     // confirming the session (the three listeners above) -- never a timer.
@@ -315,6 +336,14 @@ class QueueController extends Notifier<QueueUiState> {
     for (final r in records) {
       if (r.status != QueueStatus.pending || r.lastAttemptAt == null) continue;
       final at = r.lastAttemptAt!.add(backoffDelay(r.attemptCount));
+      final soFar = earliest;
+      if (soFar == null || at.isBefore(soFar)) earliest = at;
+    }
+    final now = DateTime.now();
+    for (final at in graceEnds) {
+      // A grace already over was either sent by the pass that just ran or
+      // failed and is now backoff's to schedule, above.
+      if (!at.isAfter(now)) continue;
       final soFar = earliest;
       if (soFar == null || at.isBefore(soFar)) earliest = at;
     }

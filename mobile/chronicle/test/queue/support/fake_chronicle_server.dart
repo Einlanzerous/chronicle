@@ -59,6 +59,11 @@ class FakeChronicleServer {
   /// regardless of key, simulating the deployment's open-session cap.
   bool forcePendingLimit = false;
 
+  /// The retention each NEW session was declared with, in open order --
+  /// null for "no opinion". What CHRN-62's tests read to prove the phone
+  /// declared exactly what the person chose, and nothing on their behalf.
+  final List<String?> declaredRetentions = [];
+
   UploadState open({
     required String idempotencyKey,
     required String contentHash,
@@ -117,6 +122,7 @@ class FakeChronicleServer {
     );
     _byKey[idempotencyKey] = session;
     _byUploadId[session.uploadId] = session;
+    declaredRetentions.add(retention);
     return UploadState(
       status: UploadStateStatusEnum.incomplete,
       uploadId: session.uploadId,

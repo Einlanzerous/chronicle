@@ -27,12 +27,13 @@
 /// rule for *Switchyard* keys is never to derive one from an entity: CHRN-18 is
 /// explicit that this key names an **arrival attempt** of one capture.
 ///
-/// **`retention` starts null and stays null.** CHRN-62 fills it. It is not
+/// **`retention` starts null, and only CHRN-62's confirm fills it.** It is not
 /// defaulted to `days_30` here, because `store.Arrival`'s ratchet only ever
 /// raises retention and there is no operation anywhere in the API that lowers
 /// it — so a capture declared with a default can never afterwards be marked
-/// `DISCARD NOW`. The queue holds the declaration until the choice exists or a
-/// grace expires; that is CHRN-61's and CHRN-62's half of the same decision.
+/// `DISCARD NOW`. The queue holds the declaration until the choice exists, the
+/// person skips it, or a grace expires; that is CHRN-61's and CHRN-62's half
+/// of the same decision (`retention_gate.dart`).
 library;
 
 import 'dart:convert';
@@ -92,6 +93,7 @@ class CaptureRecord {
     required this.startedAt,
     required this.state,
     this.retention,
+    this.retentionSkippedAt,
     this.contentHash,
     this.byteSize,
     this.durationMs,
@@ -115,7 +117,19 @@ class CaptureRecord {
   final CaptureState state;
 
   /// Null until CHRN-62's confirm. Null means "no opinion", never `days_30`.
+  /// One of `RetentionChoice`'s wire values otherwise.
   final String? retention;
+
+  /// When the person saw the confirm and chose not to choose: CHRN-62's
+  /// "skipped versus not yet seen" marker.
+  ///
+  /// Both leave [retention] null, and the server is told the same thing --
+  /// no opinion, so the deployment default. What differs is WHEN: a skipped
+  /// capture may be declared at once, while one nobody has decided on yet is
+  /// held for the retention grace (`retention_gate.dart`), because declaring
+  /// it would make DISCARD NOW impossible for a person who has not yet had
+  /// the chance to say it.
+  final DateTime? retentionSkippedAt;
 
   final String? contentHash;
   final int? byteSize;
@@ -144,6 +158,7 @@ class CaptureRecord {
   CaptureRecord copyWith({
     CaptureState? state,
     String? retention,
+    DateTime? retentionSkippedAt,
     String? contentHash,
     int? byteSize,
     int? durationMs,
@@ -156,6 +171,7 @@ class CaptureRecord {
         startedAt: startedAt,
         state: state ?? this.state,
         retention: retention ?? this.retention,
+        retentionSkippedAt: retentionSkippedAt ?? this.retentionSkippedAt,
         contentHash: contentHash ?? this.contentHash,
         byteSize: byteSize ?? this.byteSize,
         durationMs: durationMs ?? this.durationMs,
@@ -169,6 +185,7 @@ class CaptureRecord {
         'started_at': startedAt.toIso8601String(),
         'state': state.name,
         'retention': retention,
+        'retention_skipped_at': retentionSkippedAt?.toIso8601String(),
         'content_hash': contentHash,
         'byte_size': byteSize,
         'duration_ms': durationMs,
@@ -182,6 +199,12 @@ class CaptureRecord {
         startedAt: DateTime.parse(json['started_at']! as String),
         state: CaptureState.parse(json['state'] as String?),
         retention: json['retention'] as String?,
+        // Absent in records written before CHRN-62, which read as "not
+        // skipped" -- and with the grace at zero until CHRN-62, every one of
+        // them was declared long ago anyway.
+        retentionSkippedAt: json['retention_skipped_at'] == null
+            ? null
+            : DateTime.tryParse(json['retention_skipped_at']! as String),
         contentHash: json['content_hash'] as String?,
         byteSize: json['byte_size'] as int?,
         durationMs: json['duration_ms'] as int?,

@@ -16,9 +16,9 @@ import 'retention_gate.dart';
 
 /// [captureId]'s row label. [allRecords] is every OTHER capture's record
 /// currently known, keyed by id -- needed only for the `NOT SENT — SERVER
-/// ERROR` evidence rule below. [retention] and [enqueuedAt] are the
-/// capture's own declared retention and its record's enqueue time, for the
-/// `AWAITING RETENTION` gate.
+/// ERROR` evidence rule below. [retention], [retentionSkipped] and
+/// [enqueuedAt] are the capture's own retention choice, CHRN-62's skip
+/// marker, and its record's enqueue time, for the `AWAITING RETENTION` gate.
 String queueLabel({
   required String captureId,
   required QueueRecord? record,
@@ -26,6 +26,7 @@ String queueLabel({
   required DeviceBlock? deviceBlock,
   required String? sendingCaptureId,
   required String? retention,
+  required bool retentionSkipped,
   required DateTime enqueuedAt,
   required DateTime now,
 }) {
@@ -49,7 +50,12 @@ String queueLabel({
         : 'NOT SENT — WRONG HOST';
   }
 
-  if (!retentionGateOpen(retention: retention, enqueuedAt: enqueuedAt, now: now)) {
+  if (!retentionGateOpen(
+    retention: retention,
+    skipped: retentionSkipped,
+    enqueuedAt: enqueuedAt,
+    now: now,
+  )) {
     return 'AWAITING RETENTION';
   }
 
