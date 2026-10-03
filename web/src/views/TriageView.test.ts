@@ -230,6 +230,20 @@ describe('TriageView -- forty memos at a keyboard', () => {
     wrapper.unmount()
   })
 
+  it('a held key never decides: auto-repeat accepts one row, not a run of them', async () => {
+    const server = fakeServer([memo(1), memo(2), memo(3)])
+    const wrapper = await mountView()
+    await press('Enter')
+    for (let i = 0; i < 5; i++) {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', repeat: true, bubbles: true }))
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', repeat: true, bubbles: true }))
+    }
+    await flushPromises()
+    expect(server.decisions).toHaveLength(1)
+    expect(wrapper.findAll('.ch-tri-row.is-prefilled')).toHaveLength(2)
+    wrapper.unmount()
+  })
+
   it('esc cancels an edit and sends nothing', async () => {
     const server = fakeServer([memo(1)])
     const wrapper = await mountView()

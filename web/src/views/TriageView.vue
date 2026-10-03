@@ -428,6 +428,11 @@ function onKey(e: KeyboardEvent): void {
 
   const row = focused.value
   const key = e.key.length === 1 ? e.key.toLowerCase() : e.key
+  // A HELD KEY MOVES, IT NEVER DECIDES. Focus advances after every decision,
+  // so an auto-repeating ⏎ would accept a run of proposals nobody looked at
+  // -- notes and tickets that cannot be taken back. One press, one decision.
+  const moving = key === 'j' || key === 'k' || key === 'ArrowDown' || key === 'ArrowUp'
+  if (e.repeat && !moving) return
   switch (key) {
     case 'j':
     case 'ArrowDown':
