@@ -12,6 +12,7 @@ import Mark from '@/components/Mark.vue'
 import { api } from '@/api/client'
 import { currentUser } from '@/auth'
 import { buildPageTree, flattenPageTree } from '@/lib/pageTree'
+import { formatTriageWaiting, setTriageWaiting, triageScopeLabel, triageWaiting } from '@/lib/triageCount'
 import { PAGE_PATHS_ERROR_KEY, PAGE_PATHS_KEY } from './shellData'
 import type { components } from '@/api/schema.d.ts'
 
@@ -27,7 +28,6 @@ const pagePaths = ref<string[] | null>(null)
 const pagePathsError = ref(false)
 const tier1Pages = ref<Tier1PageSummary[] | null>(null)
 const tier1PagesError = ref(false)
-const triageCount = ref<number | null>(null)
 // The DISCUSSIONS row's own badge (CHRN-57). Not on the canvas -- named as a
 // deliberate addition in the PR -- but a thread has to be REACHABLE from
 // somewhere, and `listUnread` (openapi.yaml) exists for exactly this: "the
@@ -71,16 +71,22 @@ onMounted(() => {
       tier1PagesError.value = true
     })
 
-  // The TRIAGE row's count badge -- "the batch size" (CHRN-58's ticket
-  // comment), which is exactly items.length from one getTriageBatch call
-  // (DefaultLimit == MaxLimit == 25, internal/triage/triage.go), made once
-  // per session alongside the two reads above. A failure here just means no
-  // badge, not a blank sidebar -- it is not asserting a fact the way an
-  // empty tree would.
+  // The TRIAGE row's count badge: one getTriageBatch call, made once per
+  // session alongside the two reads above, into the ref lib/triageCount.ts
+  // shares with the triage screen -- which rewrites it after every decision,
+  // so the badge follows without a reload (CHRN-55). The batch is one screen
+  // (DefaultLimit == MaxLimit == 25, internal/triage/triage.go) and carries
+  // no total, so a FULL batch is drawn `25+`: "at least", not a confident 25
+  // over forty-six waiting memos. A failure here just means no badge, not a
+  // blank sidebar -- it is not asserting a fact the way an empty tree would.
   api
     .GET('/triage/batch')
     .then((res) => {
-      if (res.data) triageCount.value = res.data.items.length
+      // The screen may have answered first when /app/triage is the landing
+      // route; its count is the newer one.
+      if (res.data && triageWaiting.value === null) {
+        setTriageWaiting(res.data.items.length, res.data.items.length >= res.data.limit)
+      }
     })
     .catch(() => {})
 
@@ -129,11 +135,12 @@ function submitSearch(): void {
 // getTriageBatch scopes to actor.ID for a member and to everyone for the
 // owner (internal/triage/batch.go), so the badge is the right number but a
 // different number per person -- named here so it does not read as a
-// global (review, CHRN-58). Snapshot-vs-live after a decision is CHRN-55's
-// to solve; this does not poll.
-const triageCountTitle = computed(() =>
-  currentUser.value?.is_owner ? 'all memos awaiting a decision' : 'your memos awaiting a decision',
-)
+// global (review, CHRN-58). The wording is lib/triageCount.ts's, shared with
+// the triage screen's header so the two say it in the same words.
+const triageCountTitle = computed(() => {
+  const scope = triageScopeLabel(currentUser.value?.is_owner ?? false)
+  return triageWaiting.value?.more ? `${scope} — at least this many; the batch holds one screen` : scope
+})
 </script>
 
 <template>
@@ -158,10 +165,10 @@ const triageCountTitle = computed(() =>
       <RouterLink to="/triage" class="ch-shell-triage" active-class="is-active">
         <span class="ch-shell-triage-label">TRIAGE</span>
         <span
-          v-if="triageCount !== null"
+          v-if="triageWaiting !== null"
           class="ch-shell-triage-count"
           :title="triageCountTitle"
-          >{{ triageCount }}</span
+          >{{ formatTriageWaiting(triageWaiting) }}</span
         >
       </RouterLink>
 
