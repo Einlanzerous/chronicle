@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.25.0](https://github.com/Einlanzerous/chronicle/compare/v1.24.0...v1.25.0) (2026-10-03)
+
+
+### Features
+
+* **scribe:** a proposal pump that routes every transcribed memo, yielding the GPU to transcription (CHRN-126) ([#140](https://github.com/Einlanzerous/chronicle/issues/140)) ([0e4a65a](https://github.com/Einlanzerous/chronicle/commit/0e4a65a584b8bf0a6e28cc933674bbb2eefc1003))
+
 ## [1.24.0](https://github.com/Einlanzerous/chronicle/compare/v1.23.0...v1.24.0) (2026-09-27)
 
 
