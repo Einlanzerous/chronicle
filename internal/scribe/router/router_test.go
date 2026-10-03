@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -274,5 +275,80 @@ func TestAModelThatIsNotPulledIsNamed(t *testing.T) {
 	}
 	if _, err := r.Digest(context.Background()); err == nil || !strings.Contains(err.Error(), "not pulled") {
 		t.Fatalf("err = %v, want it to say the model is not pulled", err)
+	}
+}
+
+// The two truncations are facts about one transcript, and the pump records
+// them `invalid` rather than retrying them (CHRN-126 ⚖3). That is only possible
+// if it can tell them from an outage without reading the message.
+func TestTheTruncationsCarryTheirOwnSentinels(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		reply map[string]any
+		want  error
+	}{
+		{"num_ctx", map[string]any{
+			"response": validProposal("NOTE", ""), "done_reason": "stop",
+			"prompt_eval_count": 16384, "eval_count": 10,
+		}, ErrContextFull},
+		{"num_predict", map[string]any{
+			"response": `{"reason":"it goes on and`, "done_reason": "length",
+			"prompt_eval_count": 100, "eval_count": 1536,
+		}, ErrAnswerTruncated},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o := &ollama{t: t, replies: []map[string]any{tc.reply}}
+			r := newTestRouter(t, o.start(t).URL, 3)
+			out, err := r.Route(context.Background(), "a memo")
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("err = %v, want %v", err, tc.want)
+			}
+			if !errors.Is(out.Err, tc.want) {
+				t.Errorf("Outcome.Err = %v, want it to carry %v, since that is what reaches the row", out.Err, tc.want)
+			}
+		})
+	}
+}
+
+// AN EMPTY 200 IS NOT A MALFORMED ANSWER. Before CHRN-126 it reached stage 1,
+// failed Parse on every attempt, and an Ollama that was up and unwell was
+// written down as a contract failure. Pinned here because CHRN-36's eval sees
+// the same change: that case is now a transport error, not a stage-1 failure.
+func TestAnEmptyAnswerIsATransportErrorAndNotAStageOneFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		reply map[string]any
+	}{
+		{"empty response", map[string]any{"response": "", "done_reason": "stop", "prompt_eval_count": 100, "eval_count": 0}},
+		{"whitespace response", map[string]any{"response": " \n\t ", "done_reason": "stop", "prompt_eval_count": 100, "eval_count": 3}},
+		{"eval_count zero", map[string]any{"response": validProposal("NOTE", ""), "done_reason": "stop", "prompt_eval_count": 100, "eval_count": 0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o := &ollama{t: t, replies: []map[string]any{tc.reply}}
+			r := newTestRouter(t, o.start(t).URL, 3)
+			out, err := r.Route(context.Background(), "a memo")
+			if !errors.Is(err, ErrEmptyAnswer) {
+				t.Fatalf("err = %v, want ErrEmptyAnswer", err)
+			}
+			var shape scribe.ShapeErrors
+			if errors.As(out.Err, &shape) {
+				t.Errorf("Outcome.Err = %v is a stage-1 parse failure; an empty answer says nothing about the prompt", out.Err)
+			}
+			if o.numCalls != 1 {
+				t.Errorf("made %d calls; an empty answer ends the run like any transport error", o.numCalls)
+			}
+		})
+	}
+
+	// And the line it does not move: a non-empty answer that fails Parse, with
+	// tokens behind it, is still the model's doing.
+	o := &ollama{t: t, replies: []map[string]any{reply(`{"destination":"NONSENSE"}`)}}
+	r := newTestRouter(t, o.start(t).URL, 3)
+	out, err := r.Route(context.Background(), "a memo")
+	if err != nil {
+		t.Fatalf("an unparseable answer became a transport error: %v", err)
+	}
+	if out.Err == nil || out.Proposal != nil || o.numCalls != 3 {
+		t.Fatalf("outcome = %+v after %d calls, want a stage-1 failure after 3", out, o.numCalls)
 	}
 }
