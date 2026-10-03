@@ -34,6 +34,7 @@ import (
 	"github.com/Einlanzerous/chronicle/internal/scribe"
 	"github.com/Einlanzerous/chronicle/internal/scribe/catalogue"
 	"github.com/Einlanzerous/chronicle/internal/scribe/prompt"
+	"github.com/Einlanzerous/chronicle/internal/scribe/pump"
 	"github.com/Einlanzerous/chronicle/internal/store"
 	"github.com/Einlanzerous/chronicle/internal/switchyard"
 	"github.com/Einlanzerous/chronicle/internal/transcribe"
@@ -399,6 +400,7 @@ func runServe(args []string) error {
 	var pruner *retention.Pruner
 	var transcriber *transcribe.Service
 	var triager *triage.Service
+	var proposals *pump.Pump
 	deps := api.Deps{
 		DB:            st,
 		Accounts:      st,
@@ -619,6 +621,30 @@ func runServe(args []string) error {
 		deps.Triage = triager
 		logger.Info("triage enabled", "proposer", proposer,
 			"switchyard", cfg.SwitchyardURL, "preaccept_min", cfg.ScribePreacceptMin)
+
+		// THE PROPOSAL PUMP (CHRN-126) — what makes the surface above have
+		// something to read. Built in this block and nowhere else, so there is
+		// no state in which triage reads proposals and nothing writes them.
+		//
+		// The transcription gate is on exactly when a transcription pump was
+		// built, NOT when TranscriptionEnabled is true: the pump only exists
+		// inside the audio-directory block, and with no pump a `captured` memo
+		// would hold routing off forever (⚖2).
+		proposals, err = pump.New(pump.Options{
+			Store:             tier1,
+			Catalogue:         catalogue.NewLive(sw),
+			Logger:            logger,
+			OllamaURL:         cfg.ScribeOllamaURL,
+			Model:             cfg.ScribeModel,
+			MaxAttempts:       cfg.ScribeMaxAttempts,
+			TranscriptionGate: transcriber != nil,
+		})
+		if err != nil {
+			return err
+		}
+		if proposals.Proposer() != proposer {
+			return fmt.Errorf("the scribe pump would write under %q and triage reads %q", proposals.Proposer(), proposer)
+		}
 	} else {
 		// Said out loud. Without it, memos are transcribed and routed and then
 		// sit in `transcribed` forever with nothing to accept them, and the
@@ -734,6 +760,19 @@ func runServe(args []string) error {
 			defer watching.Done()
 			if err := triager.Run(ctx, triage.DefaultSweepInterval); err != nil {
 				logger.Error("the triage sweep stopped", "error", err)
+			}
+		}()
+	}
+	// CHRN-126's proposal pump. Waited on like the others: a generation in
+	// flight is cancelled through ctx and nothing is written for it, so
+	// shutdown stays inside the grace period even though one call may run
+	// for two minutes.
+	if proposals != nil {
+		watching.Add(1)
+		go func() {
+			defer watching.Done()
+			if err := proposals.Run(ctx); err != nil {
+				logger.Error("the scribe pump stopped", "error", err)
 			}
 		}()
 	}

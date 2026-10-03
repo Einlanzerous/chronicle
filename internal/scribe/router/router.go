@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -33,6 +34,22 @@ import (
 // timeout that fires on a cold start would make the first memo of every run
 // fail for a reason that has nothing to do with the prompt.
 const DefaultTimeout = 120 * time.Second
+
+// The three answers a 200 can carry that are not a proposal. Route returns
+// each, wrapped, as its transport error; they are exported because the
+// proposal pump (CHRN-126 ⚖3) has to tell them apart from an outage, and
+// they do not all go the same way.
+//
+// ErrContextFull and ErrAnswerTruncated are facts about ONE TRANSCRIPT against
+// the pinned options: retrying is the same answer forever, so the pump records
+// them `invalid` for a person to route by hand. ErrEmptyAnswer is a fact about
+// THE BOX — a model mid-load, a runner restarting — and says nothing about the
+// prompt, so it is retried like any other outage.
+var (
+	ErrContextFull     = errors.New("router: the prompt filled the context window")
+	ErrAnswerTruncated = errors.New("router: the answer hit num_predict")
+	ErrEmptyAnswer     = errors.New("router: Ollama answered 200 with no answer in it")
+)
 
 // Catalogue is what the router routes against, and it is READ TWICE: rendered
 // into the prompt, then handed to scribe.Reconcile as the thing the answer is
@@ -276,17 +293,27 @@ func (r *Router) generate(ctx context.Context, p string) ([]byte, error) {
 	// for a reason no report could show. num_ctx is pinned in options.json and
 	// this is the assertion that it was actually big enough.
 	if out.PromptEvalCount >= r.numCtx {
-		return nil, fmt.Errorf("router: the prompt filled the context window (%d of num_ctx %d): "+
+		return nil, fmt.Errorf("%w (%d of num_ctx %d): "+
 			"Ollama truncates from the front, so the instructions were dropped and only the "+
 			"transcript survived — raise num_ctx in options.json (and bump the prompt version)",
-			out.PromptEvalCount, r.numCtx)
+			ErrContextFull, out.PromptEvalCount, r.numCtx)
 	}
 	// The other end: num_predict cut the answer off mid-object, which reaches
 	// stage 1 as unparseable JSON and would be retried as if the model had
 	// written something malformed. It did not; it was interrupted.
 	if out.DoneReason == "length" {
-		return []byte(out.Response), fmt.Errorf("router: the answer hit num_predict (%d tokens generated) and was cut off mid-object; "+
-			"raise num_predict in options.json (and bump the prompt version)", out.EvalCount)
+		return []byte(out.Response), fmt.Errorf("%w (%d tokens generated) and was cut off mid-object; "+
+			"raise num_predict in options.json (and bump the prompt version)", ErrAnswerTruncated, out.EvalCount)
+	}
+	// NOTHING IS NOT AN ANSWER. A 200 carrying an empty response, or one the
+	// model generated no tokens for, would otherwise reach stage 1, fail Parse
+	// on every attempt, and be recorded as a contract failure — an Ollama that
+	// is up and unwell written down as `invalid` (CHRN-126 ⚖3). An empty answer
+	// says nothing about the prompt, so it is a transport error. A NON-empty
+	// answer that fails Parse is still the model's doing: under the schema
+	// `format`, that is what stage 1 is for.
+	if strings.TrimSpace(out.Response) == "" || out.EvalCount == 0 {
+		return nil, fmt.Errorf("%w (%d bytes, eval_count %d)", ErrEmptyAnswer, len(out.Response), out.EvalCount)
 	}
 	return []byte(out.Response), nil
 }
