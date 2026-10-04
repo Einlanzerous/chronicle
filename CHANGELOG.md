@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.27.0](https://github.com/Einlanzerous/chronicle/compare/v1.26.0...v1.27.0) (2026-10-04)
+
+
+### Features
+
+* **api:** pin a memo's audio after the fact — raise retention from the note view (CHRN-128) ([#144](https://github.com/Einlanzerous/chronicle/issues/144)) ([7e8b33c](https://github.com/Einlanzerous/chronicle/commit/7e8b33ce10d2ae1744dd28f686c83f7a4d866ec4))
+
 ## [1.26.0](https://github.com/Einlanzerous/chronicle/compare/v1.25.0...v1.26.0) (2026-10-04)
 
 
