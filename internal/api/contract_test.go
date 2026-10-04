@@ -183,6 +183,7 @@ func TestAnonymousGetsTheSameAnswerFromEveryRoute(t *testing.T) {
 		{http.MethodPost, "/notes/CHR-0311/revisions", http.StatusUnauthorized},
 		{http.MethodGet, "/notes/CHR-0311/backlinks", http.StatusUnauthorized},
 		{http.MethodGet, "/notes/CHR-0311/provenance", http.StatusUnauthorized},
+		{http.MethodGet, "/notes/search", http.StatusUnauthorized},
 		{http.MethodGet, "/search", http.StatusUnauthorized},
 
 		// The recording behind a note (CHRN-107). Not under /memos/: see
@@ -412,10 +413,10 @@ func TestDocumentedOperations(t *testing.T) {
 		"listNoteBacklinks", "listNoteRevisions", "listNotes", "listPages", "listSessions", "listTier1Pages",
 		"listUnread", "listUsers", "markRead", "openDiscussion", "openUpload", "raiseMemoRetention",
 		"releaseMemo", "removeParticipant", "resolveDiscussion", "resolveReferences", "revokeSession",
-		"search", "updateMe",
+		"search", "searchNotes", "updateMe",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Errorf("operations = %v, want %v.\nAll 51 routes are in the document now; a change here is a change to the surface.", got, want)
+		t.Errorf("operations = %v, want %v.\nAll 52 routes are in the document now; a change here is a change to the surface.", got, want)
 	}
 }
 
@@ -485,6 +486,9 @@ func TestACredentialedCallerIsNotRefusedByTheWrappers(t *testing.T) {
 		{http.MethodPost, "/notes/CHR-0311/revisions", member, "member-token"},
 		{http.MethodGet, "/notes/CHR-0311/backlinks", member, "member-token"},
 		{http.MethodGet, "/notes/CHR-0311/provenance", member, "member-token"},
+		// The notes-only search, as a MEMBER (CHRN-116): the row beside it is
+		// the owner's because the owner is the only one /search admits.
+		{http.MethodGet, "/notes/search?q=x", member, "member-token"},
 		{http.MethodGet, "/search", owner, "owner-token"},
 
 		// A MEMBER REACHES BOTH MEMO ROUTES' HANDLERS, and is then scoped
@@ -839,6 +843,8 @@ func TestEveryParameterBindingOperationRefusesAMalformedOne(t *testing.T) {
 		{"listNoteBacklinks", http.MethodGet, "/notes/CHR-0311/backlinks?limit=not-a-number", "owner-token", nil},
 		{"search", http.MethodGet, "/search?q=pruner&limit=not-a-number", "owner-token", nil},
 		{"search", http.MethodGet, "/search", "owner-token", nil},
+		{"searchNotes", http.MethodGet, "/notes/search?q=pruner&limit=not-a-number", "owner-token", nil},
+		{"searchNotes", http.MethodGet, "/notes/search", "owner-token", nil},
 
 		// The recording behind a note (CHRN-107): the two {memo_id} binders.
 		// getNoteProvenance's own 400 is noteRef's rather than the generated
@@ -1043,6 +1049,12 @@ func TestEveryResolutionFieldReachesTheDocument(t *testing.T) {
 			"Kind": "kind", "NoteID": "-", "Number": "ref", "Title": "title", "PageID": "-",
 			"MemoID": "memo_id", "Model": "model", "Snippet": "snippet", "Rank": "rank", "CreatedAt": "created_at",
 		}, nil},
+		// CHRN-116: the notes-only hit. No memo and no model on either side,
+		// and a field added to store.NoteHit fails here until it is placed.
+		{"NoteSearchHit", store.NoteHit{}, map[string]string{
+			"NoteID": "-", "Number": "ref", "Title": "title", "PageID": "-",
+			"Snippet": "snippet", "Rank": "rank", "CreatedAt": "created_at",
+		}, nil},
 
 		// CHRN-99's transcriptions of E6. The three resolution columns fold
 		// into one `resolved` object; a turn's html and references are
@@ -1122,4 +1134,201 @@ func schemaProperties(s *openapi3.Schema) map[string]bool {
 		}
 	}
 	return out
+}
+
+// ONLY OWNER OPERATIONS CAN ANSWER A SearchHit (CHRN-116).
+//
+// SearchHit is the one schema in the document that can describe a transcript
+// hit: it has `memo_id`, `model` and `kind: transcript`. The notes-only search
+// answers NoteSearchHit, which has none of them, and the real-store test
+// proves that route says nothing of a transcript today. This is the part that
+// speaks to operations NOBODY HAS WRITTEN YET: a member operation that
+// declares a response reaching SearchHit fails here, in the document, before a
+// handler exists to be wrong.
+//
+// "Reaches" is transitive — through `$ref`, `properties`, `items`,
+// `additionalProperties`, `allOf`, `oneOf` and `anyOf`, to any depth — because
+// SearchHit is only ever reachable through a wrapper (`SearchResults.items`).
+// A walk one level deep would see no operation answering it and pass for
+// every document; so the walk is first shown to find it from `search`.
+func TestOnlyOwnerOperationsAnswerASearchHit(t *testing.T) {
+	doc := apitest.Doc(t)
+	target, ok := doc.Components.Schemas["SearchHit"]
+	if !ok || target.Value == nil {
+		t.Fatal("openapi.yaml has no SearchHit schema; this guard has lost its subject")
+	}
+	reaches := func(ref *openapi3.SchemaRef) bool {
+		return schemaReaches(ref, target.Value, map[*openapi3.Schema]bool{})
+	}
+
+	// Every schema an operation can answer with, on any status and media type.
+	answers := func(op *openapi3.Operation) []*openapi3.SchemaRef {
+		var out []*openapi3.SchemaRef
+		if op.Responses == nil {
+			return out
+		}
+		for _, resp := range op.Responses.Map() {
+			if resp == nil || resp.Value == nil {
+				continue
+			}
+			for _, media := range resp.Value.Content {
+				if media != nil && media.Schema != nil {
+					out = append(out, media.Schema)
+				}
+			}
+		}
+		return out
+	}
+	ok200 := func(op *openapi3.Operation) *openapi3.SchemaRef {
+		resp := op.Responses.Status(http.StatusOK)
+		if resp == nil || resp.Value == nil {
+			return nil
+		}
+		media := resp.Value.Content.Get("application/json")
+		if media == nil {
+			return nil
+		}
+		return media.Schema
+	}
+
+	ops := apitest.Operations(t)
+
+	// THE WALK CAN SEE A WRAPPER. If it cannot find SearchHit from `search`'s
+	// own 200, every absence below is the walk's blindness and not a fact.
+	search, ok := ops["search"]
+	if !ok {
+		t.Fatal("the document has no `search` operation")
+	}
+	if s := ok200(search); s == nil || !reaches(s) {
+		t.Fatal("the walk does not find SearchHit from search's 200 schema; it is too shallow to guard anything")
+	}
+
+	// The notes-only search does not answer it.
+	notes, ok := ops["searchNotes"]
+	if !ok {
+		t.Fatal("the document has no `searchNotes` operation")
+	}
+	s := ok200(notes)
+	if s == nil {
+		t.Fatal("searchNotes declares no 200 JSON schema")
+	}
+	if reaches(s) {
+		t.Error("searchNotes's 200 schema reaches SearchHit: a member route can describe a transcript hit")
+	}
+
+	// And nothing else that is not the owner's does, now or later.
+	var holders []string
+	for name, op := range ops {
+		pol, _ := op.Extensions["x-chronicle-policy"].(string)
+		for _, schema := range answers(op) {
+			if !reaches(schema) {
+				continue
+			}
+			holders = append(holders, name)
+			if pol != string(policyOwner) {
+				t.Errorf("%s is %q and can answer a SearchHit; only an owner operation may — "+
+					"a hit that can carry memo_id and kind: transcript is every author's transcripts", name, pol)
+			}
+			break
+		}
+	}
+	sort.Strings(holders)
+	if strings.Join(holders, ",") != "search" {
+		t.Errorf("operations answering a SearchHit = %v, want only search. "+
+			"If this is a new owner operation, say so here.", holders)
+	}
+}
+
+// The walk itself, over schemas built by hand: one per edge it claims to
+// follow, a chain of them, a cycle, and a tree with no target in it. Without
+// this the test above rests on the document happening to exercise each edge.
+func TestSchemaReachesFollowsEveryEdge(t *testing.T) {
+	target := &openapi3.Schema{Description: "the needle"}
+	hit := &openapi3.SchemaRef{Ref: "#/components/schemas/SearchHit", Value: target}
+	wrap := map[string]func(inner *openapi3.SchemaRef) *openapi3.SchemaRef{
+		"$ref": func(inner *openapi3.SchemaRef) *openapi3.SchemaRef {
+			return &openapi3.SchemaRef{Ref: "#/components/schemas/Alias", Value: inner.Value}
+		},
+		"properties": func(inner *openapi3.SchemaRef) *openapi3.SchemaRef {
+			return &openapi3.SchemaRef{Value: &openapi3.Schema{Properties: openapi3.Schemas{"hit": inner}}}
+		},
+		"items": func(inner *openapi3.SchemaRef) *openapi3.SchemaRef {
+			return &openapi3.SchemaRef{Value: &openapi3.Schema{Items: inner}}
+		},
+		"additionalProperties": func(inner *openapi3.SchemaRef) *openapi3.SchemaRef {
+			return &openapi3.SchemaRef{Value: &openapi3.Schema{
+				AdditionalProperties: openapi3.AdditionalProperties{Schema: inner}}}
+		},
+		"allOf": func(inner *openapi3.SchemaRef) *openapi3.SchemaRef {
+			return &openapi3.SchemaRef{Value: &openapi3.Schema{AllOf: openapi3.SchemaRefs{inner}}}
+		},
+		"oneOf": func(inner *openapi3.SchemaRef) *openapi3.SchemaRef {
+			return &openapi3.SchemaRef{Value: &openapi3.Schema{OneOf: openapi3.SchemaRefs{inner}}}
+		},
+		"anyOf": func(inner *openapi3.SchemaRef) *openapi3.SchemaRef {
+			return &openapi3.SchemaRef{Value: &openapi3.Schema{AnyOf: openapi3.SchemaRefs{inner}}}
+		},
+	}
+	reaches := func(ref *openapi3.SchemaRef) bool { return schemaReaches(ref, target, map[*openapi3.Schema]bool{}) }
+
+	if !reaches(hit) {
+		t.Error("the target does not reach itself")
+	}
+	chain := hit
+	for name, w := range wrap {
+		if !reaches(w(hit)) {
+			t.Errorf("the walk does not follow %s", name)
+		}
+		chain = w(chain)
+	}
+	if !reaches(chain) {
+		t.Error("the walk does not follow all seven edges nested inside one another")
+	}
+
+	// No target anywhere, and a cycle: terminates, and answers no.
+	loop := &openapi3.Schema{}
+	loop.Properties = openapi3.Schemas{"self": {Value: loop}, "other": {Value: &openapi3.Schema{Items: &openapi3.SchemaRef{Value: loop}}}}
+	if reaches(&openapi3.SchemaRef{Value: loop}) {
+		t.Error("a tree with no SearchHit in it reaches one")
+	}
+	if reaches(nil) || reaches(&openapi3.SchemaRef{}) {
+		t.Error("an empty schema reaches SearchHit")
+	}
+	// A cycle WITH the target past it is still found.
+	loop.Properties["hit"] = hit
+	if !reaches(&openapi3.SchemaRef{Value: loop}) {
+		t.Error("a cycle hid the target behind it")
+	}
+}
+
+// schemaReaches reports whether target is ref's schema or is reachable from
+// it. Identity is the resolved *Schema: the loader resolves every `$ref` to
+// the one value its component holds, so a schema reached by any spelling of
+// the reference is the same pointer. visited makes a cycle terminate.
+func schemaReaches(ref *openapi3.SchemaRef, target *openapi3.Schema, visited map[*openapi3.Schema]bool) bool {
+	if ref == nil || ref.Value == nil {
+		return false
+	}
+	s := ref.Value
+	if s == target {
+		return true
+	}
+	if visited[s] {
+		return false
+	}
+	visited[s] = true
+
+	next := []*openapi3.SchemaRef{s.Items, s.AdditionalProperties.Schema}
+	for _, p := range s.Properties {
+		next = append(next, p)
+	}
+	next = append(next, s.AllOf...)
+	next = append(next, s.OneOf...)
+	next = append(next, s.AnyOf...)
+	for _, n := range next {
+		if schemaReaches(n, target, visited) {
+			return true
+		}
+	}
+	return false
 }

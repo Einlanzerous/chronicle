@@ -117,6 +117,7 @@ Class | Method | HTTP request | Description
 *NotesApi* | [**listNoteBacklinks**](doc//NotesApi.md#listnotebacklinks) | **GET** /notes/{ref}/backlinks | The notes whose text names this one, resolved.
 *NotesApi* | [**listNoteRevisions**](doc//NotesApi.md#listnoterevisions) | **GET** /notes/{ref}/revisions | A note's history, oldest first, with each revision's text.
 *NotesApi* | [**listNotes**](doc//NotesApi.md#listnotes) | **GET** /notes | The live notes filed on a page.
+*NotesApi* | [**searchNotes**](doc//NotesApi.md#searchnotes) | **GET** /notes/search | Full-text search across notes, and only notes.
 *PagesApi* | [**createPage**](doc//PagesApi.md#createpage) | **POST** /pages | Create a page at a path.
 *PagesApi* | [**listPages**](doc//PagesApi.md#listpages) | **GET** /pages | The whole page tree, as sorted paths.
 *ReferencesApi* | [**resolveReferences**](doc//ReferencesApi.md#resolvereferences) | **POST** /references/resolve | Resolve a batch of references into live cards.
@@ -176,6 +177,8 @@ Class | Method | HTTP request | Description
  - [NewUserRequest](doc//NewUserRequest.md)
  - [Note](doc//Note.md)
  - [NoteList](doc//NoteList.md)
+ - [NoteSearchHit](doc//NoteSearchHit.md)
+ - [NoteSearchResults](doc//NoteSearchResults.md)
  - [NoteSummary](doc//NoteSummary.md)
  - [NoteTombstone](doc//NoteTombstone.md)
  - [OpenUpload409Response](doc//OpenUpload409Response.md)

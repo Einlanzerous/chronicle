@@ -208,7 +208,7 @@ class DiscussionsApi {
   ///   A page path, `estate/conventions/naming`. A redirect left by a move is followed.
   ///
   /// * [int] limit:
-  ///   How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and the note and revision lists cap at 200 and say so by answering a `next_cursor` for the rest. A client asking for more than the cap gets the cap. 
+  ///   How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and the note and revision lists cap at 200 and say so by answering a `next_cursor` for the rest. A client asking for more than the cap gets the cap. `searchNotes` caps at 100 and echoes it, exactly as `search` does. 
   ///
   /// * [String] cursor:
   ///   Opaque; the `next_cursor` of the previous page. Absent means the start. Never an offset: every list here is over an append-only table, and an offset silently repeats and skips rows as new ones land. 
@@ -256,7 +256,7 @@ class DiscussionsApi {
   ///   A page path, `estate/conventions/naming`. A redirect left by a move is followed.
   ///
   /// * [int] limit:
-  ///   How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and the note and revision lists cap at 200 and say so by answering a `next_cursor` for the rest. A client asking for more than the cap gets the cap. 
+  ///   How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and the note and revision lists cap at 200 and say so by answering a `next_cursor` for the rest. A client asking for more than the cap gets the cap. `searchNotes` caps at 100 and echoes it, exactly as `search` does. 
   ///
   /// * [String] cursor:
   ///   Opaque; the `next_cursor` of the previous page. Absent means the start. Never an offset: every list here is over an append-only table, and an offset silently repeats and skips rows as new ones land. 

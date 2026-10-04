@@ -82,7 +82,7 @@ class TriageApi {
   /// Parameters:
   ///
   /// * [int] limit:
-  ///   How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and the note and revision lists cap at 200 and say so by answering a `next_cursor` for the rest. A client asking for more than the cap gets the cap. 
+  ///   How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and the note and revision lists cap at 200 and say so by answering a `next_cursor` for the rest. A client asking for more than the cap gets the cap. `searchNotes` caps at 100 and echoes it, exactly as `search` does. 
   Future<Response> getTriageBatchWithHttpInfo({ int? limit, Future<void>? abortTrigger, }) async {
     // ignore: prefer_const_declarations
     final path = r'/triage/batch';
@@ -120,7 +120,7 @@ class TriageApi {
   /// Parameters:
   ///
   /// * [int] limit:
-  ///   How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and the note and revision lists cap at 200 and say so by answering a `next_cursor` for the rest. A client asking for more than the cap gets the cap. 
+  ///   How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and the note and revision lists cap at 200 and say so by answering a `next_cursor` for the rest. A client asking for more than the cap gets the cap. `searchNotes` caps at 100 and echoes it, exactly as `search` does. 
   Future<TriageBatch?> getTriageBatch({ int? limit, Future<void>? abortTrigger, }) async {
     final response = await getTriageBatchWithHttpInfo(limit: limit, abortTrigger: abortTrigger,);
     if (response.statusCode >= HttpStatus.badRequest) {
@@ -251,7 +251,7 @@ class TriageApi {
   /// Parameters:
   ///
   /// * [int] limit:
-  ///   How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and the note and revision lists cap at 200 and say so by answering a `next_cursor` for the rest. A client asking for more than the cap gets the cap. 
+  ///   How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and the note and revision lists cap at 200 and say so by answering a `next_cursor` for the rest. A client asking for more than the cap gets the cap. `searchNotes` caps at 100 and echoes it, exactly as `search` does. 
   Future<Response> listDeferredWithHttpInfo({ int? limit, Future<void>? abortTrigger, }) async {
     // ignore: prefer_const_declarations
     final path = r'/triage/deferred';
@@ -289,7 +289,7 @@ class TriageApi {
   /// Parameters:
   ///
   /// * [int] limit:
-  ///   How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and the note and revision lists cap at 200 and say so by answering a `next_cursor` for the rest. A client asking for more than the cap gets the cap. 
+  ///   How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and the note and revision lists cap at 200 and say so by answering a `next_cursor` for the rest. A client asking for more than the cap gets the cap. `searchNotes` caps at 100 and echoes it, exactly as `search` does. 
   Future<DeferredList?> listDeferred({ int? limit, Future<void>? abortTrigger, }) async {
     final response = await listDeferredWithHttpInfo(limit: limit, abortTrigger: abortTrigger,);
     if (response.statusCode >= HttpStatus.badRequest) {

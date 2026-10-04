@@ -122,6 +122,23 @@ func toSearchHits(in []store.SearchHit) []wire.SearchHit {
 	return out
 }
 
+// toNoteSearchHits renders the notes-only search (CHRN-116). The snippet goes
+// through the same safeSnippet as every other one — the CHRN-98 fix, reused —
+// and there is no kind to switch on because store.NoteHit has one shape.
+func toNoteSearchHits(in []store.NoteHit) []wire.NoteSearchHit {
+	out := make([]wire.NoteSearchHit, 0, len(in))
+	for _, h := range in {
+		out = append(out, wire.NoteSearchHit{
+			Ref:       h.Ref(),
+			Title:     optional(h.Title),
+			Snippet:   safeSnippet(h.Snippet),
+			Rank:      h.Rank,
+			CreatedAt: h.CreatedAt,
+		})
+	}
+	return out
+}
+
 // safeSnippet makes a ts_headline fragment safe to embed.
 //
 // ts_headline wraps each match in <b>…</b> and returns THE REST OF THE

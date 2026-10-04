@@ -167,3 +167,101 @@ func (s *Store) Search(ctx context.Context, query string, limit int) ([]SearchHi
 	}
 	return out, nil
 }
+
+// ── CHRN-116 — the notes-only search a non-owner account may call ───────────
+//
+// Search above is owner-only because its transcript arm has no author
+// predicate. SearchNotes is the half of it that was always safe to share:
+// notes are one corpus every member already reads by ref.
+//
+// IT IS A SECOND STATEMENT AND NOT A FILTER. Dropping transcript hits after
+// the union would make "no transcript reaches a non-owner" depend on a branch
+// somebody can edit. Here there is nothing to drop: the statement reads two
+// tables and neither of them holds a transcript, and NoteHit has nowhere to
+// put one. What enforces that is the statement text and the type, each under
+// a test — NOT a grant: both statements run as the same role, which may read
+// transcripts.
+
+// NoteHit is one notes-search result. It has no memo and no model: the type
+// cannot carry a transcript.
+type NoteHit struct {
+	NoteID    uuid.UUID
+	Number    int64 // render with FormatNoteRef
+	Title     string
+	PageID    uuid.UUID
+	Snippet   string
+	Rank      float32
+	CreatedAt time.Time
+}
+
+// Ref renders the note's permanent handle.
+func (h NoteHit) Ref() string { return FormatNoteRef(h.Number) }
+
+// searchNotesSQL is the notes arm of searchSQL as a statement of its own. The
+// tsvector expression is COPIED from searchSQL rather than factored out of
+// it, so the owner path's statement stays byte-identical; the warning above
+// searchSQL applies to this copy exactly as it does to the original.
+// TestSearchNotesSharesTheIndexedExpression holds the copy to the original
+// without a database, and TestSearchNotesUsesTheIndexAtScale holds it to 0012
+// with one.
+//
+// The only relations it names are tier2.notes and tier2.note_revisions.
+// TestSearchNotesStatementNamesNoTranscriptTable keeps it that way.
+const searchNotesSQL = `
+WITH q AS (SELECT websearch_to_tsquery('english', $1) AS tsq)
+SELECT n.id, n.number, r.title, n.page_id,
+       ts_headline('english', r.body, q.tsq,
+                   'MaxFragments=2,MinWords=6,MaxWords=20,FragmentDelimiter= … ') AS snippet,
+       ts_rank_cd(setweight(to_tsvector('english', r.title), 'A') ||
+                  setweight(to_tsvector('english', r.body),  'B'), q.tsq) AS rank,
+       r.created_at
+  FROM tier2.notes n
+  JOIN tier2.note_revisions r ON r.id = n.current_revision_id
+ CROSS JOIN q
+ WHERE n.deleted_at IS NULL
+   AND (setweight(to_tsvector('english', r.title), 'A') ||
+        setweight(to_tsvector('english', r.body),  'B')) @@ q.tsq
+ ORDER BY rank DESC, r.created_at DESC
+ LIMIT $2`
+
+// SearchNotes searches the live text of live notes and nothing else. Same
+// query language, same ranking and same empty-question answer as Search.
+func (s *Store) SearchNotes(ctx context.Context, query string, limit int) ([]NoteHit, error) {
+	if strings.TrimSpace(query) == "" {
+		return nil, fmt.Errorf("%w: %q", ErrEmptyQuery, query)
+	}
+	if limit <= 0 {
+		limit = defaultSearchLimit
+	}
+
+	// The same probe Search makes, copied so that no line inside Search
+	// changes: pure punctuation parses to an empty tsquery.
+	var empty bool
+	if err := s.pool.QueryRow(ctx,
+		`SELECT websearch_to_tsquery('english', $1)::text = ''`, query).Scan(&empty); err != nil {
+		return nil, fmt.Errorf("store: search notes: parse query: %w", err)
+	}
+	if empty {
+		return nil, fmt.Errorf("%w: %q", ErrEmptyQuery, query)
+	}
+
+	rows, err := s.pool.Query(ctx, searchNotesSQL, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: search notes: %w", err)
+	}
+	defer rows.Close()
+
+	out := []NoteHit{}
+	for rows.Next() {
+		var h NoteHit
+		if err := rows.Scan(&h.NoteID, &h.Number, &h.Title, &h.PageID,
+			&h.Snippet, &h.Rank, &h.CreatedAt); err != nil {
+			return nil, fmt.Errorf("store: search notes: %w", err)
+		}
+		out = append(out, h)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: search notes: %w", err)
+	}
+	return out, nil
+}
