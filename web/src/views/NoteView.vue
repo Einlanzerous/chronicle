@@ -33,6 +33,7 @@ import {
 import {
   leadProvenance,
   provenanceBlock,
+  withRetention,
   type AudioControl,
   type MemoProvenance,
   type RevisionMeta,
@@ -211,6 +212,43 @@ async function loadProvenance(ref_: string, seq: number): Promise<void> {
   const zipped = new Map(provenanceRevisions.value)
   for (const rev of page.data.items) zipped.set(rev.seq, rev)
   provenanceRevisions.value = zipped
+}
+
+// ── Keeping the recording (CHRN-128) ─────────────────────────────────────
+//
+// One action: raise this memo's retention to `forever`. The server only ever
+// raises, so there is nothing here to confirm and nothing to undo -- the
+// worst a mistaken click does is keep a recording. The block is redrawn from
+// the ANSWER (`withRetention`), and a refusal that means the entry on screen
+// is out of date -- 410, the sweep got there first -- re-reads provenance so
+// the row says `AUDIO PRUNED <date>` instead of offering the pin again.
+const pinningMemoId = ref<string | null>(null)
+const pinErrors = ref<Map<string, string>>(new Map())
+
+async function pinAudio(memoId: string): Promise<void> {
+  if (pinningMemoId.value) return
+  const seq = loadSeq
+  const ref_ = note.value?.ref
+  pinningMemoId.value = memoId
+  pinErrors.value = new Map()
+  try {
+    const res = await api.PUT('/audio/{memo_id}/retention', {
+      params: { path: { memo_id: memoId } },
+      body: { retention: 'forever' },
+    })
+    if (seq !== loadSeq) return // superseded by a later navigation
+    if (res.data) {
+      const state = res.data
+      provenance.value = provenance.value.map((e) => withRetention(e, state))
+      return
+    }
+    pinErrors.value = new Map([[memoId, errorMessage(res.error, 'The recording could not be pinned.')]])
+    if (res.response.status === 410 && ref_) await loadProvenance(ref_, seq)
+  } catch {
+    if (seq === loadSeq) pinErrors.value = new Map([[memoId, 'Chronicle could not be reached. Nothing changed.']])
+  } finally {
+    pinningMemoId.value = null
+  }
 }
 
 /** One block per memo, oldest first -- the list's own order. */
@@ -545,6 +583,21 @@ async function restoreRevision(): Promise<void> {
                     </button>
                     <span class="ch-note-provenance-sep">·</span>
                     <span class="ch-note-provenance-meta">{{ block.audio.retention }}</span>
+                    <!-- CHRN-128: the pin. Drawn only for a caller who may
+                         read the audio and only while there is something to
+                         raise -- gone once the label reads PINNED — KEPT. -->
+                    <template v-if="block.audio.pinnable">
+                      <span class="ch-note-provenance-sep">·</span>
+                      <button
+                        type="button"
+                        class="ch-note-provenance-control"
+                        :disabled="pinningMemoId !== null"
+                        title="Keep this recording: it will not be pruned"
+                        @click="pinAudio(block.memoId)"
+                      >
+                        {{ pinningMemoId === block.memoId ? 'PINNING…' : 'KEEP FOREVER' }}
+                      </button>
+                    </template>
                   </template>
                   <!-- `absent` draws NOTHING -- not a disabled control. A
                        control somebody can see but not use tells them a
@@ -560,6 +613,9 @@ async function restoreRevision(): Promise<void> {
                     </button>
                   </template>
                 </div>
+                <p v-if="pinErrors.get(block.memoId)" class="ch-note-provenance-meta" role="alert">
+                  {{ pinErrors.get(block.memoId) }}
+                </p>
                 <audio
                   v-if="block.audio.state === 'playable' && playingMemoId === block.memoId"
                   class="ch-note-provenance-audio"
@@ -935,6 +991,11 @@ async function restoreRevision(): Promise<void> {
 
 .ch-note-provenance-control:hover {
   color: var(--ch-text);
+}
+
+.ch-note-provenance-control:disabled {
+  color: var(--ch-text-meta);
+  cursor: default;
 }
 
 /* The NATIVE control, deliberately: it is the accessible, keyboard-operable,

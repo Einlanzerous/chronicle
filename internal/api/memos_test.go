@@ -122,6 +122,33 @@ func (f *fakeMemos) RetentionStatus(_ context.Context, memoID uuid.UUID, window 
 	}
 }
 
+// RaiseRetention mirrors store.RaiseRetention's refusals in its order: an id
+// that names nothing, then pruned, then discarded, then a lowering. The rules
+// themselves are proved against Postgres in internal/store; this exists so the
+// handler's mapping of each refusal can be driven without a database.
+func (f *fakeMemos) RaiseRetention(_ context.Context, memoID uuid.UUID, to string) (store.Memo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return store.Memo{}, f.err
+	}
+	rank := map[string]int{store.RetentionDiscardNow: 0, store.RetentionDays30: 1, store.RetentionForever: 2}
+	m, ok := f.memos[memoID]
+	switch {
+	case !ok:
+		return store.Memo{}, store.ErrNotFound
+	case m.AudioPrunedAt != nil:
+		return store.Memo{}, store.ErrAudioPruned
+	case m.State == store.StateDiscarded:
+		return store.Memo{}, store.ErrMemoDiscarded
+	case rank[to] < rank[m.Retention]:
+		return store.Memo{}, store.ErrRetentionLowered
+	}
+	m.Retention = to
+	f.memos[memoID] = m
+	return m, nil
+}
+
 // ── the rig ─────────────────────────────────────────────────────────────────
 
 type memoRig struct {

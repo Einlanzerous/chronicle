@@ -107,6 +107,7 @@ Class | Method | HTTP request | Description
 *DiscussionsApi* | [**resolveDiscussion**](doc//DiscussionsApi.md#resolvediscussion) | **POST** /discussions/{ref}/resolve | Resolve a thread — into a new note, an existing one, or nothing.
 *MemosApi* | [**getMemoAudio**](doc//MemosApi.md#getmemoaudio) | **GET** /audio/{memo_id} | The recording itself, while it still exists.
 *MemosApi* | [**getMemoTranscript**](doc//MemosApi.md#getmemotranscript) | **GET** /transcripts/{memo_id} | What a memo said, in full.
+*MemosApi* | [**raiseMemoRetention**](doc//MemosApi.md#raisememoretention) | **PUT** /audio/{memo_id}/retention | Keep a recording that would otherwise be pruned — raise its retention.
 *MetaApi* | [**getHealthz**](doc//MetaApi.md#gethealthz) | **GET** /healthz | Liveness. No dependencies, no credential.
 *MetaApi* | [**getReadyz**](doc//MetaApi.md#getreadyz) | **GET** /readyz | Readiness. Pings the database.
 *NotesApi* | [**appendRevision**](doc//NotesApi.md#appendrevision) | **POST** /notes/{ref}/revisions | Append a revision.
@@ -188,6 +189,7 @@ Class | Method | HTTP request | Description
  - [Proposal](doc//Proposal.md)
  - [ProvenanceList](doc//ProvenanceList.md)
  - [ProvenanceTranscript](doc//ProvenanceTranscript.md)
+ - [RaiseRetentionRequest](doc//RaiseRetentionRequest.md)
  - [Readiness](doc//Readiness.md)
  - [ReconciliationReport](doc//ReconciliationReport.md)
  - [ReferenceDescriptor](doc//ReferenceDescriptor.md)
@@ -199,6 +201,7 @@ Class | Method | HTTP request | Description
  - [ResolveResponse](doc//ResolveResponse.md)
  - [ResolvedNote](doc//ResolvedNote.md)
  - [ResolvedState](doc//ResolvedState.md)
+ - [RetentionState](doc//RetentionState.md)
  - [Revision](doc//Revision.md)
  - [RevisionList](doc//RevisionList.md)
  - [RevisionMeta](doc//RevisionMeta.md)

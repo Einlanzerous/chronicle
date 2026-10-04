@@ -236,3 +236,80 @@ func (s *Store) AudioPrunedFor(ctx context.Context, authorID uuid.UUID, contentH
 	}
 	return pruned, nil
 }
+
+// ErrAudioPruned is a pin that arrived after the sweep: the recording is
+// already gone by policy and there is nothing left to keep.
+var ErrAudioPruned = errors.New("store: the memo's audio has already been pruned")
+
+// ErrRetentionLowered is a request to move retention DOWN. Refused rather than
+// ignored — a caller told it succeeded would believe the audio now goes sooner.
+var ErrRetentionLowered = errors.New("store: retention may be raised and never lowered")
+
+// ErrMemoDiscarded is a pin on a memo discarded at triage. The ingest ratchet
+// leaves a discarded memo's retention alone for the same reason: there is no
+// recording here a person decided to keep.
+var ErrMemoDiscarded = errors.New("store: the memo was discarded")
+
+// retentionRank mirrors tier2.retention_rank (0003). It is consulted only to
+// say WHY an update matched no row; the comparison that decides anything is
+// the SQL function's, inside the UPDATE.
+var retentionRank = map[string]int{
+	RetentionDiscardNow: 0,
+	RetentionDays30:     1,
+	RetentionForever:    2,
+}
+
+// RaiseRetention moves a memo's retention UP to `to`, and is the pin CHRN-128
+// adds: the choice an arrival makes once (IngestMemo's ratchet), made by a
+// person afterwards.
+//
+// IT CAN STOP A DELETION AND CAN NEVER CAUSE ONE. That is the whole design:
+// the WHERE is the ratchet's own — raise only, never on a discarded memo — so
+// nothing here widens what the pruner may take. A request for the level the
+// memo already has changes nothing and answers the memo as it stands, which is
+// what makes a retried pin safe.
+//
+// ONE STATEMENT, CONDITIONED ON audio_pruned_at IS NULL, and the condition is
+// what makes it safe against the sweep. The pruner claims a row with
+// MarkAudioPruned BEFORE it unlinks the file, and that UPDATE and this one
+// take the same row lock: whichever commits first wins. Pin first, and the
+// sweep's claim re-evaluates prunableClause, sees `forever` and skips. Claim
+// first, and this matches no row and reports ErrAudioPruned. There is no
+// ordering that leaves a memo reading "pinned" over a file that is gone.
+func (s *Store) RaiseRetention(ctx context.Context, memoID uuid.UUID, to string) (Memo, error) {
+	if _, ok := retentionRank[to]; !ok {
+		return Memo{}, fmt.Errorf("%w: unknown retention %q", ErrInvalidInput, to)
+	}
+
+	m, err := scanMemo(s.pool.QueryRow(ctx, `
+		UPDATE tier2.memos
+		   SET retention = $2
+		 WHERE id = $1
+		   AND audio_pruned_at IS NULL
+		   AND state <> 'discarded'
+		   AND tier2.retention_rank($2) > tier2.retention_rank(retention)
+		RETURNING `+memoColumns, memoID, to))
+	if err == nil {
+		return m, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return Memo{}, fmt.Errorf("store: raise retention: %w", err)
+	}
+
+	// Nothing was written. Say which of the four reasons it was — read after
+	// the fact, which is fine: every one of them is a state a memo does not
+	// leave (pruned, discarded) or a comparison against a value only this
+	// function and the ingest ratchet ever move, and both only move it up.
+	m, err = s.GetMemo(ctx, memoID)
+	switch {
+	case err != nil:
+		return Memo{}, err // ErrNotFound included
+	case m.AudioPruned():
+		return Memo{}, ErrAudioPruned
+	case m.State == StateDiscarded:
+		return Memo{}, ErrMemoDiscarded
+	case retentionRank[to] < retentionRank[m.Retention]:
+		return Memo{}, ErrRetentionLowered
+	}
+	return m, nil
+}

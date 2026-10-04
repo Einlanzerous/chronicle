@@ -180,6 +180,9 @@ var routePolicy = map[string]policy{
 	// asserts construction with all three of these succeeds.
 	"GET /transcripts/{memo_id}": policyMember,
 	"GET /audio/{memo_id}":       policyMember,
+	// CHRN-128: the pin. Member, narrowed in the handler to the memo's author
+	// and the owner by the same mayReadMemo the two reads above use.
+	"PUT /audio/{memo_id}/retention": policyMember,
 
 	// TIER 1 (CHRN-100): the generated estate wiki, read from a mount. Member
 	// and not owner: the pane sits beside every account's notes, and a read
