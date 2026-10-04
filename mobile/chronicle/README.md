@@ -491,14 +491,20 @@ that has a matching asset. Turn it off and it stops at the server release and
 finds nothing. **Reconcile** is what squares the tag `mobile-v0.2.0` with the
 installed `versionName 0.2.0`: with it on and no trim regex, the app page reads
 `mobile-v0.2.0 Installed / Latest`, lists `chronicle-0.2.0.apk`, and the
-*Update* button is disabled. It adopted the existing install and offered no
-reinstall.
+*Update* button is disabled.
+
+That reading was taken after Obtainium had installed `chronicle-0.2.0.apk` over
+the existing 0.2.0 once, during setup: Android now records Obtainium as the
+app's installer, with the same version code and signer, and the app opened
+still signed in. So an install through Obtainium is seen working; whether it
+would have adopted the existing install without that reinstall is not.
 
 Its *Certificate Hashes* show both certificates in the lineage -- `EF:F5:B6:32…`
 (the old debug key) and `38:15:EA:FB…` (the release key) -- which is the
 rotation from [Signing, and the key](#signing-and-the-key) seen from outside.
 
-Not yet seen: an actual update through it. The first one is `mobile-v0.3.0`.
+Not yet seen: an update to a newer version through it. The first one is
+`mobile-v0.3.0`.
 
 The fallback with no app on the phone is GitHub's *Watch -> Custom ->
 Releases* email, then install as above.
