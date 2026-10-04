@@ -169,6 +169,10 @@ type Deps struct {
 	// response should not carry two clocks.
 	Now func() time.Time
 
+	// Metrics backs GET /metrics (CHRN-69). Nil answers 503 rather than an
+	// empty exposition, for the reason Transcription does.
+	Metrics Metrics
+
 	// Web is the embedded SPA handler (CHRN-53). Nil uses the production
 	// bundle, web.Handler(). A test substitutes a small fs.FS-backed fixture
 	// (web.HandlerFS) here so the router's WIRING — the redirect, the /app/
@@ -214,6 +218,7 @@ type api struct {
 	estate        *estatewiki.Corpus
 	keys          *resolve.Keys
 	renderer      *markdown.Renderer
+	metrics       Metrics
 }
 
 // NewRouter builds the HTTP handler.
@@ -269,6 +274,7 @@ func NewRouter(d Deps) http.Handler {
 		memos:         d.Memos,
 		estate:        d.EstateWiki,
 		keys:          d.Keys,
+		metrics:       d.Metrics,
 	}
 	if a.now == nil {
 		a.now = time.Now
@@ -321,11 +327,19 @@ func NewRouter(d Deps) http.Handler {
 	})
 	mux.Handle("/app/", webHandler)
 
+	// GET /metrics (CHRN-69): the second hand-registered route, and unlike the
+	// SPA it is an API payload -- so it goes through guarded() with the owner
+	// credential rather than around the policy. It is not in openapi.yaml
+	// because it is a scraper's text format, not part of the API the clients
+	// are generated against; see getMetrics.
+	mux.HandleFunc("GET /metrics", routed.guarded(a.requireOwner, a.getMetrics))
+
 	if d.Accounts == nil {
 		return requestLogger(d.Logger, mux)
 	}
 
-	// NOTHING IS HAND-REGISTERED ANY MORE, WITH ONE EXCEPTION ABOVE. Every
+	// NOTHING IS HAND-REGISTERED ANY MORE, WITH TWO EXCEPTIONS ABOVE (the SPA
+	// mount, and GET /metrics, which is guarded by hand). Every
 	// API route this service serves is in openapi.yaml, was registered above
 	// by the generator, and carries the credential policy.go declares for it
 	// — which is what CHRN-97 set out to make true and what the four guards

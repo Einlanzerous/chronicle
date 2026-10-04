@@ -29,6 +29,7 @@ import (
 	"github.com/Einlanzerous/chronicle/internal/estatewiki"
 	"github.com/Einlanzerous/chronicle/internal/invite"
 	"github.com/Einlanzerous/chronicle/internal/markdown"
+	"github.com/Einlanzerous/chronicle/internal/metrics"
 	"github.com/Einlanzerous/chronicle/internal/resolve"
 	"github.com/Einlanzerous/chronicle/internal/retention"
 	"github.com/Einlanzerous/chronicle/internal/scribe"
@@ -677,6 +678,12 @@ func runServe(args []string) error {
 	// no audio store at all. Only GET /audio/{memo_id} touches deps.Audio, and
 	// only that route answers audio_unconfigured.
 	deps.Memos = st
+	// The four health numbers (CHRN-69). Reads only, on the main pool: the join
+	// that routing agreement needs spans both tiers, which is why it is not
+	// run as the tier-1 role. Built unconditionally, because every figure is a
+	// database read and a host with no audio directory still has a queue.
+	collector := &metrics.Collector{Source: st, Window: audio.ProjectionWindow}
+	deps.Metrics = collector
 	deps.Keys = keys
 	// Chronicle's own CHR- and DSC- references resolve against tier 2
 	// directly, on the main pool: they are notes and discussions, not derived
@@ -736,6 +743,14 @@ func runServe(args []string) error {
 			}
 		}()
 	}
+	// CHRN-69: the snapshot line Dozzle shows and Datadog can monitor.
+	watching.Add(1)
+	go func() {
+		defer watching.Done()
+		if err := collector.Run(ctx, logger, metrics.DefaultPeriod); err != nil {
+			logger.Error("the metrics logger stopped", "error", err)
+		}
+	}()
 	// The transcription pump (CHRN-27). Shares the server's context, so
 	// SIGTERM stops it, and is waited on rather than abandoned: a sweep is
 	// often mid-submit, and exiting under one would leave an attempt row with
