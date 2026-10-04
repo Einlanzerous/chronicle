@@ -136,6 +136,7 @@ const (
 	codeAudioUnconfigured         = "audio_unconfigured"
 	codeTranscriptionUnconfigured = "transcription_unconfigured"
 	codeAccountsUnconfigured      = "accounts_unconfigured"
+	codeMetricsUnconfigured       = "metrics_unconfigured"
 )
 
 // ============================================================================
