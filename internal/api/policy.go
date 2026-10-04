@@ -141,13 +141,21 @@ var routePolicy = map[string]policy{
 	"POST /notes/{ref}/revisions": policyMember,
 	"GET /notes/{ref}/backlinks":  policyMember,
 	"GET /notes/{ref}/provenance": policyMember,
+	// THE NOTES-ONLY SEARCH (CHRN-116). Member, agents included: notes are the
+	// shared corpus the rows above already serve, and store.SearchNotes runs a
+	// statement that names the notes tables and nothing else, so there is no
+	// transcript in it to scope. A literal segment beside GET /notes/{ref},
+	// which the mux ranks above the wildcard.
+	"GET /notes/search": policyMember,
 	// SEARCH SPANS EVERY AUTHOR'S TRANSCRIPTS, so owner rather than member --
 	// GET /admin/triage's reasoning, and the triage batch's: "a list that
 	// merely hides a memo is not access control." store.Search takes no actor
-	// and its transcript half has no author predicate, so a member-visible
-	// search needs a scoped query, which is internal/store's to add and is
-	// raised on CHRN-98. Notes are a shared corpus and would be fine at member;
-	// the transcript half is what sets the policy for the one operation.
+	// and its transcript half has no author predicate, so TRANSCRIPT SEARCH
+	// STAYS OWNER-ONLY. The member-visible search over the shared notes is
+	// GET /notes/search above (CHRN-116); a member-visible search of
+	// transcripts would need a scoped query and a ruling on whose transcripts
+	// an agent may see, and neither exists. The transcript half is what sets
+	// the policy for this one operation.
 	"GET /search": policyOwner,
 
 	// DISCUSSIONS (CHRN-99). Member and not owner, agents included: an agent

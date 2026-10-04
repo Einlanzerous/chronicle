@@ -82,6 +82,9 @@ type Wiki interface {
 	Backlinks(ctx context.Context, number int64) ([]store.Backlink, error)
 
 	Search(ctx context.Context, query string, limit int) ([]store.SearchHit, error)
+	// SearchNotes is the member-visible half (CHRN-116): notes only, in a
+	// type that cannot carry a transcript.
+	SearchNotes(ctx context.Context, query string, limit int) ([]store.NoteHit, error)
 }
 
 // Bounds. Every one is a number somebody chose.
@@ -748,6 +751,39 @@ func (a *api) Search(w http.ResponseWriter, r *http.Request, params wire.SearchP
 		return
 	}
 	writeJSON(w, http.StatusOK, wire.SearchResults{Query: q, Limit: limit, Items: toSearchHits(hits)})
+}
+
+// SearchNotes is the search a member or an agent may call (CHRN-116). It is
+// Search's handler over a different store call, and deliberately NOT Search
+// with a filter: a.wiki.SearchNotes answers []store.NoteHit, which has no memo
+// to map, so there is no branch here that could put a transcript on the wire.
+func (a *api) SearchNotes(w http.ResponseWriter, r *http.Request, params wire.SearchNotesParams) {
+	if a.wikiUnavailable(w) {
+		return
+	}
+	// minLength: 1 is declared and not enforced by the binder, as on Search.
+	q := strings.TrimSpace(params.Q)
+	if q == "" {
+		writeError(w, http.StatusBadRequest, codeInvalidParameter, "q must carry a query")
+		return
+	}
+	limit, ok := clampLimit(w, params.Limit, defaultSearch, maxSearch)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), wikiTimeout)
+	defer cancel()
+
+	hits, err := a.wiki.SearchNotes(ctx, q, limit)
+	switch {
+	case errors.Is(err, store.ErrEmptyQuery):
+		writeError(w, http.StatusBadRequest, codeInvalidParameter, "q has no searchable terms")
+		return
+	case err != nil:
+		a.serverError(w, r, "search notes", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, wire.NoteSearchResults{Query: q, Limit: limit, Items: toNoteSearchHits(hits)})
 }
 
 // The pure-path renderer, for a router given no key set: CHR, DSC and amber1

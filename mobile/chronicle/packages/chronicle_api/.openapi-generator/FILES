@@ -61,6 +61,8 @@ lib/model/new_turn_request.dart
 lib/model/new_user_request.dart
 lib/model/note.dart
 lib/model/note_list.dart
+lib/model/note_search_hit.dart
+lib/model/note_search_results.dart
 lib/model/note_summary.dart
 lib/model/note_tombstone.dart
 lib/model/open_upload409_response.dart

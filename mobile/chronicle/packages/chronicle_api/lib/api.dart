@@ -80,6 +80,8 @@ part 'model/new_turn_request.dart';
 part 'model/new_user_request.dart';
 part 'model/note.dart';
 part 'model/note_list.dart';
+part 'model/note_search_hit.dart';
+part 'model/note_search_results.dart';
 part 'model/note_summary.dart';
 part 'model/note_tombstone.dart';
 part 'model/open_upload409_response.dart';

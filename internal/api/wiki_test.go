@@ -40,6 +40,7 @@ type fakeWiki struct {
 	threads   map[uuid.UUID][]store.Discussion
 	links     map[int64][]store.Backlink // target number -> sources, as the index would answer
 	hits      []store.SearchHit
+	noteHits  []store.NoteHit
 	agents    map[uuid.UUID]bool
 	next      int64
 	err       error
@@ -278,6 +279,19 @@ func (f *fakeWiki) Search(_ context.Context, query string, limit int) ([]store.S
 		return f.hits[:limit], nil
 	}
 	return f.hits, nil
+}
+
+func (f *fakeWiki) SearchNotes(_ context.Context, query string, limit int) ([]store.NoteHit, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if strings.Trim(query, "!?.,") == "" {
+		return nil, store.ErrEmptyQuery
+	}
+	if len(f.noteHits) > limit {
+		return f.noteHits[:limit], nil
+	}
+	return f.noteHits, nil
 }
 
 // softDelete stamps a note deleted the way SoftDeleteNote would.
@@ -729,6 +743,147 @@ func TestSearchIsNotAList(t *testing.T) {
 	mustStatus(t, call(http.MethodGet, "/search?q=pruner&limit=0", ""), http.StatusBadRequest, "search")
 }
 
+// CHRN-116: the notes-only search over the fake store. The property that no
+// transcript reaches a non-owner is the real-store test's
+// (TestNoNonOwnerSearchResponseCarriesATranscriptHit); this is the handler's
+// own contract — who gets in, the clamp, the two empty questions, the escaping.
+func TestNotesSearchIsNotAList(t *testing.T) {
+	rig := newWikiRig(t, false)
+	rig.wiki.noteHits = []store.NoteHit{
+		{NoteID: uuid.New(), Number: 311, Title: "Retention pruner", PageID: uuid.New(),
+			Snippet: `the <b>pruner</b> gates on <img src=x onerror="steal()"> & <b>bold</b>`, Rank: 0.9, CreatedAt: time.Now()},
+		// An empty title is legal on a revision and is omitted, not sent as "".
+		{NoteID: uuid.New(), Number: 312, PageID: uuid.New(), Snippet: "another <b>pruner</b>", Rank: 0.4, CreatedAt: time.Now()},
+	}
+	// The owner route's fixture is a transcript. If this handler ever reached
+	// for Search instead of SearchNotes, it is what would come back.
+	memoID := uuid.New()
+	rig.wiki.hits = []store.SearchHit{
+		{Kind: store.HitTranscript, MemoID: &memoID, Model: "whisper.cpp/small.en", Snippet: "we said the <b>pruner</b>", Rank: 0.99, CreatedAt: time.Now()},
+	}
+
+	// A member and an agent both get in: member policy is "any account".
+	for _, token := range []string{"member-token", "agent-token", "owner-token"} {
+		rec := rig.do(http.MethodGet, "/notes/search?q=pruner&limit=500", "", token)
+		mustStatus(t, rec, http.StatusOK, "searchNotes")
+		res := decodeInto[wire.NoteSearchResults](t, rec)
+		// limit=500 is clamped to the cap and the cap is echoed.
+		if res.Query != "pruner" || res.Limit != maxSearch || len(res.Items) != 2 {
+			t.Fatalf("%s: results = %+v", token, res)
+		}
+		first, second := res.Items[0], res.Items[1]
+		if first.Ref != "CHR-0311" || first.Title == nil || *first.Title != "Retention pruner" {
+			t.Errorf("%s: first hit = %+v", token, first)
+		}
+		if second.Ref != "CHR-0312" || second.Title != nil {
+			t.Errorf("%s: second hit = %+v, want no title", token, second)
+		}
+		// The CHRN-98 fix, reused: markup escaped, the two bare tags kept.
+		if want := `the <b>pruner</b> gates on &lt;img src=x onerror=&#34;steal()&#34;&gt; &amp; <b>bold</b>`; first.Snippet != want {
+			t.Errorf("snippet = %q\nwant      %q", first.Snippet, want)
+		}
+		body := rec.Body.String()
+		for _, never := range []string{"cursor", "memo_id", "model", "kind", "transcript", memoID.String()} {
+			if strings.Contains(body, never) {
+				t.Errorf("%s: the notes search answered %q: %s", token, never, body)
+			}
+		}
+	}
+
+	call := rig.as("member-token")
+	// The store's limit is honoured below the cap.
+	if res := decodeInto[wire.NoteSearchResults](t, call(http.MethodGet, "/notes/search?q=pruner&limit=1", "")); res.Limit != 1 || len(res.Items) != 1 {
+		t.Errorf("limit=1 answered %+v", res)
+	}
+	// No limit is the default, echoed.
+	if res := decodeInto[wire.NoteSearchResults](t, call(http.MethodGet, "/notes/search?q=pruner", "")); res.Limit != defaultSearch {
+		t.Errorf("default limit = %d, want %d", res.Limit, defaultSearch)
+	}
+
+	// A blank q, a punctuation-only q and a non-positive limit are each a 400.
+	for _, path := range []string{"/notes/search?q=%20%20", "/notes/search?q=%21%21%21", "/notes/search?q=pruner&limit=0"} {
+		rec := call(http.MethodGet, path, "")
+		mustStatus(t, rec, http.StatusBadRequest, "searchNotes")
+		if got := decodeInto[wire.Error](t, rec).Code; got != codeInvalidParameter {
+			t.Errorf("%s: code = %q, want %q", path, got, codeInvalidParameter)
+		}
+	}
+
+	// A store failure is the documented 500 and says nothing of the cause.
+	rig.wiki.err = errors.New("connection reset by peer")
+	rec := call(http.MethodGet, "/notes/search?q=pruner", "")
+	mustStatus(t, rec, http.StatusInternalServerError, "searchNotes")
+	if strings.Contains(rec.Body.String(), "connection reset") {
+		t.Error("the cause reached the body")
+	}
+}
+
+// GET /notes/search is a literal segment beside GET /notes/{ref}. Go's mux
+// PANICS AT REGISTRATION on two patterns that overlap with neither more
+// specific — CHRN-107 named GET /memos/{id}/audio beside
+// GET /memos/uploads/{id} and the binary would not have started — so the new
+// pattern is run through the real registration, and then through a router, in
+// both directions: the literal reaches searchNotes, and a ref still reaches
+// getNote.
+func TestNotesSearchRegistersBesideTheNoteRoutes(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("registering the route set panicked: %v", r)
+		}
+	}()
+
+	routed := newPolicyRouter(http.NewServeMux(), &api{accounts: newFakeAccounts()})
+	wire.HandlerWithOptions(&api{}, wire.StdHTTPServerOptions{
+		BaseRouter:       routed,
+		ErrorHandlerFunc: bindError(discardLogger()),
+	})
+	for pattern, want := range map[string]policy{
+		"GET /notes/search":           policyMember,
+		"GET /notes/{ref}":            policyMember,
+		"GET /notes":                  policyMember,
+		"GET /notes/{ref}/revisions":  policyMember,
+		"GET /notes/{ref}/backlinks":  policyMember,
+		"GET /notes/{ref}/provenance": policyMember,
+		// Unmoved: the owner's search is still the owner's.
+		"GET /search": policyOwner,
+	} {
+		if got, ok := routed.seen[pattern]; !ok {
+			t.Errorf("%s was not registered", pattern)
+		} else if got != want {
+			t.Errorf("%s registered as %q, want %q", pattern, got, want)
+		}
+	}
+
+	// Dispatch, which the registration alone does not show. A note numbered
+	// 311 exists, so /notes/CHR-0311 has a 200 to answer.
+	rig := newWikiRig(t, false)
+	rig.wiki.next = 311
+	call := rig.as("member-token")
+	mustStatus(t, call(http.MethodPost, "/pages", `{"path":"estate"}`), http.StatusCreated, "createPage")
+	mustStatus(t, call(http.MethodPost, "/notes", `{"page":"estate","title":"Naming","body":"one segment per level"}`),
+		http.StatusCreated, "createNote")
+	rig.wiki.noteHits = []store.NoteHit{{NoteID: uuid.New(), Number: 311, Title: "Naming", Snippet: "one <b>segment</b>", Rank: 0.5, CreatedAt: time.Now()}}
+
+	// The literal reaches searchNotes. Shadowed by {ref}, this would be
+	// getNote refusing "search" as a ref: a 400, and not this body.
+	rec := call(http.MethodGet, "/notes/search?q=x", "")
+	mustStatus(t, rec, http.StatusOK, "searchNotes")
+	if res := decodeInto[wire.NoteSearchResults](t, rec); res.Query != "x" || len(res.Items) != 1 || res.Items[0].Ref != "CHR-0311" {
+		t.Errorf("GET /notes/search?q=x answered %s", rec.Body.String())
+	}
+	// And a ref still reaches getNote, with the note and not a result set.
+	rec = call(http.MethodGet, "/notes/CHR-0311", "")
+	mustStatus(t, rec, http.StatusOK, "getNote")
+	if n := decodeInto[wire.Note](t, rec); n.Ref != "CHR-0311" || n.Title != "Naming" {
+		t.Errorf("GET /notes/CHR-0311 answered %s", rec.Body.String())
+	}
+	// The sub-resources under a ref are untouched by the new literal.
+	mustStatus(t, call(http.MethodGet, "/notes/CHR-0311/revisions", ""), http.StatusOK, "listNoteRevisions")
+	// `search` is not a ref, and under a ref-shaped path it is still getNote's
+	// to refuse.
+	mustStatus(t, call(http.MethodGet, "/notes/search/revisions", ""), http.StatusBadRequest, "listNoteRevisions")
+}
+
 func TestWikiWithoutAStoreAnswersTheDocumented503(t *testing.T) {
 	f := newFakeAccounts()
 	// The owner reaches every member route as well as search.
@@ -744,6 +899,7 @@ func TestWikiWithoutAStoreAnswersTheDocumented503(t *testing.T) {
 		{http.MethodPost, "/notes/CHR-0001/revisions", `{"body":"b"}`, "appendRevision"},
 		{http.MethodGet, "/notes/CHR-0001/backlinks", "", "listNoteBacklinks"},
 		{http.MethodGet, "/search?q=x", "", "search"},
+		{http.MethodGet, "/notes/search?q=x", "", "searchNotes"},
 	} {
 		rec := httptest.NewRecorder()
 		var r *http.Request

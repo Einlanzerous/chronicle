@@ -1279,6 +1279,35 @@ type NoteList struct {
 	Page       Page    `json:"page"`
 }
 
+// NoteSearchHit One note. There is no `kind` because there is one kind, and no
+// `memo_id` or `model` because this is never a transcript: a member
+// route answers this type and never `SearchHit`.
+type NoteSearchHit struct {
+	CreatedAt time.Time `json:"created_at"`
+	Rank      float32   `json:"rank"`
+
+	// Ref `CHR-0311`.
+	Ref string `json:"ref"`
+
+	// Snippet `SearchHit.snippet`'s contract: up to two fragments around the
+	// match, joined by ` … `, each match wrapped in a bare `<b>`, and
+	// everything but those two tags HTML-escaped.
+	Snippet string `json:"snippet"`
+
+	// Title Absent when the current revision's title is empty.
+	Title *string `json:"title,omitempty"`
+}
+
+// NoteSearchResults What `searchNotes` answers. `SearchResults` with a hit type that cannot be a transcript.
+type NoteSearchResults struct {
+	// Items Best first. Not a page of anything.
+	Items []NoteSearchHit `json:"items"`
+
+	// Limit The cap the answer was clamped to.
+	Limit int    `json:"limit"`
+	Query string `json:"query"`
+}
+
 // NoteSummary A note as a list carries it — enough to render a row and follow it.
 type NoteSummary struct {
 	CreatedAt time.Time `json:"created_at"`
@@ -2449,6 +2478,7 @@ type ListDiscussionsParams struct {
 	// the note and revision lists cap at 200 and say so by answering a
 	// `next_cursor` for the rest. A client asking for more than the cap gets
 	// the cap.
+	// `searchNotes` caps at 100 and echoes it, exactly as `search` does.
 	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
 
 	// Cursor Opaque; the `next_cursor` of the previous page. Absent means the
@@ -2473,12 +2503,27 @@ type ListNotesParams struct {
 	// the note and revision lists cap at 200 and say so by answering a
 	// `next_cursor` for the rest. A client asking for more than the cap gets
 	// the cap.
+	// `searchNotes` caps at 100 and echoes it, exactly as `search` does.
 	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
 
 	// Cursor Opaque; the `next_cursor` of the previous page. Absent means the
 	// start. Never an offset: every list here is over an append-only table,
 	// and an offset silently repeats and skips rows as new ones land.
 	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
+// SearchNotesParams defines parameters for SearchNotes.
+type SearchNotesParams struct {
+	// Q The query. One made only of punctuation matches nothing and is refused as an empty question rather than answered as an empty corpus.
+	Q string `form:"q" json:"q"`
+
+	// Limit How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch
+	// caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and
+	// the note and revision lists cap at 200 and say so by answering a
+	// `next_cursor` for the rest. A client asking for more than the cap gets
+	// the cap.
+	// `searchNotes` caps at 100 and echoes it, exactly as `search` does.
+	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
 // GetNoteParams defines parameters for GetNote.
@@ -2494,6 +2539,7 @@ type ListNoteBacklinksParams struct {
 	// the note and revision lists cap at 200 and say so by answering a
 	// `next_cursor` for the rest. A client asking for more than the cap gets
 	// the cap.
+	// `searchNotes` caps at 100 and echoes it, exactly as `search` does.
 	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
 
 	// Cursor Opaque; the `next_cursor` of the previous page. Absent means the
@@ -2509,6 +2555,7 @@ type ListNoteRevisionsParams struct {
 	// the note and revision lists cap at 200 and say so by answering a
 	// `next_cursor` for the rest. A client asking for more than the cap gets
 	// the cap.
+	// `searchNotes` caps at 100 and echoes it, exactly as `search` does.
 	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
 
 	// Cursor Opaque; the `next_cursor` of the previous page. Absent means the
@@ -2527,6 +2574,7 @@ type SearchParams struct {
 	// the note and revision lists cap at 200 and say so by answering a
 	// `next_cursor` for the rest. A client asking for more than the cap gets
 	// the cap.
+	// `searchNotes` caps at 100 and echoes it, exactly as `search` does.
 	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
@@ -2545,6 +2593,7 @@ type GetTriageBatchParams struct {
 	// the note and revision lists cap at 200 and say so by answering a
 	// `next_cursor` for the rest. A client asking for more than the cap gets
 	// the cap.
+	// `searchNotes` caps at 100 and echoes it, exactly as `search` does.
 	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
@@ -2555,6 +2604,7 @@ type ListDeferredParams struct {
 	// the note and revision lists cap at 200 and say so by answering a
 	// `next_cursor` for the rest. A client asking for more than the cap gets
 	// the cap.
+	// `searchNotes` caps at 100 and echoes it, exactly as `search` does.
 	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
@@ -2772,6 +2822,9 @@ type ServerInterface interface {
 	// CreateNote Create a note, as the authenticated person.
 	// (POST /notes)
 	CreateNote(w http.ResponseWriter, r *http.Request)
+	// SearchNotes Full-text search across notes, and only notes.
+	// (GET /notes/search)
+	SearchNotes(w http.ResponseWriter, r *http.Request, params SearchNotesParams)
 	// GetNote A note, rendered, with the references its text names.
 	// (GET /notes/{ref})
 	GetNote(w http.ResponseWriter, r *http.Request, ref NoteRef, params GetNoteParams)
@@ -3637,6 +3690,52 @@ func (siw *ServerInterfaceWrapper) CreateNote(w http.ResponseWriter, r *http.Req
 	handler.ServeHTTP(w, r)
 }
 
+// SearchNotes operation middleware
+func (siw *ServerInterfaceWrapper) SearchNotes(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params SearchNotesParams
+
+	// ------------- Required query parameter "q" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "q", r.URL.Query(), &params.Q, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "q"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "q", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SearchNotes(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetNote operation middleware
 func (siw *ServerInterfaceWrapper) GetNote(w http.ResponseWriter, r *http.Request) {
 
@@ -4286,6 +4385,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/pages", wrapper.CreatePage)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/notes", wrapper.ListNotes)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/notes", wrapper.CreateNote)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/notes/search", wrapper.SearchNotes)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/notes/{ref}", wrapper.GetNote)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/notes/{ref}/revisions", wrapper.ListNoteRevisions)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/notes/{ref}/revisions", wrapper.AppendRevision)

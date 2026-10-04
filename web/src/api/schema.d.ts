@@ -801,6 +801,45 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/notes/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Full-text search across notes, and only notes.
+         * @description The search any account may call (CHRN-116): a person who is not the
+         *     owner, and an agent. It searches the live text of live notes — the
+         *     shared corpus `listNotes` and `getNote` already serve every member —
+         *     and **nothing else**. No transcript is searched, the caller's own
+         *     included, and no hit can describe one: `NoteSearchHit` has no
+         *     `memo_id`, no `model` and no `kind`. The statement behind this
+         *     operation reads the notes tables and no other, so that is a property
+         *     of the query rather than of a filter applied to `search`'s answer.
+         *
+         *     Otherwise it is `search`: **not a list**, rank-ordered, `limit` and no
+         *     cursor, and the same `websearch_to_tsquery` language — bare words are
+         *     ANDed, "quoted phrases" are phrases, `OR` is OR, a leading `-`
+         *     excludes. Soft-deleted notes and superseded revisions are not found.
+         *
+         *     It finds less than `search` does, on purpose. Most memos are never
+         *     triaged into a note, and what somebody said and nobody wrote down is
+         *     reachable only by the owner's search.
+         *
+         *     The literal segment outranks `/notes/{ref}`, and shadows no note: a
+         *     ref is `CHR-` and a number, so `search` was never one.
+         */
+        get: operations["searchNotes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/notes/{ref}": {
         parameters: {
             query?: never;
@@ -1012,9 +1051,10 @@ export interface paths {
          *     memos** — including ones never triaged — and the store's query takes
          *     no actor. This API refuses that elsewhere: "a list that merely hides a
          *     memo is not access control", which is why `GET /admin/triage` is owner
-         *     too. The same rule holds here rather than being crossed unstated. A
-         *     member-visible search scoped to the caller's own transcripts beside the
-         *     shared notes is a store query this ticket raised rather than added.
+         *     too. The same rule holds here rather than being crossed unstated. The
+         *     member-visible search over the shared notes is `searchNotes`
+         *     (`GET /notes/search`). Transcript search for anyone but the owner,
+         *     the caller's own transcripts included, is still not offered.
          */
         get: operations["search"];
         put?: never;
@@ -2786,6 +2826,35 @@ export interface components {
             /** Format: date-time */
             created_at: string;
         };
+        /** @description What `searchNotes` answers. `SearchResults` with a hit type that cannot be a transcript. */
+        NoteSearchResults: {
+            query: string;
+            /** @description The cap the answer was clamped to. */
+            limit: number;
+            /** @description Best first. Not a page of anything. */
+            items: components["schemas"]["NoteSearchHit"][];
+        };
+        /**
+         * @description One note. There is no `kind` because there is one kind, and no
+         *     `memo_id` or `model` because this is never a transcript: a member
+         *     route answers this type and never `SearchHit`.
+         */
+        NoteSearchHit: {
+            /** @description `CHR-0311`. */
+            ref: string;
+            /** @description Absent when the current revision's title is empty. */
+            title?: string;
+            /**
+             * @description `SearchHit.snippet`'s contract: up to two fragments around the
+             *     match, joined by ` … `, each match wrapped in a bare `<b>`, and
+             *     everything but those two tags HTML-escaped.
+             */
+            snippet: string;
+            /** Format: float */
+            rank: number;
+            /** Format: date-time */
+            created_at: string;
+        };
         Discussion: {
             /** @description `DSC-0007`. Permanent. */
             ref: string;
@@ -3278,6 +3347,7 @@ export interface components {
          *     the note and revision lists cap at 200 and say so by answering a
          *     `next_cursor` for the rest. A client asking for more than the cap gets
          *     the cap.
+         *     `searchNotes` caps at 100 and echoes it, exactly as `search` does.
          */
         Limit: number;
         /**
@@ -4211,6 +4281,7 @@ export interface operations {
                  *     the note and revision lists cap at 200 and say so by answering a
                  *     `next_cursor` for the rest. A client asking for more than the cap gets
                  *     the cap.
+                 *     `searchNotes` caps at 100 and echoes it, exactly as `search` does.
                  */
                 limit?: components["parameters"]["Limit"];
             };
@@ -4346,6 +4417,7 @@ export interface operations {
                  *     the note and revision lists cap at 200 and say so by answering a
                  *     `next_cursor` for the rest. A client asking for more than the cap gets
                  *     the cap.
+                 *     `searchNotes` caps at 100 and echoes it, exactly as `search` does.
                  */
                 limit?: components["parameters"]["Limit"];
             };
@@ -4521,6 +4593,7 @@ export interface operations {
                  *     the note and revision lists cap at 200 and say so by answering a
                  *     `next_cursor` for the rest. A client asking for more than the cap gets
                  *     the cap.
+                 *     `searchNotes` caps at 100 and echoes it, exactly as `search` does.
                  */
                 limit?: components["parameters"]["Limit"];
                 /**
@@ -4601,6 +4674,42 @@ export interface operations {
             503: components["responses"]["WikiUnconfigured"];
         };
     };
+    searchNotes: {
+        parameters: {
+            query: {
+                /** @description The query. One made only of punctuation matches nothing and is refused as an empty question rather than answered as an empty corpus. */
+                q: string;
+                /**
+                 * @description How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch
+                 *     caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and
+                 *     the note and revision lists cap at 200 and say so by answering a
+                 *     `next_cursor` for the rest. A client asking for more than the cap gets
+                 *     the cap.
+                 *     `searchNotes` caps at 100 and echoes it, exactly as `search` does.
+                 */
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description the top note hits, best first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NoteSearchResults"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["WikiUnconfigured"];
+        };
+    };
     getNote: {
         parameters: {
             query?: never;
@@ -4655,6 +4764,7 @@ export interface operations {
                  *     the note and revision lists cap at 200 and say so by answering a
                  *     `next_cursor` for the rest. A client asking for more than the cap gets
                  *     the cap.
+                 *     `searchNotes` caps at 100 and echoes it, exactly as `search` does.
                  */
                 limit?: components["parameters"]["Limit"];
                 /**
@@ -4744,6 +4854,7 @@ export interface operations {
                  *     the note and revision lists cap at 200 and say so by answering a
                  *     `next_cursor` for the rest. A client asking for more than the cap gets
                  *     the cap.
+                 *     `searchNotes` caps at 100 and echoes it, exactly as `search` does.
                  */
                 limit?: components["parameters"]["Limit"];
                 /**
@@ -4827,6 +4938,7 @@ export interface operations {
                  *     the note and revision lists cap at 200 and say so by answering a
                  *     `next_cursor` for the rest. A client asking for more than the cap gets
                  *     the cap.
+                 *     `searchNotes` caps at 100 and echoes it, exactly as `search` does.
                  */
                 limit?: components["parameters"]["Limit"];
             };
@@ -4863,6 +4975,7 @@ export interface operations {
                  *     the note and revision lists cap at 200 and say so by answering a
                  *     `next_cursor` for the rest. A client asking for more than the cap gets
                  *     the cap.
+                 *     `searchNotes` caps at 100 and echoes it, exactly as `search` does.
                  */
                 limit?: components["parameters"]["Limit"];
                 /**

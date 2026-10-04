@@ -358,3 +358,233 @@ func explain(t *testing.T, s *Store, ctx context.Context, query string) string {
 	}
 	return b.String()
 }
+
+// ── CHRN-116 — the notes-only search ────────────────────────────────────────
+//
+// Nothing above this line was edited: Search, searchSQL, their tests and the
+// explain helper are the owner path and stay as they were.
+
+// No database. THE STATEMENT CANNOT REACH A TRANSCRIPT BECAUSE IT DOES NOT
+// NAME ONE: the guarantee is the text of the constant, so the text is what is
+// asserted. A later edit that points SearchNotes at the union fails here
+// before it runs anywhere.
+func TestSearchNotesStatementNamesNoTranscriptTable(t *testing.T) {
+	lower := strings.ToLower(searchNotesSQL)
+	for _, banned := range []string{"transcript", "memo"} {
+		if strings.Contains(lower, banned) {
+			t.Errorf("searchNotesSQL contains %q:\n%s", banned, searchNotesSQL)
+		}
+	}
+	for _, want := range []string{"tier2.notes", "tier2.note_revisions"} {
+		if !strings.Contains(searchNotesSQL, want) {
+			t.Errorf("searchNotesSQL does not read %s:\n%s", want, searchNotesSQL)
+		}
+	}
+	// Every relation after FROM or JOIN, by name, so a third table cannot
+	// arrive in a spelling the substring checks above would miss. `q` is the
+	// statement's own CTE holding the parsed query.
+	fields := strings.Fields(searchNotesSQL)
+	var relations []string
+	for i, f := range fields {
+		if (f == "FROM" || f == "JOIN") && i+1 < len(fields) && fields[i+1] != "q" {
+			relations = append(relations, fields[i+1])
+		}
+	}
+	if got := strings.Join(relations, " "); got != "tier2.notes tier2.note_revisions" {
+		t.Errorf("searchNotesSQL reads %q, want exactly tier2.notes and tier2.note_revisions", got)
+	}
+	// The control: the owner statement does name the transcripts table, so the
+	// absence above is not an artefact of how the check reads a statement.
+	if !strings.Contains(searchSQL, "tier2.transcripts") {
+		t.Error("searchSQL no longer names tier2.transcripts; this test's control is stale")
+	}
+}
+
+// No database either, so it runs where the EXPLAIN test skips. The notes
+// statement COPIES searchSQL's tsvector expression rather than sharing it, and
+// a copy that drifts by one character costs the index silently. Whitespace is
+// collapsed because the two statements indent differently; nothing else is.
+func TestSearchNotesSharesTheIndexedExpression(t *testing.T) {
+	const expr = `setweight(to_tsvector('english', r.title), 'A') || setweight(to_tsvector('english', r.body), 'B')`
+	const headline = `ts_headline('english', r.body, q.tsq, 'MaxFragments=2,MinWords=6,MaxWords=20,FragmentDelimiter= … ')`
+	flat := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+	for name, stmt := range map[string]string{"searchSQL": searchSQL, "searchNotesSQL": searchNotesSQL} {
+		// Twice: once ranked, once matched. The match is the one the index
+		// serves; the rank is the one that orders.
+		if got := strings.Count(flat(stmt), expr); got != 2 {
+			t.Errorf("%s carries the indexed notes expression %d times, want 2 (rank and match)", name, got)
+		}
+		if !strings.Contains(flat(stmt), headline) {
+			t.Errorf("%s does not carry the shared ts_headline call", name)
+		}
+	}
+	// And nothing else builds a tsvector in the notes statement: a second,
+	// different expression would be the drift this test exists to catch.
+	if got := strings.Count(searchNotesSQL, "to_tsvector("); got != 4 {
+		t.Errorf("searchNotesSQL calls to_tsvector %d times, want 4 (title and body, twice)", got)
+	}
+}
+
+// The store-level statement of the property CHRN-116 exists for: a transcript
+// that matches is not returned, whoever said it.
+func TestSearchNotesNeverReturnsATranscript(t *testing.T) {
+	s, ctx := newTestStore(t)
+	page, author := notePage(t, s, ctx, "notes-only@example.com")
+	n := mkNote(t, s, ctx, page, author, "Birds", "a chiffchaff sang in the hedge")
+	memo := newTranscribableMemo(t, s, ctx, "notes-only-memo@example.com")
+	transcribe(t, s, ctx, memo, "whisper.cpp/small.en", "I heard a chiffchaff and a zebrafinch", false)
+
+	// The control: the owner's search finds the transcript, so it is findable
+	// and its absence below means something.
+	all, err := s.Search(ctx, "chiffchaff", 10)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if got := kinds(all); got[HitNote] != 1 || got[HitTranscript] != 1 {
+		t.Fatalf("control: Search kinds = %v, want one note and one transcript", got)
+	}
+
+	hits, err := s.SearchNotes(ctx, "chiffchaff", 10)
+	if err != nil {
+		t.Fatalf("SearchNotes: %v", err)
+	}
+	if len(hits) != 1 || hits[0].NoteID != n.ID {
+		t.Fatalf("SearchNotes = %+v, want only note %s", hits, n.ID)
+	}
+	if hits[0].Ref() != n.Ref() || hits[0].Title != "Birds" || hits[0].PageID != page {
+		t.Errorf("hit does not identify the note: %+v", hits[0])
+	}
+	if !strings.Contains(hits[0].Snippet, "<b>chiffchaff</b>") {
+		t.Errorf("snippet does not mark the match: %q", hits[0].Snippet)
+	}
+
+	// A word only the transcript holds finds nothing at all.
+	if hits, err := s.SearchNotes(ctx, "zebrafinch", 10); err != nil {
+		t.Fatalf("SearchNotes: %v", err)
+	} else if len(hits) != 0 {
+		t.Errorf("a transcript-only word found %+v", hits)
+	}
+}
+
+// What Search's notes arm does, SearchNotes does: live text of live notes.
+func TestSearchNotesFindsOnlyLiveText(t *testing.T) {
+	s, ctx := newTestStore(t)
+	page, author := notePage(t, s, ctx, "live@example.com")
+	kept := mkNote(t, s, ctx, page, author, "Kept", "the original mentions aardvarks")
+	gone := mkNote(t, s, ctx, page, author, "Gone", "this one mentions buffalo and is deleted")
+
+	if _, err := s.AppendRevision(ctx, kept.ID, NewRevision{
+		AuthorID: author, ConfirmedBy: author, Title: "Kept", Body: "the revision mentions buffalo instead",
+	}); err != nil {
+		t.Fatalf("AppendRevision: %v", err)
+	}
+	if err := s.SoftDeleteNote(ctx, gone.ID, author); err != nil {
+		t.Fatalf("SoftDeleteNote: %v", err)
+	}
+
+	if hits, err := s.SearchNotes(ctx, "aardvarks", 10); err != nil {
+		t.Fatalf("SearchNotes: %v", err)
+	} else if len(hits) != 0 {
+		t.Errorf("superseded text is still findable: %+v", hits)
+	}
+	hits, err := s.SearchNotes(ctx, "buffalo", 10)
+	if err != nil {
+		t.Fatalf("SearchNotes: %v", err)
+	}
+	if len(hits) != 1 || hits[0].NoteID != kept.ID {
+		t.Errorf("buffalo = %+v, want only the live note %s (the soft-deleted one is %s)", hits, kept.ID, gone.ID)
+	}
+}
+
+func TestSearchNotesRanksATitleAboveABodyAndHonoursTheLimit(t *testing.T) {
+	s, ctx := newTestStore(t)
+	page, author := notePage(t, s, ctx, "notes-rank@example.com")
+	mkNote(t, s, ctx, page, author, "Something else", "this one only mentions zeppelins in passing")
+	mkNote(t, s, ctx, page, author, "Zeppelins", "a note actually about them")
+
+	hits, err := s.SearchNotes(ctx, "zeppelins", 10)
+	if err != nil {
+		t.Fatalf("SearchNotes: %v", err)
+	}
+	if len(hits) != 2 || hits[0].Title != "Zeppelins" {
+		t.Fatalf("hits = %+v, want two with the TITLE match first", hits)
+	}
+	if one, err := s.SearchNotes(ctx, "zeppelins", 1); err != nil || len(one) != 1 || one[0].Title != "Zeppelins" {
+		t.Errorf("limit 1 = %+v (%v), want the best hit alone", one, err)
+	}
+}
+
+func TestSearchNotesReportsAnEmptyQueryAsSuch(t *testing.T) {
+	s, ctx := newTestStore(t)
+	for _, q := range []string{"", "   ", "!!!", "--- ...", `""`} {
+		if _, err := s.SearchNotes(ctx, q, 10); !errors.Is(err, ErrEmptyQuery) {
+			t.Errorf("SearchNotes(%q) err = %v, want ErrEmptyQuery", q, err)
+		}
+	}
+	// Garbage does not raise, as with Search.
+	if _, err := s.SearchNotes(ctx, `foo AND ) OR "unclosed`, 10); err != nil {
+		t.Errorf("malformed query raised: %v", err)
+	}
+}
+
+// The copy of the tsvector expression is held to 0012's index the way the
+// original is: by the plan, over the same seed. Transcripts are seeded too,
+// with the needle, so "does not mention transcripts" is a claim about a
+// statement that had every chance to read them.
+func TestSearchNotesUsesTheIndexAtScale(t *testing.T) {
+	s, ctx := newTestStore(t)
+	page, author := notePage(t, s, ctx, "notes-scale@example.com")
+
+	const seed = 5000
+	seedNotes(t, s, ctx, page, author, seed)
+	seedTranscripts(t, s, ctx, seed)
+
+	if _, err := s.Pool().Exec(ctx,
+		`ANALYZE tier2.notes, tier2.note_revisions, tier2.transcripts`); err != nil {
+		t.Fatalf("ANALYZE: %v", err)
+	}
+
+	plan := explainStatement(t, s, ctx, searchNotesSQL, "chiffchaff", 50)
+	if !strings.Contains(plan, "note_revisions_fts") {
+		t.Errorf("the planner is not using note_revisions_fts at %d rows:\n%s", seed, plan)
+	}
+	if strings.Contains(plan, "Seq Scan on note_revisions") {
+		t.Errorf("a sequential scan survived at %d rows:\n%s", seed, plan)
+	}
+	if strings.Contains(plan, "transcripts") {
+		t.Errorf("the notes statement's plan reaches transcripts:\n%s", plan)
+	}
+
+	hits, err := s.SearchNotes(ctx, "chiffchaff", 50)
+	if err != nil {
+		t.Fatalf("SearchNotes: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Errorf("hits = %d, want the 1 note needle (the transcript needle is not this statement's)", len(hits))
+	}
+}
+
+// explainStatement is explain for a statement passed in. explain above
+// hard-codes searchSQL and is left exactly as it was.
+func explainStatement(t *testing.T, s *Store, ctx context.Context, stmt string, args ...any) string {
+	t.Helper()
+	rows, err := s.Pool().Query(ctx, "EXPLAIN "+stmt, args...)
+	if err != nil {
+		t.Fatalf("EXPLAIN: %v", err)
+	}
+	defer rows.Close()
+	var b strings.Builder
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			t.Fatalf("EXPLAIN scan: %v", err)
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("EXPLAIN: %v", err)
+	}
+	return b.String()
+}

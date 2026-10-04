@@ -257,6 +257,10 @@ class ApiClient {
           return Note.fromJson(value);
         case 'NoteList':
           return NoteList.fromJson(value);
+        case 'NoteSearchHit':
+          return NoteSearchHit.fromJson(value);
+        case 'NoteSearchResults':
+          return NoteSearchResults.fromJson(value);
         case 'NoteSummary':
           return NoteSummary.fromJson(value);
         case 'NoteTombstone':

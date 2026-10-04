@@ -279,7 +279,7 @@ class NotesApi {
   ///   A note reference, parsed leniently — `CHR-0311`, `chr-311` and `CHR-00311` all name note 311 — because people quote these by hand. Rendered strictly everywhere in a payload, as `CHR-0311`. 
   ///
   /// * [int] limit:
-  ///   How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and the note and revision lists cap at 200 and say so by answering a `next_cursor` for the rest. A client asking for more than the cap gets the cap. 
+  ///   How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and the note and revision lists cap at 200 and say so by answering a `next_cursor` for the rest. A client asking for more than the cap gets the cap. `searchNotes` caps at 100 and echoes it, exactly as `search` does. 
   ///
   /// * [String] cursor:
   ///   Opaque; the `next_cursor` of the previous page. Absent means the start. Never an offset: every list here is over an append-only table, and an offset silently repeats and skips rows as new ones land. 
@@ -327,7 +327,7 @@ class NotesApi {
   ///   A note reference, parsed leniently — `CHR-0311`, `chr-311` and `CHR-00311` all name note 311 — because people quote these by hand. Rendered strictly everywhere in a payload, as `CHR-0311`. 
   ///
   /// * [int] limit:
-  ///   How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and the note and revision lists cap at 200 and say so by answering a `next_cursor` for the rest. A client asking for more than the cap gets the cap. 
+  ///   How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and the note and revision lists cap at 200 and say so by answering a `next_cursor` for the rest. A client asking for more than the cap gets the cap. `searchNotes` caps at 100 and echoes it, exactly as `search` does. 
   ///
   /// * [String] cursor:
   ///   Opaque; the `next_cursor` of the previous page. Absent means the start. Never an offset: every list here is over an append-only table, and an offset silently repeats and skips rows as new ones land. 
@@ -358,7 +358,7 @@ class NotesApi {
   ///   A note reference, parsed leniently — `CHR-0311`, `chr-311` and `CHR-00311` all name note 311 — because people quote these by hand. Rendered strictly everywhere in a payload, as `CHR-0311`. 
   ///
   /// * [int] limit:
-  ///   How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and the note and revision lists cap at 200 and say so by answering a `next_cursor` for the rest. A client asking for more than the cap gets the cap. 
+  ///   How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and the note and revision lists cap at 200 and say so by answering a `next_cursor` for the rest. A client asking for more than the cap gets the cap. `searchNotes` caps at 100 and echoes it, exactly as `search` does. 
   ///
   /// * [String] cursor:
   ///   Opaque; the `next_cursor` of the previous page. Absent means the start. Never an offset: every list here is over an append-only table, and an offset silently repeats and skips rows as new ones land. 
@@ -406,7 +406,7 @@ class NotesApi {
   ///   A note reference, parsed leniently — `CHR-0311`, `chr-311` and `CHR-00311` all name note 311 — because people quote these by hand. Rendered strictly everywhere in a payload, as `CHR-0311`. 
   ///
   /// * [int] limit:
-  ///   How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and the note and revision lists cap at 200 and say so by answering a `next_cursor` for the rest. A client asking for more than the cap gets the cap. 
+  ///   How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and the note and revision lists cap at 200 and say so by answering a `next_cursor` for the rest. A client asking for more than the cap gets the cap. `searchNotes` caps at 100 and echoes it, exactly as `search` does. 
   ///
   /// * [String] cursor:
   ///   Opaque; the `next_cursor` of the previous page. Absent means the start. Never an offset: every list here is over an append-only table, and an offset silently repeats and skips rows as new ones land. 
@@ -437,7 +437,7 @@ class NotesApi {
   ///   A page path, `estate/conventions/naming`. A redirect left by a move is followed.
   ///
   /// * [int] limit:
-  ///   How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and the note and revision lists cap at 200 and say so by answering a `next_cursor` for the rest. A client asking for more than the cap gets the cap. 
+  ///   How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and the note and revision lists cap at 200 and say so by answering a `next_cursor` for the rest. A client asking for more than the cap gets the cap. `searchNotes` caps at 100 and echoes it, exactly as `search` does. 
   ///
   /// * [String] cursor:
   ///   Opaque; the `next_cursor` of the previous page. Absent means the start. Never an offset: every list here is over an append-only table, and an offset silently repeats and skips rows as new ones land. 
@@ -485,7 +485,7 @@ class NotesApi {
   ///   A page path, `estate/conventions/naming`. A redirect left by a move is followed.
   ///
   /// * [int] limit:
-  ///   How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and the note and revision lists cap at 200 and say so by answering a `next_cursor` for the rest. A client asking for more than the cap gets the cap. 
+  ///   How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and the note and revision lists cap at 200 and say so by answering a `next_cursor` for the rest. A client asking for more than the cap gets the cap. `searchNotes` caps at 100 and echoes it, exactly as `search` does. 
   ///
   /// * [String] cursor:
   ///   Opaque; the `next_cursor` of the previous page. Absent means the start. Never an offset: every list here is over an append-only table, and an offset silently repeats and skips rows as new ones land. 
@@ -499,6 +499,76 @@ class NotesApi {
     // FormatException when trying to decode an empty string.
     if (response.body.isNotEmpty && response.statusCode != HttpStatus.noContent) {
       return await apiClient.deserializeAsync(await _decodeBodyBytes(response), 'NoteList',) as NoteList;
+    
+    }
+    return null;
+  }
+
+  /// Full-text search across notes, and only notes.
+  ///
+  /// The search any account may call (CHRN-116): a person who is not the owner, and an agent. It searches the live text of live notes — the shared corpus `listNotes` and `getNote` already serve every member — and **nothing else**. No transcript is searched, the caller's own included, and no hit can describe one: `NoteSearchHit` has no `memo_id`, no `model` and no `kind`. The statement behind this operation reads the notes tables and no other, so that is a property of the query rather than of a filter applied to `search`'s answer.  Otherwise it is `search`: **not a list**, rank-ordered, `limit` and no cursor, and the same `websearch_to_tsquery` language — bare words are ANDed, \"quoted phrases\" are phrases, `OR` is OR, a leading `-` excludes. Soft-deleted notes and superseded revisions are not found.  It finds less than `search` does, on purpose. Most memos are never triaged into a note, and what somebody said and nobody wrote down is reachable only by the owner's search.  The literal segment outranks `/notes/{ref}`, and shadows no note: a ref is `CHR-` and a number, so `search` was never one. 
+  ///
+  /// Note: This method returns the HTTP [Response].
+  ///
+  /// Parameters:
+  ///
+  /// * [String] q (required):
+  ///   The query. One made only of punctuation matches nothing and is refused as an empty question rather than answered as an empty corpus.
+  ///
+  /// * [int] limit:
+  ///   How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and the note and revision lists cap at 200 and say so by answering a `next_cursor` for the rest. A client asking for more than the cap gets the cap. `searchNotes` caps at 100 and echoes it, exactly as `search` does. 
+  Future<Response> searchNotesWithHttpInfo(String q, { int? limit, Future<void>? abortTrigger, }) async {
+    // ignore: prefer_const_declarations
+    final path = r'/notes/search';
+
+    // ignore: prefer_final_locals
+    Object? postBody;
+
+    final queryParams = <QueryParam>[];
+    final headerParams = <String, String>{};
+    final formParams = <String, String>{};
+
+      queryParams.addAll(_queryParams('', 'q', q));
+    if (limit != null) {
+      queryParams.addAll(_queryParams('', 'limit', limit));
+    }
+
+    const contentTypes = <String>[];
+
+
+    return apiClient.invokeAPI(
+      path,
+      'GET',
+      queryParams,
+      postBody,
+      headerParams,
+      formParams,
+      contentTypes.isEmpty ? null : contentTypes.first,
+      abortTrigger: abortTrigger,
+    );
+  }
+
+  /// Full-text search across notes, and only notes.
+  ///
+  /// The search any account may call (CHRN-116): a person who is not the owner, and an agent. It searches the live text of live notes — the shared corpus `listNotes` and `getNote` already serve every member — and **nothing else**. No transcript is searched, the caller's own included, and no hit can describe one: `NoteSearchHit` has no `memo_id`, no `model` and no `kind`. The statement behind this operation reads the notes tables and no other, so that is a property of the query rather than of a filter applied to `search`'s answer.  Otherwise it is `search`: **not a list**, rank-ordered, `limit` and no cursor, and the same `websearch_to_tsquery` language — bare words are ANDed, \"quoted phrases\" are phrases, `OR` is OR, a leading `-` excludes. Soft-deleted notes and superseded revisions are not found.  It finds less than `search` does, on purpose. Most memos are never triaged into a note, and what somebody said and nobody wrote down is reachable only by the owner's search.  The literal segment outranks `/notes/{ref}`, and shadows no note: a ref is `CHR-` and a number, so `search` was never one. 
+  ///
+  /// Parameters:
+  ///
+  /// * [String] q (required):
+  ///   The query. One made only of punctuation matches nothing and is refused as an empty question rather than answered as an empty corpus.
+  ///
+  /// * [int] limit:
+  ///   How many to return. CLAMPED SERVER-SIDE, never refused: a triage batch caps at 25 and echoes the cap, `search` caps at 100 and echoes it, and the note and revision lists cap at 200 and say so by answering a `next_cursor` for the rest. A client asking for more than the cap gets the cap. `searchNotes` caps at 100 and echoes it, exactly as `search` does. 
+  Future<NoteSearchResults?> searchNotes(String q, { int? limit, Future<void>? abortTrigger, }) async {
+    final response = await searchNotesWithHttpInfo(q, limit: limit, abortTrigger: abortTrigger,);
+    if (response.statusCode >= HttpStatus.badRequest) {
+      throw ApiException(response.statusCode, await _decodeBodyBytes(response));
+    }
+    // When a remote server returns no body with a status of 204, we shall not decode it.
+    // At the time of writing this, `dart:convert` will throw an "Unexpected end of input"
+    // FormatException when trying to decode an empty string.
+    if (response.body.isNotEmpty && response.statusCode != HttpStatus.noContent) {
+      return await apiClient.deserializeAsync(await _decodeBodyBytes(response), 'NoteSearchResults',) as NoteSearchResults;
     
     }
     return null;
