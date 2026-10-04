@@ -158,11 +158,15 @@ func (c *Client) CreateTicket(ctx context.Context, in NewTicket) (Ticket, error)
 // as one that came back from a create — CHRN-33 answers `applied` from a stored
 // key without calling Switchyard at all, and a second spelling of this
 // concatenation somewhere else is a second place to get the routing wrong.
+//
+// Built from the LINK base, never the API base (CHRN-140): this string is
+// followed by a person in a browser, and the API base is an address only this
+// process can reach.
 func (c *Client) TicketURL(key string) string {
 	if key == "" {
 		return ""
 	}
-	return c.base.String() + "/tickets/" + key
+	return c.links.String() + "/tickets/" + key
 }
 
 type ticketsPage struct {

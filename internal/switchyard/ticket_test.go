@@ -417,3 +417,81 @@ func TestBothTicketsComeBackWhenTwoClaimOneMemo(t *testing.T) {
 		t.Fatalf("got %+v, want both keys across pages", got)
 	}
 }
+
+// CHRN-140. The API base and the link base are different addresses in any real
+// deployment — `http://switchyard:4002` on the compose network against the
+// address a person signs in at — and a link built from the first opens nowhere.
+//
+// Both halves are asserted, because either alone passes against a client that
+// simply swapped one base for the other: the REQUEST must still reach the API
+// base, and the LINK must carry the public one.
+func TestALinkIsBuiltFromThePublicBaseAndARequestStillGoesToTheAPI(t *testing.T) {
+	const public = "https://switchyard.example.test"
+
+	tr := &tracker{t: t}
+	api := tr.start(t)
+	c, err := New(api.BaseURL(), "tok", WithLinkBase(public+"/"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := c.CreateTicket(context.Background(), aTicket(uuid.New()))
+	if err != nil {
+		t.Fatalf("the create did not reach the API base: %v", err)
+	}
+	if want := public + "/tickets/" + got.Key; got.URL != want {
+		t.Errorf("created ticket url = %q, want %q", got.URL, want)
+	}
+	// The same link for a key that came out of a database (CHRN-33) and for a
+	// reference card (resolve.URLFor), which both go through TicketURL.
+	if got, want := c.TicketURL("SWY-389"), public+"/tickets/SWY-389"; got != want {
+		t.Errorf("TicketURL = %q, want %q", got, want)
+	}
+	if c.BaseURL() != api.BaseURL() {
+		t.Errorf("BaseURL = %q, want the API base %q — it must not follow the link base", c.BaseURL(), api.BaseURL())
+	}
+	if strings.Contains(c.TicketURL("SWY-389"), api.BaseURL()) {
+		t.Errorf("the link carries the API address: %q", c.TicketURL("SWY-389"))
+	}
+}
+
+// Unset is today's behaviour, and right on a dev box where both are localhost.
+func TestWithNoPublicBaseALinkFallsBackToTheAPIBase(t *testing.T) {
+	for _, raw := range []string{"", "   "} {
+		c, err := New("http://switchyard:4002", "tok", WithLinkBase(raw))
+		if err != nil {
+			t.Fatalf("WithLinkBase(%q): %v", raw, err)
+		}
+		if got := c.TicketURL("CHRN-1"); got != "http://switchyard:4002/tickets/CHRN-1" {
+			t.Errorf("WithLinkBase(%q): TicketURL = %q", raw, got)
+		}
+	}
+	c, err := New("http://switchyard:4002", "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.TicketURL("CHRN-1"); got != "http://switchyard:4002/tickets/CHRN-1" {
+		t.Errorf("no option: TicketURL = %q", got)
+	}
+}
+
+// The link base takes a path onto its end exactly as the API base does, so the
+// same three shapes are refused — and a path prefix is not one of them.
+func TestAMalformedPublicBaseIsRefusedAtConstruction(t *testing.T) {
+	for _, bad := range []string{
+		"switchyard.example.test", "ftp://switchyard.example.test",
+		"https://switchyard.example.test?x=1", "https://switchyard.example.test#frag",
+	} {
+		_, err := New("http://switchyard:4002", "tok", WithLinkBase(bad))
+		if err == nil || !strings.Contains(err.Error(), "CHRONICLE_SWITCHYARD_PUBLIC_URL") {
+			t.Errorf("WithLinkBase(%q): err = %v, want a refusal naming the variable", bad, err)
+		}
+	}
+	c, err := New("http://switchyard:4002", "tok", WithLinkBase("https://estate.example.test/switchyard"))
+	if err != nil {
+		t.Fatalf("a path prefix was refused: %v", err)
+	}
+	if got := c.TicketURL("CHRN-1"); got != "https://estate.example.test/switchyard/tickets/CHRN-1" {
+		t.Errorf("TicketURL under a prefix = %q", got)
+	}
+}
