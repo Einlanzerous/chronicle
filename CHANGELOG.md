@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.28.0](https://github.com/Einlanzerous/chronicle/compare/v1.27.0...v1.28.0) (2026-10-04)
+
+
+### Features
+
+* **api:** notes-only search any account may call — GET /notes/search (CHRN-116) ([#152](https://github.com/Einlanzerous/chronicle/issues/152)) ([5e3f958](https://github.com/Einlanzerous/chronicle/commit/5e3f958a1a3416901882ce4b8f975f9124059410))
+* **metrics:** queue, ASR latency, routing agreement, prune volume (CHRN-69) ([#148](https://github.com/Einlanzerous/chronicle/issues/148)) ([300574f](https://github.com/Einlanzerous/chronicle/commit/300574f9f07dc4702318e58ebbc2e3fdba7b27a9))
+
+
+### Bug Fixes
+
+* **switchyard:** build ticket links from a public base, not the API address (CHRN-140) ([#153](https://github.com/Einlanzerous/chronicle/issues/153)) ([608ed32](https://github.com/Einlanzerous/chronicle/commit/608ed3203cdb8051a800f30a50c0a85aae2f492a))
+
+
+### Maintenance
+
+* **main:** release mobile 0.3.0 ([#146](https://github.com/Einlanzerous/chronicle/issues/146)) ([a8de27c](https://github.com/Einlanzerous/chronicle/commit/a8de27cbcc5578f570db84174a17eeda40675eac))
+
 ## [1.27.0](https://github.com/Einlanzerous/chronicle/compare/v1.26.0...v1.27.0) (2026-10-04)
 
 
