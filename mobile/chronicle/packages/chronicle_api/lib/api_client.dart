@@ -283,6 +283,8 @@ class ApiClient {
           return ProvenanceList.fromJson(value);
         case 'ProvenanceTranscript':
           return ProvenanceTranscript.fromJson(value);
+        case 'RaiseRetentionRequest':
+          return RaiseRetentionRequest.fromJson(value);
         case 'Readiness':
           return Readiness.fromJson(value);
         case 'ReconciliationReport':
@@ -305,6 +307,8 @@ class ApiClient {
           return ResolvedNote.fromJson(value);
         case 'ResolvedState':
           return ResolvedState.fromJson(value);
+        case 'RetentionState':
+          return RetentionState.fromJson(value);
         case 'Revision':
           return Revision.fromJson(value);
         case 'RevisionList':

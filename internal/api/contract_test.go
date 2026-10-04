@@ -410,12 +410,12 @@ func TestDocumentedOperations(t *testing.T) {
 		"getStorageReport", "getTier1Page", "getTranscriptionReport", "getTriageBatch",
 		"getTriageReport", "getUpload", "holdMemo", "listDeferred", "listDiscussions",
 		"listNoteBacklinks", "listNoteRevisions", "listNotes", "listPages", "listSessions", "listTier1Pages",
-		"listUnread", "listUsers", "markRead", "openDiscussion", "openUpload", "releaseMemo",
-		"removeParticipant", "resolveDiscussion", "resolveReferences", "revokeSession",
+		"listUnread", "listUsers", "markRead", "openDiscussion", "openUpload", "raiseMemoRetention",
+		"releaseMemo", "removeParticipant", "resolveDiscussion", "resolveReferences", "revokeSession",
 		"search", "updateMe",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Errorf("operations = %v, want %v.\nAll 50 routes are in the document now; a change here is a change to the surface.", got, want)
+		t.Errorf("operations = %v, want %v.\nAll 51 routes are in the document now; a change here is a change to the surface.", got, want)
 	}
 }
 

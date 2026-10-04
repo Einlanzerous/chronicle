@@ -146,4 +146,68 @@ class MemosApi {
     }
     return null;
   }
+
+  /// Keep a recording that would otherwise be pruned — raise its retention.
+  ///
+  /// The pin E1 promised (\"30 days by default, permanent on a per-note pin\") and the choice CHRN-62 offers at recording time, made afterwards (CHRN-128). Until this existed, keeping a recording that had already arrived took an `UPDATE` on production.  **It raises and never lowers.** `discard_now` < `days_30` < `forever`, which is `store.Arrival`'s ratchet — \"an arrival may raise retention and never lower it\" — applied to a person's hand instead of a re-delivery. So this operation can stop a deletion and can never cause one, which is what keeps it out of the review mode reserved for anything that can destroy authored data. A request naming a level BELOW the memo's current one is refused `409`, code `retention_lowered`: refused, not ignored, because a client told `200` would believe the audio now goes sooner. Naming the level the memo already has is a `200` that changes nothing, so a retried pin answers like the first.  **A pruned memo cannot be pinned**, and answers `410`, code `audio_pruned` — `getMemoAudio`'s own answer for the same fact. The recording was deleted by policy; a `200` here would put `PINNED — KEPT` on bytes that no longer exist.  The pruner claims a row (`audio_pruned_at`) BEFORE it unlinks the file, and this is one statement conditioned on that column being null, so the two cannot interleave into a pinned memo with no audio: whichever commits first wins, and the other is told.  **The memo's author and the owner only** — `getMemoAudio`'s rule, and `MemoProvenance.audio_readable` is what tells a client whether to draw the control at all. Anybody else gets the answer a nonexistent id gets. 
+  ///
+  /// Note: This method returns the HTTP [Response].
+  ///
+  /// Parameters:
+  ///
+  /// * [String] memoId (required):
+  ///   A memo's id. `RevisionMeta.memo_id` is where a client gets one, and for a member who is not the author it is the ONLY place: `SearchHit.memo_id` and the transcription report are owner-only, and `BatchItem.memo_id` is scoped to the author. 
+  ///
+  /// * [RaiseRetentionRequest] raiseRetentionRequest (required):
+  Future<Response> raiseMemoRetentionWithHttpInfo(String memoId, RaiseRetentionRequest raiseRetentionRequest, { Future<void>? abortTrigger, }) async {
+    // ignore: prefer_const_declarations
+    final path = r'/audio/{memo_id}/retention'
+      .replaceAll('{memo_id}', memoId);
+
+    // ignore: prefer_final_locals
+    Object? postBody = raiseRetentionRequest;
+
+    final queryParams = <QueryParam>[];
+    final headerParams = <String, String>{};
+    final formParams = <String, String>{};
+
+    const contentTypes = <String>['application/json'];
+
+
+    return apiClient.invokeAPI(
+      path,
+      'PUT',
+      queryParams,
+      postBody,
+      headerParams,
+      formParams,
+      contentTypes.isEmpty ? null : contentTypes.first,
+      abortTrigger: abortTrigger,
+    );
+  }
+
+  /// Keep a recording that would otherwise be pruned — raise its retention.
+  ///
+  /// The pin E1 promised (\"30 days by default, permanent on a per-note pin\") and the choice CHRN-62 offers at recording time, made afterwards (CHRN-128). Until this existed, keeping a recording that had already arrived took an `UPDATE` on production.  **It raises and never lowers.** `discard_now` < `days_30` < `forever`, which is `store.Arrival`'s ratchet — \"an arrival may raise retention and never lower it\" — applied to a person's hand instead of a re-delivery. So this operation can stop a deletion and can never cause one, which is what keeps it out of the review mode reserved for anything that can destroy authored data. A request naming a level BELOW the memo's current one is refused `409`, code `retention_lowered`: refused, not ignored, because a client told `200` would believe the audio now goes sooner. Naming the level the memo already has is a `200` that changes nothing, so a retried pin answers like the first.  **A pruned memo cannot be pinned**, and answers `410`, code `audio_pruned` — `getMemoAudio`'s own answer for the same fact. The recording was deleted by policy; a `200` here would put `PINNED — KEPT` on bytes that no longer exist.  The pruner claims a row (`audio_pruned_at`) BEFORE it unlinks the file, and this is one statement conditioned on that column being null, so the two cannot interleave into a pinned memo with no audio: whichever commits first wins, and the other is told.  **The memo's author and the owner only** — `getMemoAudio`'s rule, and `MemoProvenance.audio_readable` is what tells a client whether to draw the control at all. Anybody else gets the answer a nonexistent id gets. 
+  ///
+  /// Parameters:
+  ///
+  /// * [String] memoId (required):
+  ///   A memo's id. `RevisionMeta.memo_id` is where a client gets one, and for a member who is not the author it is the ONLY place: `SearchHit.memo_id` and the transcription report are owner-only, and `BatchItem.memo_id` is scoped to the author. 
+  ///
+  /// * [RaiseRetentionRequest] raiseRetentionRequest (required):
+  Future<RetentionState?> raiseMemoRetention(String memoId, RaiseRetentionRequest raiseRetentionRequest, { Future<void>? abortTrigger, }) async {
+    final response = await raiseMemoRetentionWithHttpInfo(memoId, raiseRetentionRequest, abortTrigger: abortTrigger,);
+    if (response.statusCode >= HttpStatus.badRequest) {
+      throw ApiException(response.statusCode, await _decodeBodyBytes(response));
+    }
+    // When a remote server returns no body with a status of 204, we shall not decode it.
+    // At the time of writing this, `dart:convert` will throw an "Unexpected end of input"
+    // FormatException when trying to decode an empty string.
+    if (response.body.isNotEmpty && response.statusCode != HttpStatus.noContent) {
+      return await apiClient.deserializeAsync(await _decodeBodyBytes(response), 'RetentionState',) as RetentionState;
+    
+    }
+    return null;
+  }
 }

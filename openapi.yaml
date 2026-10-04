@@ -939,6 +939,83 @@ paths:
         "500": { $ref: "#/components/responses/InternalError" }
         "503": { $ref: "#/components/responses/AudioUnavailable" }
 
+  /audio/{memo_id}/retention:
+    put:
+      tags: [memos]
+      summary: Keep a recording that would otherwise be pruned — raise its retention.
+      description: |
+        The pin E1 promised ("30 days by default, permanent on a per-note pin")
+        and the choice CHRN-62 offers at recording time, made afterwards
+        (CHRN-128). Until this existed, keeping a recording that had already
+        arrived took an `UPDATE` on production.
+
+        **It raises and never lowers.** `discard_now` < `days_30` < `forever`,
+        which is `store.Arrival`'s ratchet — "an arrival may raise retention and
+        never lower it" — applied to a person's hand instead of a re-delivery.
+        So this operation can stop a deletion and can never cause one, which is
+        what keeps it out of the review mode reserved for anything that can
+        destroy authored data. A request naming a level BELOW the memo's
+        current one is refused `409`, code `retention_lowered`: refused, not
+        ignored, because a client told `200` would believe the audio now goes
+        sooner. Naming the level the memo already has is a `200` that changes
+        nothing, so a retried pin answers like the first.
+
+        **A pruned memo cannot be pinned**, and answers `410`, code
+        `audio_pruned` — `getMemoAudio`'s own answer for the same fact. The
+        recording was deleted by policy; a `200` here would put `PINNED — KEPT`
+        on bytes that no longer exist.
+
+        The pruner claims a row (`audio_pruned_at`) BEFORE it unlinks the file,
+        and this is one statement conditioned on that column being null, so the
+        two cannot interleave into a pinned memo with no audio: whichever
+        commits first wins, and the other is told.
+
+        **The memo's author and the owner only** — `getMemoAudio`'s rule, and
+        `MemoProvenance.audio_readable` is what tells a client whether to draw
+        the control at all. Anybody else gets the answer a nonexistent id gets.
+      operationId: raiseMemoRetention
+      x-chronicle-policy: member
+      parameters:
+        - $ref: "#/components/parameters/MemoId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RaiseRetentionRequest"
+      responses:
+        "200":
+          description: the memo's retention, as it now stands
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RetentionState"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            the level asked for is below the memo's current one, code
+            `retention_lowered` — or the memo was discarded at triage, code
+            `memo_discarded`, where there is no recording a person decided to
+            keep.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "410":
+          description: |
+            the recording was already deleted by policy, code `audio_pruned`.
+            There is nothing left to keep.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/MemosUnconfigured" }
+
   # ── TRIAGE ──────────────────────────────────────────────────────────────────
   # CHRN-33's surface, and THE ONE PLACE DERIVED STATE BECOMES AUTHORED STATE.
   # The Scribe proposes; a person confirms; the confirmation is what writes tier
@@ -3280,6 +3357,45 @@ components:
             a `message` and which an `<audio src>` element never sees at all.
         transcript:
           $ref: "#/components/schemas/ProvenanceTranscript"
+
+    RaiseRetentionRequest:
+      type: object
+      required: [retention]
+      properties:
+        retention:
+          type: string
+          enum: [discard_now, days_30, forever]
+          description: |
+            The level to raise the memo to. `forever` is the pin. All three
+            levels are accepted so that a request to LOWER is recognised and
+            refused `409` with its reason, rather than bounced as a malformed
+            body that never says why.
+
+    RetentionState:
+      type: object
+      description: |
+        What `raiseMemoRetention` left behind — the same three facts
+        `MemoProvenance` carries, computed by the same `store.RetentionStatus`,
+        so a client can redraw `PRUNES <date>` as `PINNED — KEPT` from this
+        answer without a second read.
+      required: [memo_id, retention, retention_status, prunes_at]
+      properties:
+        memo_id: { type: string, format: uuid }
+        retention:
+          type: string
+          enum: [discard_now, days_30, forever]
+        retention_status:
+          type: string
+          description: |
+            One of `MemoProvenance.retention_status`'s five values, from the
+            same `store.RetentionStatus`. Declared as a string and not as a
+            second copy of that enum, on `Memo.retention_status`'s precedent:
+            one list to keep in step, in the one place a client renders from.
+        prunes_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: "`MemoProvenance.prunes_at`: null on every status but `scheduled`."
 
     ProvenanceTranscript:
       type: object

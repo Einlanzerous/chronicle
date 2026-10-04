@@ -155,7 +155,7 @@ export function retentionLabel(
 
 export type AudioControl =
   /** `▶ PLAY SOURCE AUDIO · 1:44 · PRUNES 2026-09-20`. */
-  | { state: 'playable'; label: string; href: string; duration: string | null; retention: string }
+  | { state: 'playable'; label: string; href: string; duration: string | null; retention: string; pinnable: boolean }
   /** The bytes went by policy; the transcript is what remains. */
   | { state: 'pruned'; label: string; transcriptKept: boolean }
   /** ABSENT, not disabled: this caller may not have somebody else's recording. */
@@ -197,7 +197,42 @@ export function audioControlFor(entry: MemoProvenance): AudioControl {
     href: `/audio/${entry.memo_id}`,
     duration: formatDurationMs(entry.duration_ms),
     retention: retentionLabel(entry),
+    pinnable: canPin(entry),
   }
+}
+
+/**
+ * Whether to draw KEEP FOREVER (CHRN-128). The same two facts the play
+ * control reads, for the same reasons: `audio_readable` is the permission --
+ * `raiseMemoRetention` is the author's and the owner's, exactly as the bytes
+ * are -- and `retention_status` says whether there is anything left to do. A
+ * pinned memo is already kept; a pruned one has nothing to keep, and the
+ * server refuses it `410`. So a caller who cannot read the audio is offered
+ * no control, rather than one that fails.
+ */
+export function canPin(entry: Pick<MemoProvenance, 'audio_readable' | 'retention_status'>): boolean {
+  return entry.audio_readable && entry.retention_status !== 'pinned' && entry.retention_status !== 'pruned'
+}
+
+export type RetentionState = components['schemas']['RetentionState']
+
+/**
+ * Folds `raiseMemoRetention`'s answer into the entry it is about, so the block
+ * redraws `PRUNES <date>` as `PINNED — KEPT` from what the server said rather
+ * than from an assumption about what a 200 means. The status is the server's
+ * string, narrowed only if it is one this client knows how to label.
+ */
+export function withRetention(entry: MemoProvenance, state: RetentionState): MemoProvenance {
+  const known: readonly MemoProvenance['retention_status'][] = [
+    'pruned',
+    'pinned',
+    'awaiting_transcript',
+    'discard_pending',
+    'scheduled',
+  ]
+  const status = known.find((k) => k === state.retention_status)
+  if (!status || state.memo_id !== entry.memo_id) return entry
+  return { ...entry, retention_status: status, prunes_at: state.prunes_at }
 }
 
 export type TranscriptState =

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   audioControlFor,
+  canPin,
+  withRetention,
   formatDurationMs,
   leadProvenance,
   provenanceBlock,
@@ -198,6 +200,7 @@ describe('audioControlFor', () => {
       href: '/audio/22222222-2222-4222-8222-222222222222',
       duration: '1:44',
       retention: 'PRUNES 2026-09-20',
+      pinnable: true,
     })
   })
 
@@ -300,5 +303,57 @@ describe('leadProvenance', () => {
 
   it('is null for a note somebody typed, which is not an error', () => {
     expect(leadProvenance({ items: [] })).toBeNull()
+  })
+})
+
+// CHRN-128: the pin.
+describe('canPin', () => {
+  it('offers the pin to a caller who may read the audio, while there is something to raise', () => {
+    expect(canPin(entry())).toBe(true)
+    expect(canPin(entry({ retention_status: 'awaiting_transcript', prunes_at: null }))).toBe(true)
+    expect(canPin(entry({ retention_status: 'discard_pending', prunes_at: null }))).toBe(true)
+  })
+
+  it('draws no control for a caller who cannot read the audio', () => {
+    expect(canPin(entry({ audio_readable: false }))).toBe(false)
+    // ...and the block carries no control of any kind for them.
+    expect(audioControlFor(entry({ audio_readable: false }))).toEqual({ state: 'absent' })
+  })
+
+  it('offers nothing once pinned, and nothing over audio that is gone', () => {
+    expect(canPin(entry({ retention_status: 'pinned', prunes_at: null }))).toBe(false)
+    expect(canPin(entry({ retention_status: 'pruned', prunes_at: null, audio_pruned_at: '2026-09-20T03:00:00Z' }))).toBe(false)
+  })
+
+  it('rides on the playable control', () => {
+    const control = audioControlFor(entry())
+    expect(control.state === 'playable' && control.pinnable).toBe(true)
+    const pinned = audioControlFor(entry({ retention_status: 'pinned', prunes_at: null }))
+    expect(pinned.state === 'playable' && pinned.pinnable).toBe(false)
+  })
+})
+
+describe('withRetention', () => {
+  const answer = {
+    memo_id: '22222222-2222-4222-8222-222222222222',
+    retention: 'forever' as const,
+    retention_status: 'pinned',
+    prunes_at: null,
+  }
+
+  it('moves PRUNES <date> to PINNED — KEPT from the server\'s answer', () => {
+    const before = entry()
+    expect(audioControlFor(before)).toMatchObject({ retention: 'PRUNES 2026-09-20', pinnable: true })
+    expect(audioControlFor(withRetention(before, answer))).toMatchObject({ retention: 'PINNED — KEPT', pinnable: false })
+  })
+
+  it('leaves an entry about a different memo alone', () => {
+    const other = entry({ memo_id: '33333333-3333-4333-8333-333333333333' })
+    expect(withRetention(other, answer)).toBe(other)
+  })
+
+  it('does not invent a label for a status it does not know', () => {
+    const before = entry()
+    expect(withRetention(before, { ...answer, retention_status: 'archived' })).toBe(before)
   })
 })

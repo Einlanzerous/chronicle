@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -514,5 +515,133 @@ func TestDiscardNowBypassesTheWindowButNotTheGate(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("DISCARD NOW waited for the 30-day window; immediately means at the next sweep")
+	}
+}
+
+// ── CHRN-128: the pin, as a store operation ─────────────────────────────────
+
+// THE FIRST DONE-WHEN, at the predicate the pruner sweeps with: a pinned memo
+// is no longer listed for deletion, and the status the UI reads says so.
+func TestRaiseRetentionTakesAMemoOutOfThePrunersList(t *testing.T) {
+	s, ctx := newTestStore(t)
+	m := control(t, s, ctx, "raise-pin@example.test")
+
+	if !prunableIDs(t, s, ctx)[m.ID] {
+		t.Fatal("setup: the memo was not prunable")
+	}
+
+	got, err := s.RaiseRetention(ctx, m.ID, RetentionForever)
+	if err != nil {
+		t.Fatalf("RaiseRetention: %v", err)
+	}
+	if got.Retention != RetentionForever {
+		t.Fatalf("retention = %q, want forever", got.Retention)
+	}
+	if prunableIDs(t, s, ctx)[m.ID] {
+		t.Fatal("a pinned memo is still listed for deletion — this is the list a dry run prints")
+	}
+	if status, at, err := s.RetentionStatus(ctx, m.ID, testWindow); err != nil || status != RetentionStatusPinned || at != nil {
+		t.Fatalf("status = %q, at = %v, err = %v; want pinned with no date", status, at, err)
+	}
+
+	// The sweep's own claim agrees: nothing to take.
+	if claimed, err := s.MarkAudioPruned(ctx, m.ID, testWindow); err != nil || claimed {
+		t.Fatalf("MarkAudioPruned = %v, %v; a pinned memo was claimed for deletion", claimed, err)
+	}
+
+	// The same level again changes nothing and is not an error.
+	again, err := s.RaiseRetention(ctx, m.ID, RetentionForever)
+	if err != nil || again.Retention != RetentionForever {
+		t.Fatalf("a repeated pin = %q, %v; want forever and no error", again.Retention, err)
+	}
+	if !again.UpdatedAt.Equal(got.UpdatedAt) {
+		t.Error("a repeated pin wrote the row")
+	}
+}
+
+// IT RAISES AND NEVER LOWERS — the ingest ratchet's rule, for a person's hand.
+// Each lowering is refused and the row is as it was.
+func TestRaiseRetentionRefusesToLower(t *testing.T) {
+	s, ctx := newTestStore(t)
+	m := control(t, s, ctx, "raise-lower@example.test")
+
+	// days_30 → discard_now.
+	if _, err := s.RaiseRetention(ctx, m.ID, RetentionDiscardNow); !errors.Is(err, ErrRetentionLowered) {
+		t.Fatalf("days_30 → discard_now: err = %v, want ErrRetentionLowered", err)
+	}
+	if _, err := s.RaiseRetention(ctx, m.ID, RetentionForever); err != nil {
+		t.Fatal(err)
+	}
+	for _, to := range []string{RetentionDays30, RetentionDiscardNow} {
+		if _, err := s.RaiseRetention(ctx, m.ID, to); !errors.Is(err, ErrRetentionLowered) {
+			t.Fatalf("forever → %s: err = %v, want ErrRetentionLowered", to, err)
+		}
+	}
+	after, err := s.GetMemo(ctx, m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Retention != RetentionForever {
+		t.Fatalf("retention = %q after refused lowerings; a pin was undone", after.Retention)
+	}
+	if prunableIDs(t, s, ctx)[m.ID] {
+		t.Fatal("a refused lowering put the memo back on the pruner's list")
+	}
+}
+
+// A PIN THAT ARRIVES AFTER THE SWEEP IS TOLD SO. The mirror of
+// TestPinningBetweenTheReadAndTheMarkWins: there the pin lands first and the
+// claim skips; here the claim lands first and the pin must not answer as if
+// there were still a recording to keep.
+func TestRaiseRetentionRefusesAPrunedMemo(t *testing.T) {
+	s, ctx := newTestStore(t)
+	m := control(t, s, ctx, "raise-pruned@example.test")
+
+	if claimed, err := s.MarkAudioPruned(ctx, m.ID, testWindow); err != nil || !claimed {
+		t.Fatalf("setup: MarkAudioPruned = %v, %v", claimed, err)
+	}
+	if _, err := s.RaiseRetention(ctx, m.ID, RetentionForever); !errors.Is(err, ErrAudioPruned) {
+		t.Fatalf("err = %v, want ErrAudioPruned", err)
+	}
+	after, err := s.GetMemo(ctx, m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Retention != RetentionDays30 {
+		t.Fatalf("retention = %q: a pruned memo now reads as kept", after.Retention)
+	}
+}
+
+func TestRaiseRetentionRefusesWhatIsNotThere(t *testing.T) {
+	s, ctx := newTestStore(t)
+	m := control(t, s, ctx, "raise-misc@example.test")
+
+	if _, err := s.RaiseRetention(ctx, uuid.New(), RetentionForever); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("an id that names nothing: err = %v, want ErrNotFound", err)
+	}
+	if _, err := s.RaiseRetention(ctx, m.ID, "a_year"); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("an unknown level: err = %v, want ErrInvalidInput", err)
+	}
+
+	// discard_now may be lifted to the default, not only to the pin.
+	if _, err := s.pool.Exec(ctx, `UPDATE tier2.memos SET retention = 'discard_now' WHERE id = $1`, m.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.RaiseRetention(ctx, m.ID, RetentionDays30)
+	if err != nil || got.Retention != RetentionDays30 {
+		t.Fatalf("discard_now → days_30 = %q, %v", got.Retention, err)
+	}
+}
+
+// The ingest ratchet leaves a discarded memo's retention alone, and so does
+// this: there is no recording here that a person decided to keep.
+func TestRaiseRetentionRefusesADiscardedMemo(t *testing.T) {
+	s, ctx := newTestStore(t)
+	memoID := seedTriageable(t, s, ctx, holdHash("c1"))
+	if _, err := s.AdvanceMemoState(ctx, memoID, StateTranscribed, StateDiscarded, "discarded at triage"); err != nil {
+		t.Fatalf("AdvanceMemoState: %v", err)
+	}
+	if _, err := s.RaiseRetention(ctx, memoID, RetentionForever); !errors.Is(err, ErrMemoDiscarded) {
+		t.Fatalf("err = %v, want ErrMemoDiscarded", err)
 	}
 }

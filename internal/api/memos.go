@@ -90,6 +90,9 @@ type Memos interface {
 	GetMemo(ctx context.Context, id uuid.UUID) (store.Memo, error)
 	GetTranscript(ctx context.Context, memoID uuid.UUID) (store.Transcript, error)
 	RetentionStatus(ctx context.Context, memoID uuid.UUID, window time.Duration) (string, *time.Time, error)
+
+	// CHRN-128: the one write in this file, and it only ever raises.
+	RaiseRetention(ctx context.Context, memoID uuid.UUID, to string) (store.Memo, error)
 }
 
 // memoTimeout bounds the three reads an entry costs. The wiki's own budget,
@@ -392,6 +395,77 @@ func (a *api) readableMemo(w http.ResponseWriter, r *http.Request, ctx context.C
 		return store.Memo{}, false
 	}
 	return m, true
+}
+
+// ── keeping the recording ───────────────────────────────────────────────────
+
+// RaiseMemoRetention is the pin: it moves a memo's retention up, and never
+// down (CHRN-128).
+//
+// The order is this file's order — authorization, then retention — with the
+// body decoded first because a malformed request is refused whoever sent it
+// and reveals nothing about any memo. readableMemo then answers a stranger
+// exactly as it answers a nonexistent id, BEFORE anything about the memo's
+// retention is read, so no refusal below can describe another account's
+// recording.
+//
+// The rules themselves are store.RaiseRetention's, in one conditioned UPDATE;
+// this only gives each of its refusals a status and a sentence.
+func (a *api) RaiseMemoRetention(w http.ResponseWriter, r *http.Request, memoID wire.MemoId) {
+	if a.memosUnavailable(w) {
+		return
+	}
+	var req wire.RaiseRetentionRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	// The generated binder checks types, not enums.
+	if !req.Retention.Valid() {
+		writeError(w, http.StatusBadRequest, codeInvalidBody,
+			"retention must be one of discard_now, days_30, forever")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), memoTimeout)
+	defer cancel()
+
+	if _, ok := a.readableMemo(w, r, ctx, memoID); !ok {
+		return
+	}
+
+	m, err := a.memos.RaiseRetention(ctx, memoID, string(req.Retention))
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, codeNotFound, "no such memo")
+		return
+	case errors.Is(err, store.ErrAudioPruned):
+		writeError(w, http.StatusGone, codeAudioPruned,
+			"this recording was already deleted by policy, so there is nothing left to keep; the transcript remains")
+		return
+	case errors.Is(err, store.ErrRetentionLowered):
+		writeError(w, http.StatusConflict, codeRetentionLowered,
+			"retention can be raised and never lowered here: this memo is already kept for longer than that")
+		return
+	case errors.Is(err, store.ErrMemoDiscarded):
+		writeError(w, http.StatusConflict, codeMemoDiscarded,
+			"this memo was discarded at triage, so there is no recording to keep")
+		return
+	case err != nil:
+		a.serverError(w, r, "raise retention", err)
+		return
+	}
+
+	status, at, err := a.memos.RetentionStatus(ctx, memoID, audio.ProjectionWindow)
+	if err != nil {
+		a.serverError(w, r, "retention status", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, wire.RetentionState{
+		MemoId:          m.ID,
+		Retention:       wire.RetentionStateRetention(m.Retention),
+		RetentionStatus: status,
+		PrunesAt:        prunesAtFor(status, at),
+	})
 }
 
 // ── the recording ───────────────────────────────────────────────────────────

@@ -74,6 +74,7 @@ lib/model/participant_request.dart
 lib/model/proposal.dart
 lib/model/provenance_list.dart
 lib/model/provenance_transcript.dart
+lib/model/raise_retention_request.dart
 lib/model/readiness.dart
 lib/model/reconciliation_report.dart
 lib/model/reference_descriptor.dart
@@ -85,6 +86,7 @@ lib/model/resolve_request.dart
 lib/model/resolve_response.dart
 lib/model/resolved_note.dart
 lib/model/resolved_state.dart
+lib/model/retention_state.dart
 lib/model/revision.dart
 lib/model/revision_list.dart
 lib/model/revision_meta.dart

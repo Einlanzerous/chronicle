@@ -256,6 +256,27 @@ func (e ProposalVerb) Valid() bool {
 	}
 }
 
+// Defines values for RaiseRetentionRequestRetention.
+const (
+	RaiseRetentionRequestRetentionDays30     RaiseRetentionRequestRetention = "days_30"
+	RaiseRetentionRequestRetentionDiscardNow RaiseRetentionRequestRetention = "discard_now"
+	RaiseRetentionRequestRetentionForever    RaiseRetentionRequestRetention = "forever"
+)
+
+// Valid indicates whether the value is a known member of the RaiseRetentionRequestRetention enum.
+func (e RaiseRetentionRequestRetention) Valid() bool {
+	switch e {
+	case RaiseRetentionRequestRetentionDays30:
+		return true
+	case RaiseRetentionRequestRetentionDiscardNow:
+		return true
+	case RaiseRetentionRequestRetentionForever:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ReadinessStatus.
 const (
 	Ready   ReadinessStatus = "ready"
@@ -355,6 +376,27 @@ func (e ResolveDiscussionRequestInto) Valid() bool {
 	case NewNote:
 		return true
 	case Nothing:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RetentionStateRetention.
+const (
+	RetentionStateRetentionDays30     RetentionStateRetention = "days_30"
+	RetentionStateRetentionDiscardNow RetentionStateRetention = "discard_now"
+	RetentionStateRetentionForever    RetentionStateRetention = "forever"
+)
+
+// Valid indicates whether the value is a known member of the RetentionStateRetention enum.
+func (e RetentionStateRetention) Valid() bool {
+	switch e {
+	case RetentionStateRetentionDays30:
+		return true
+	case RetentionStateRetentionDiscardNow:
+		return true
+	case RetentionStateRetentionForever:
 		return true
 	default:
 		return false
@@ -1492,6 +1534,21 @@ type ProvenanceTranscript struct {
 	TranscribedAt *time.Time `json:"transcribed_at,omitempty"`
 }
 
+// RaiseRetentionRequest defines model for RaiseRetentionRequest.
+type RaiseRetentionRequest struct {
+	// Retention The level to raise the memo to. `forever` is the pin. All three
+	// levels are accepted so that a request to LOWER is recognised and
+	// refused `409` with its reason, rather than bounced as a malformed
+	// body that never says why.
+	Retention RaiseRetentionRequestRetention `json:"retention"`
+}
+
+// RaiseRetentionRequestRetention The level to raise the memo to. `forever` is the pin. All three
+// levels are accepted so that a request to LOWER is recognised and
+// refused `409` with its reason, rather than bounced as a malformed
+// body that never says why.
+type RaiseRetentionRequestRetention string
+
 // Readiness defines model for Readiness.
 type Readiness struct {
 	// Check Which dependency failed. Present only on `unready`, and naming the
@@ -1770,6 +1827,27 @@ type ResolvedState struct {
 	// Note `CHR-0311` — the note it produced. Absent when the thread ended without one, and settable later by resolving again.
 	Note *string `json:"note,omitempty"`
 }
+
+// RetentionState What `raiseMemoRetention` left behind — the same three facts
+// `MemoProvenance` carries, computed by the same `store.RetentionStatus`,
+// so a client can redraw `PRUNES <date>` as `PINNED — KEPT` from this
+// answer without a second read.
+type RetentionState struct {
+	MemoId openapi_types.UUID `json:"memo_id"`
+
+	// PrunesAt `MemoProvenance.prunes_at`: null on every status but `scheduled`.
+	PrunesAt  *time.Time              `json:"prunes_at"`
+	Retention RetentionStateRetention `json:"retention"`
+
+	// RetentionStatus One of `MemoProvenance.retention_status`'s five values, from the
+	// same `store.RetentionStatus`. Declared as a string and not as a
+	// second copy of that enum, on `Memo.retention_status`'s precedent:
+	// one list to keep in step, in the one place a client renders from.
+	RetentionStatus string `json:"retention_status"`
+}
+
+// RetentionStateRetention defines model for RetentionState.Retention.
+type RetentionStateRetention string
 
 // Revision A revision with its text — history is what was written, raw.
 type Revision struct {
@@ -2483,6 +2561,9 @@ type ListDeferredParams struct {
 // CreateUserJSONRequestBody defines body for CreateUser for application/json ContentType.
 type CreateUserJSONRequestBody = NewUserRequest
 
+// RaiseMemoRetentionJSONRequestBody defines body for RaiseMemoRetention for application/json ContentType.
+type RaiseMemoRetentionJSONRequestBody = RaiseRetentionRequest
+
 // UpdateMeJSONRequestBody defines body for UpdateMe for application/json ContentType.
 type UpdateMeJSONRequestBody = UpdateMeRequest
 
@@ -2616,6 +2697,9 @@ type ServerInterface interface {
 	// GetMemoAudio The recording itself, while it still exists.
 	// (GET /audio/{memo_id})
 	GetMemoAudio(w http.ResponseWriter, r *http.Request, memoId MemoId, params GetMemoAudioParams)
+	// RaiseMemoRetention Keep a recording that would otherwise be pruned — raise its retention.
+	// (PUT /audio/{memo_id}/retention)
+	RaiseMemoRetention(w http.ResponseWriter, r *http.Request, memoId MemoId)
 	// CreateSelfInvite Mint an invite for another of your own devices.
 	// (POST /auth/invite)
 	CreateSelfInvite(w http.ResponseWriter, r *http.Request)
@@ -2935,6 +3019,32 @@ func (siw *ServerInterfaceWrapper) GetMemoAudio(w http.ResponseWriter, r *http.R
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetMemoAudio(w, r, memoId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RaiseMemoRetention operation middleware
+func (siw *ServerInterfaceWrapper) RaiseMemoRetention(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "memo_id" -------------
+	var memoId MemoId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "memo_id", r.PathValue("memo_id"), &memoId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "memo_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RaiseMemoRetention(w, r, memoId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4164,6 +4274,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/memos/uploads/{id}", wrapper.AppendChunk)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/transcripts/{memo_id}", wrapper.GetMemoTranscript)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/audio/{memo_id}", wrapper.GetMemoAudio)
+	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/audio/{memo_id}/retention", wrapper.RaiseMemoRetention)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/triage/batch", wrapper.GetTriageBatch)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/triage/accept", wrapper.AcceptTriage)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/triage/hold", wrapper.HoldMemo)

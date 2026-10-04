@@ -111,6 +111,13 @@ const (
 	// tell a client the absence is expected, and it is not.
 	codeAudioMissing = "audio_missing"
 
+	// codeRetentionLowered and codeMemoDiscarded are raiseMemoRetention's two
+	// 409s (CHRN-128): the level asked for is below the current one, or there
+	// is no kept recording to speak of. A pruned memo answers codeAudioPruned,
+	// the same fact getMemoAudio reports.
+	codeRetentionLowered = "retention_lowered"
+	codeMemoDiscarded    = "memo_discarded"
+
 	// codeNoTranscript is a readable memo with no transcript row yet. Distinct
 	// from not_found because the remedy is WAIT rather than "you have the
 	// wrong id".
