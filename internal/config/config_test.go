@@ -603,9 +603,27 @@ func TestLoadScribeSwitchyardPublicURL(t *testing.T) {
 		})
 	}
 
-	// A link base with no tracker reads as configured and does nothing.
-	t.Run("refused without the URL and token pair", func(t *testing.T) {
+	// NOT REFUSED WITHOUT THE PAIR. In production the pair is empty by design
+	// whenever the token is undelivered, and a link base that makes no request
+	// must not be what stops Chronicle booting in that state. `serve` warns.
+	t.Run("without the URL and token pair it loads, and the tracker stays unconfigured", func(t *testing.T) {
+		t.Setenv("CHRONICLE_SWITCHYARD_URL", "")
+		t.Setenv("CHRONICLE_SWITCHYARD_TOKEN", "")
 		t.Setenv("CHRONICLE_SWITCHYARD_PUBLIC_URL", "https://switchyard.example.test")
+		s, err := LoadScribe()
+		if err != nil {
+			t.Fatalf("LoadScribe refused a link base with no tracker: %v", err)
+		}
+		if s.CatalogueConfigured() {
+			t.Fatal("a link base alone made the tracker read as configured")
+		}
+	})
+
+	// Malformed is wrong in every environment, pair or no pair.
+	t.Run("a malformed value is refused even without the pair", func(t *testing.T) {
+		t.Setenv("CHRONICLE_SWITCHYARD_URL", "")
+		t.Setenv("CHRONICLE_SWITCHYARD_TOKEN", "")
+		t.Setenv("CHRONICLE_SWITCHYARD_PUBLIC_URL", "https://switchyard.example.test?x=1")
 		_, err := LoadScribe()
 		if err == nil || !strings.Contains(err.Error(), "CHRONICLE_SWITCHYARD_PUBLIC_URL") {
 			t.Fatalf("err = %v, want a refusal naming the variable", err)

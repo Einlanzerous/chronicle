@@ -609,6 +609,13 @@ func runServe(args []string) error {
 		} else {
 			logger.Info("ticket links point at the public tracker address", "links", cfg.SwitchyardPublicURL)
 		}
+	} else if cfg.SwitchyardPublicURL != "" {
+		// Ignored rather than refused — see Scribe.SwitchyardPublicURL. Said
+		// here because a setting that reads as configured and does nothing is
+		// otherwise reported by nobody.
+		logger.Warn("CHRONICLE_SWITCHYARD_PUBLIC_URL is set but the tracker is not configured, so it is ignored",
+			"links", cfg.SwitchyardPublicURL,
+			"remedy", "set CHRONICLE_SWITCHYARD_URL and CHRONICLE_SWITCHYARD_TOKEN, or unset it")
 	}
 	if cfg.ScribeEnabled() && cfg.SwitchyardConfigured() {
 		proposer, err := scribe.Proposer("ollama", cfg.ScribeModel, prompt.Version)

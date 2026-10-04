@@ -634,10 +634,17 @@ type Scribe struct {
 	//
 	// Optional. Empty falls back to SwitchyardURL, which is right on a dev box
 	// where both are localhost and is what every deployment did before this
-	// existed. It carries no credential and makes no request, so it is not
-	// part of the both-or-neither pair — but it is refused WITHOUT the pair,
-	// because a link base for a tracker Chronicle cannot reach is a setting
-	// that reads as configured and does nothing.
+	// existed.
+	//
+	// SET WITHOUT THE PAIR, IT IS IGNORED AND SAID SO AT BOOT — NOT REFUSED.
+	// It carries no credential and makes no request, so it cannot make a
+	// half-configured tracker; and in production the pair is empty BY DESIGN
+	// whenever the token has not been delivered (construct-server derives the
+	// URL from the token's presence so that an undelivered token means
+	// "unconfigured", never "refuses to boot"). Refusing here would let a
+	// cosmetic setting turn that same undelivered token into a Chronicle that
+	// does not start, for every subcommand that loads config. `serve` warns
+	// instead. A MALFORMED value is still refused: that is wrong everywhere.
 	SwitchyardPublicURL string
 }
 
@@ -733,10 +740,6 @@ func LoadScribe() (Scribe, error) {
 		}
 		if u.Fragment != "" {
 			return s, fmt.Errorf("config: CHRONICLE_SWITCHYARD_PUBLIC_URL %q must not carry a fragment", s.SwitchyardPublicURL)
-		}
-		if s.SwitchyardURL == "" {
-			return s, fmt.Errorf("config: CHRONICLE_SWITCHYARD_PUBLIC_URL is set but CHRONICLE_SWITCHYARD_URL and " +
-				"CHRONICLE_SWITCHYARD_TOKEN are not — a link base for a tracker Chronicle cannot reach does nothing")
 		}
 	}
 	return s, nil
