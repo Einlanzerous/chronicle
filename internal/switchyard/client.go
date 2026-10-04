@@ -66,10 +66,49 @@ type Client struct {
 	base  *url.URL
 	token string
 	http  *http.Client
+
+	// links is where a PERSON reaches Switchyard, and it is not base.
+	//
+	// base is where this process sends requests — in production the compose
+	// network's `http://switchyard:4002`, which resolves nowhere a browser
+	// runs. A deep link built from it is a link nobody can open, and CHRN-140
+	// is the first person clicking one. So the two are separate values, and
+	// links defaults to base only because on a dev box they are the same
+	// address. Nothing that makes a request reads this field.
+	links *url.URL
+}
+
+// Option adjusts a Client at construction.
+type Option func(*Client) error
+
+// WithLinkBase sets the address deep links are built from: the one a person
+// signs in at. An empty value leaves links on the API base.
+//
+// Validated exactly as the API base is, for the same reason — TicketURL
+// concatenates a path onto it, so a query or a fragment would swallow the path.
+func WithLinkBase(raw string) Option {
+	return func(c *Client) error {
+		raw = strings.TrimRight(strings.TrimSpace(raw), "/")
+		if raw == "" {
+			return nil
+		}
+		u, err := url.Parse(raw)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			return fmt.Errorf("switchyard: CHRONICLE_SWITCHYARD_PUBLIC_URL %q is not an absolute http(s) URL", raw)
+		}
+		if u.RawQuery != "" || u.ForceQuery {
+			return fmt.Errorf("switchyard: CHRONICLE_SWITCHYARD_PUBLIC_URL %q must not carry a query string", raw)
+		}
+		if u.Fragment != "" {
+			return fmt.Errorf("switchyard: CHRONICLE_SWITCHYARD_PUBLIC_URL %q must not carry a fragment", raw)
+		}
+		c.links = u
+		return nil
+	}
 }
 
 // New validates the configuration without calling anything.
-func New(baseURL, token string) (*Client, error) {
+func New(baseURL, token string, opts ...Option) (*Client, error) {
 	if strings.TrimSpace(baseURL) == "" {
 		return nil, fmt.Errorf("switchyard: CHRONICLE_SWITCHYARD_URL is not set")
 	}
@@ -92,10 +131,17 @@ func New(baseURL, token string) (*Client, error) {
 	if strings.TrimSpace(token) == "" {
 		return nil, fmt.Errorf("switchyard: CHRONICLE_SWITCHYARD_TOKEN is not set — every /v1 route answers 401 without it")
 	}
-	return &Client{base: u, token: token, http: &http.Client{Timeout: DefaultTimeout}}, nil
+	c := &Client{base: u, links: u, token: token, http: &http.Client{Timeout: DefaultTimeout}}
+	for _, opt := range opts {
+		if err := opt(c); err != nil {
+			return nil, err
+		}
+	}
+	return c, nil
 }
 
-// BaseURL is where this client points, for building a link back.
+// BaseURL is where this client sends requests. NOT for building a link a
+// person follows — that is TicketURL, which reads the link base.
 func (c *Client) BaseURL() string { return c.base.String() }
 
 // do sends one request and decodes the body into out.

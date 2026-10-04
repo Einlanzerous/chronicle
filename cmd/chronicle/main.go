@@ -594,9 +594,20 @@ func runServe(args []string) error {
 	// resolve.NewSwitchyard takes a client rather than a URL and a token.
 	var sw *switchyard.Client
 	if cfg.SwitchyardConfigured() {
-		sw, err = switchyard.New(cfg.SwitchyardURL, cfg.SwitchyardToken)
+		sw, err = switchyard.New(cfg.SwitchyardURL, cfg.SwitchyardToken,
+			switchyard.WithLinkBase(cfg.SwitchyardPublicURL))
 		if err != nil {
 			return err
+		}
+		// SAID AT BOOT, because the failure is otherwise silent (CHRN-140): a
+		// link built from the API address renders perfectly and opens nowhere,
+		// and nothing reports it until a person clicks one.
+		if cfg.SwitchyardPublicURL == "" {
+			logger.Warn("ticket links will be built from the API address, which a browser may not reach",
+				"links", cfg.SwitchyardURL,
+				"remedy", "set CHRONICLE_SWITCHYARD_PUBLIC_URL to the address a person signs in at")
+		} else {
+			logger.Info("ticket links point at the public tracker address", "links", cfg.SwitchyardPublicURL)
 		}
 	}
 	if cfg.ScribeEnabled() && cfg.SwitchyardConfigured() {

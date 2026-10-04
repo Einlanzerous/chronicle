@@ -557,6 +557,62 @@ func TestLoadScribeSwitchyardURLRejectsQueryAndFragment(t *testing.T) {
 	})
 }
 
+// CHRN-140: the link base is its own variable, optional, and validated like the
+// API base because the client concatenates a path onto it the same way.
+func TestLoadScribeSwitchyardPublicURL(t *testing.T) {
+	t.Run("unset is fine and stays empty", func(t *testing.T) {
+		t.Setenv("CHRONICLE_SWITCHYARD_URL", "http://switchyard:4002")
+		t.Setenv("CHRONICLE_SWITCHYARD_TOKEN", "a-perfectly-good-token")
+		s, err := LoadScribe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.SwitchyardPublicURL != "" {
+			t.Fatalf("SwitchyardPublicURL = %q, want empty", s.SwitchyardPublicURL)
+		}
+	})
+
+	t.Run("set, it is carried and trimmed", func(t *testing.T) {
+		t.Setenv("CHRONICLE_SWITCHYARD_URL", "http://switchyard:4002")
+		t.Setenv("CHRONICLE_SWITCHYARD_TOKEN", "a-perfectly-good-token")
+		t.Setenv("CHRONICLE_SWITCHYARD_PUBLIC_URL", " https://switchyard.example.test/ ")
+		s, err := LoadScribe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.SwitchyardPublicURL != "https://switchyard.example.test" {
+			t.Fatalf("SwitchyardPublicURL = %q", s.SwitchyardPublicURL)
+		}
+		// And the API base is untouched by it.
+		if s.SwitchyardURL != "http://switchyard:4002" {
+			t.Fatalf("SwitchyardURL = %q", s.SwitchyardURL)
+		}
+	})
+
+	for _, bad := range []string{
+		"switchyard.example.test", "https://switchyard.example.test?x=1", "https://switchyard.example.test#frag",
+	} {
+		t.Run("refused: "+bad, func(t *testing.T) {
+			t.Setenv("CHRONICLE_SWITCHYARD_URL", "http://switchyard:4002")
+			t.Setenv("CHRONICLE_SWITCHYARD_TOKEN", "a-perfectly-good-token")
+			t.Setenv("CHRONICLE_SWITCHYARD_PUBLIC_URL", bad)
+			_, err := LoadScribe()
+			if err == nil || !strings.Contains(err.Error(), "CHRONICLE_SWITCHYARD_PUBLIC_URL") {
+				t.Fatalf("err = %v, want a refusal naming the variable", err)
+			}
+		})
+	}
+
+	// A link base with no tracker reads as configured and does nothing.
+	t.Run("refused without the URL and token pair", func(t *testing.T) {
+		t.Setenv("CHRONICLE_SWITCHYARD_PUBLIC_URL", "https://switchyard.example.test")
+		_, err := LoadScribe()
+		if err == nil || !strings.Contains(err.Error(), "CHRONICLE_SWITCHYARD_PUBLIC_URL") {
+			t.Fatalf("err = %v, want a refusal naming the variable", err)
+		}
+	})
+}
+
 // CHRN-100: the tier-1 corpus mount. Absolute or nothing, like the audio
 // root. Unset is accepted HERE — Load has no opinion about which subcommand
 // is running — and refused by serve, which is where the refusal has a

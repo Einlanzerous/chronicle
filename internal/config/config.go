@@ -231,6 +231,11 @@ type Config struct {
 	SwitchyardURL   string
 	SwitchyardToken string
 
+	// SwitchyardPublicURL is where a PERSON reaches the tracker, for the deep
+	// link on a filed ticket and on a reference card. Empty means links are
+	// built from SwitchyardURL. See Scribe.SwitchyardPublicURL.
+	SwitchyardPublicURL string
+
 	// AmberURL and AmberToken reach the estate's capture archive, and have one
 	// consumer: internal/amber, the transport that turns an `amber1.…` citation
 	// in a note into live upstream state (CHRN-50). Nothing else in Chronicle
@@ -440,6 +445,7 @@ func Load() (Config, error) {
 	c.ScribeOllamaURL, c.ScribeModel = sc.OllamaURL, sc.Model
 	c.ScribePreacceptMin, c.ScribeMaxAttempts = sc.PreacceptMin, sc.MaxAttempts
 	c.SwitchyardURL, c.SwitchyardToken = sc.SwitchyardURL, sc.SwitchyardToken
+	c.SwitchyardPublicURL = sc.SwitchyardPublicURL
 
 	// CHRN-50 — the capture archive. Loaded HERE and not in LoadScribe: the
 	// routing half is deliberately loadable with no database and no estate at
@@ -617,6 +623,22 @@ type Scribe struct {
 	// copies them up, because `serve` needs them and does have one.
 	SwitchyardURL   string
 	SwitchyardToken string
+
+	// SwitchyardPublicURL is the base of every deep link Chronicle hands a
+	// person: CHRONICLE_SWITCHYARD_PUBLIC_URL (CHRN-140).
+	//
+	// SEPARATE FROM SwitchyardURL BECAUSE THEY ARE DIFFERENT ADDRESSES in any
+	// real deployment. SwitchyardURL is where this process sends requests —
+	// `http://switchyard:4002` on the compose network — and a link built from
+	// it opens nowhere. This is the address a person signs in at.
+	//
+	// Optional. Empty falls back to SwitchyardURL, which is right on a dev box
+	// where both are localhost and is what every deployment did before this
+	// existed. It carries no credential and makes no request, so it is not
+	// part of the both-or-neither pair — but it is refused WITHOUT the pair,
+	// because a link base for a tracker Chronicle cannot reach is a setting
+	// that reads as configured and does nothing.
+	SwitchyardPublicURL string
 }
 
 // CatalogueConfigured reports whether the live project list can be read. Same
@@ -696,6 +718,26 @@ func LoadScribe() (Scribe, error) {
 	}
 	if (s.SwitchyardURL == "") != (s.SwitchyardToken == "") {
 		return s, fmt.Errorf("config: set both CHRONICLE_SWITCHYARD_URL and CHRONICLE_SWITCHYARD_TOKEN, or neither")
+	}
+
+	// CHRN-140. The same three malformations as the API base, refused for the
+	// same reason: the client concatenates "/tickets/KEY" onto it.
+	s.SwitchyardPublicURL = strings.TrimRight(strings.TrimSpace(os.Getenv("CHRONICLE_SWITCHYARD_PUBLIC_URL")), "/")
+	if s.SwitchyardPublicURL != "" {
+		u, err := url.Parse(s.SwitchyardPublicURL)
+		if err != nil || !u.IsAbs() || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			return s, fmt.Errorf("config: CHRONICLE_SWITCHYARD_PUBLIC_URL %q is not an absolute http(s) URL", s.SwitchyardPublicURL)
+		}
+		if u.RawQuery != "" || u.ForceQuery {
+			return s, fmt.Errorf("config: CHRONICLE_SWITCHYARD_PUBLIC_URL %q must not carry a query string", s.SwitchyardPublicURL)
+		}
+		if u.Fragment != "" {
+			return s, fmt.Errorf("config: CHRONICLE_SWITCHYARD_PUBLIC_URL %q must not carry a fragment", s.SwitchyardPublicURL)
+		}
+		if s.SwitchyardURL == "" {
+			return s, fmt.Errorf("config: CHRONICLE_SWITCHYARD_PUBLIC_URL is set but CHRONICLE_SWITCHYARD_URL and " +
+				"CHRONICLE_SWITCHYARD_TOKEN are not — a link base for a tracker Chronicle cannot reach does nothing")
+		}
 	}
 	return s, nil
 }
