@@ -74,7 +74,11 @@ class _TriageScreenState extends ConsumerState<TriageScreen> {
     _ctl = ref.read(triageControllerProvider.notifier);
     // After the first frame: a provider may not be written during build.
     Future.microtask(_ctl.load);
-    _ticker = Timer.periodic(const Duration(seconds: 15), (_) => unawaited(_ctl.flushDiscards(all: false)));
+    _ticker = Timer.periodic(const Duration(seconds: 15), (_) {
+      unawaited(_ctl.flushDiscards(all: false));
+      // The undo countdown reads the clock, so it is redrawn as time passes.
+      if (mounted) setState(() {});
+    });
   }
 
   @override
@@ -146,19 +150,22 @@ class _TriageScreenState extends ConsumerState<TriageScreen> {
                 height: 52,
                 child: FilledButton(
                   key: const ValueKey('file'),
-                  onPressed: plan.file + plan.discard == 0 ? null : _ctl.fileAll,
+                  onPressed: plan.file + plan.retry + plan.discard == 0 ? null : _ctl.fileAll,
                   style: FilledButton.styleFrom(
                     backgroundColor: chSignal,
                     foregroundColor: chBase,
                     shape: const RoundedRectangleBorder(),
                   ),
-                  child: Text(
-                    fileLabel(plan.file, plan.discard),
-                    style: const TextStyle(
-                      fontFamily: fontMono,
-                      fontSize: 11.5,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: 1.5,
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      fileLabel(plan.file, plan.discard, retry: plan.retry, refused: plan.refused),
+                      style: const TextStyle(
+                        fontFamily: fontMono,
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 1.5,
+                      ),
                     ),
                   ),
                 ),
@@ -335,7 +342,8 @@ class _RowCard extends ConsumerWidget {
             _textAction('RELEASE', 'release', () => ctl.release(id)),
           ],
           if (local is Discarding) ...[
-            _stateLine('DISCARDED · UNDO ${undoMinutesLeft(local.due, now)} MIN'),
+            // Not sent yet, so it WILL discard; `DISCARDED` is for the server's `applied`.
+            _stateLine('DISCARDS IN ${undoMinutesLeft(local.due, now)} MIN'),
             _textAction('UNDO', 'undo', () => ctl.undoDiscard(id)),
           ],
           if (local is Discarded) _stateLine('DISCARDED'),
@@ -370,7 +378,6 @@ class _RowCard extends ConsumerWidget {
 
   /// The mono line under the lanes: where the pick goes, or what it still needs.
   String? _detail(String? pick, gen.Proposal? p, String? missing) {
-    if (missing != null) return 'NEEDS INPUT · $missing TAP THE TITLE TO ADD IT';
     if (pick == null) return row.item.error ?? 'NO PROPOSAL · TAP THE TITLE TO ADD DETAIL';
     final d = row.draft;
     final mine = d != null;
@@ -381,15 +388,16 @@ class _RowCard extends ConsumerWidget {
         final type = mine ? d.ticketType : (p?.ticketType ?? 'task');
         where = '→ ${key.isEmpty ? 'no project' : key} · $type';
       case 'NOTE':
-        final path = mine ? d.pagePath : (p?.pagePath ?? p?.nearestPage ?? '');
+        final path = mine ? d.pagePath : (p?.pagePath ?? '');
         final verb = mine ? d.verb : (p?.verb?.value ?? 'create');
         where = '→ ${path.isEmpty ? 'no page' : path.split('/').join(' / ')}${verb == 'create' ? '' : ' · $verb'}';
       default:
         where = '→ open question';
     }
-    if (mine) return '$where · YOUR CHOICE';
-    if (row.item.preAcceptable || row.confirmed) return where;
-    return '$where · LOW CONFIDENCE · TAP THE LANE TO CONFIRM';
+    final line = mine ? '$where · YOUR CHOICE' : where;
+    // Where it would go, then what it still needs: `→ no project · task` is the
+    // fact, and the second line is why FILE is not taking the row.
+    return missing == null ? line : '$line\nNEEDS INPUT · $missing TAP THE TITLE TO ADD IT';
   }
 
   Widget _stateLine(String text) => Padding(
@@ -425,6 +433,8 @@ class _RowCard extends ConsumerWidget {
           Text(label, style: microLabel(color: chText, size: sizeXxs)),
           const SizedBox(height: 3),
           Text(p.reason, style: const TextStyle(fontSize: sizeBody, color: chText2)),
+          if (p.raw != null)
+            Text('TAP THE TITLE FOR THE SERVER\'S OWN WORDS', style: microLabel(color: chTextDim, size: sizeXxs)),
         ],
       ),
     );
@@ -756,6 +766,18 @@ class _ConfirmSheet extends StatelessWidget {
             const SizedBox(height: space2),
             Text(item.excerpt, key: ValueKey('confirm-excerpt-$id'), style: const TextStyle(fontSize: sizeMd, color: chText)),
             if (p != null) _ProposalBlock(item: item, proposal: p),
+            if (row.local case Problem(:final raw?))
+              Padding(
+                padding: const EdgeInsets.only(top: space2),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('WHAT THE SERVER SAID', style: microLabel(size: sizeXxs)),
+                    const SizedBox(height: 3),
+                    SelectableText(raw, key: ValueKey('confirm-raw-$id'), style: monoMeta(size: sizeXxs + 0.5)),
+                  ],
+                ),
+              ),
             if (editsExistingNote(p))
               Padding(
                 padding: const EdgeInsets.only(top: space1),

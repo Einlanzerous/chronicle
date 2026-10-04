@@ -39,7 +39,7 @@ CI pins the same two versions (`.github/workflows/mobile.yml`).
 ```sh
 flutter pub get
 flutter analyze          # the lint gate -- run AFTER the last edit, not before
-flutter test             # 420 tests, no hardware
+flutter test             # 434 tests, no hardware
 flutter build apk --debug
 ```
 
@@ -190,7 +190,7 @@ thing that has ever cleared a dead token here.
 
 ### Verification status
 
-`flutter analyze`, `flutter test` (420 tests, including a faithful in-Dart
+`flutter analyze`, `flutter test` (434 tests, including a faithful in-Dart
 fake Chronicle server, a kill harness over every I/O boundary of a
 multi-chunk upload, and a genuine two-engine race) and `flutter build apk
 --debug` are all green — see the commits on `chrn-61-durable-upload-queue`.
@@ -325,30 +325,50 @@ of the web's rows and was reworked to the board.
   destination needs that the proposal did not carry (a note's page, a ticket's
   project key) is left blank: the row says `NEEDS INPUT · ...` and FILE leaves
   it alone until the row's own tap supplies it. Nothing is guessed.
-- **A proposal the server is not confident about is not filed blind.**
-  `pre_acceptable` is a hint for the default, never a licence; such a row says
-  `LOW CONFIDENCE · TAP THE LANE TO CONFIRM` and joins FILE when its picked
-  lane is tapped.
+- **FILE counts every row with a complete proposal** (CHRN-137). The server's
+  `pre_acceptable` is a hint for a default, not a gate: on real data none of a
+  day's proposals cleared it, and a gate nothing passes turns "zero taps per
+  memo" into one tap per memo. What keeps a row out is a proposal the server
+  would refuse -- a ticket with no project (`→ no project · spike`), a note with
+  no page (`→ no page`), an append with no target -- and the row says which
+  field under its lane line, `NEEDS INPUT · A ticket needs a project key.`,
+  until a lane tap or the editor supplies it.
 - **Tapping a row's title** opens the single-memo confirm: the whole transcript,
   the proposal in full, and `ACCEPT AS SHOWN` -- which sends that memo on its
   own, now, and is the only path that carries the per-item `confirm_edit` an
   append or supersede costs -- plus EDIT (title, project, page, text), HOLD and
   DISCARD. Neither FILE nor the header's `ACCEPT ALL` ever sets `confirm_edit`.
-- **`ACCEPT ALL` (header)** commits the untouched pre-filled set exactly as it
-  did before the rework; **FILE** commits the lanes as they stand (that set,
-  plus confirmed, overridden and discarded rows). Whether the header action
-  should instead reset every row to the Scribe's pick is an open question: the
-  canvas draws both and does not say.
+- **`ACCEPT ALL` (header)** files only the Scribe's own picks, as shown: complete
+  proposals nobody has touched. **FILE** is that set plus what the person
+  changed or decided -- overrides, and discards. So the header is the safe
+  subset: it can never send a discard or something the person edited. (Since
+  CHRN-137 stopped gating FILE on `pre_acceptable` the two cover the same
+  untouched rows; the header is the one-tap "just the Scribe's picks".)
 - **A failed item stays visibly pending.** Only `applied` takes a row out of the
   batch; `failed`, `refused`, `stale` and `needs_input` each leave it in place
-  under `... · STILL PENDING` with the server's reason. There is no per-row
-  RETRY: a failed row is still counted in FILE, which is the retry. A refused
-  row waits for a changed decision. A network failure says to retry (a replay
+  under `... · STILL PENDING`. There is no per-row RETRY: a failed row is still
+  counted in FILE, which is the retry (`RETRY 2` on the button). A refused row
+  waits for a changed decision. A network failure says to retry (a replay
   answers `applied` from the recorded decision).
-- **A discard is held back, not recalled.** `discarded` is terminal on the
-  server, so `UNDO 10 MIN` means the request is not sent until the window
-  closes, the screen is left or the next batch loads. Kill the app inside the
-  window and the memo is simply still waiting.
+- **A reason is a sentence, not upstream JSON.** The server relays what Switchyard
+  said, so a reason can be `switchyard: POST /v1/tickets: Forbidden: {"error":
+  ...}`. The row shows a sentence (`Chronicle's Switchyard token is not allowed
+  to do this (it needs tickets:write and holds tickets:read).`) -- forbidden or
+  scope, unreachable, not configured, a generic one for anything else that looks
+  like upstream text -- and the raw text is behind the row's tap
+  (`WHAT THE SERVER SAID`). **The pinned button never says `NOTHING TO FILE`
+  while a row is refused or failed**: it reports them (`FILE 2 · RETRY 1 · 1
+  REFUSED`).
+- **A discard is held back, not recalled, and says so.** `discarded` is terminal
+  on the server, so the request is not sent until the 10-minute window closes,
+  the screen is left or the next batch loads. Until the server answers `applied`
+  the row reads `DISCARDS IN 9 MIN` with an `UNDO`; `DISCARDED` is only for a
+  discard the server confirmed. A send that fails (the network, a refusal) when
+  the window closes or on leaving the screen leaves the row `FAILED · STILL
+  PENDING`, still a discard, and filing again sends it now. The controller
+  outlives the screen, so the failure is waiting when the screen is reopened.
+  Kill the app inside the window and the memo is simply still waiting on the
+  server.
 - **An accepted ticket is one tap from open.** The whole card is the tap; it
   opens the `ticket_url` the server answered with in the browser
   (`url_launcher`). The card carries the upstream's own state word and its age,
@@ -373,15 +393,21 @@ phone. On a debug build against a server with a few transcribed memos and the
 Scribe on:
 
 1. **Home -> Evening triage.** Expect the sub-line, one row per memo with the
-   Scribe's lane filled, and `FILE n · DISCARD m` pinned at the foot. Compare
-   against board 1b's B2.
-2. **FILE** once. Expect the rows to read `... CREATED` and a proposed discard
-   to read `DISCARDED · UNDO 10 MIN`.
+   Scribe's lane filled, and `FILE n · DISCARD m` pinned at the foot -- with n
+   counting every row whose proposal is complete, not zero. Rows that read
+   `→ no project` or `→ no page` are out of it and say what they need.
+2. **FILE** once. Expect the rows to read `... CREATED`, and a discard to read
+   `DISCARDS IN 10 MIN` with an UNDO -- never `DISCARDED` -- until the window
+   closes and the server answers.
 3. **A TICKET row:** tap the coral card. Expect the Switchyard ticket open in
    the browser, one tap from the row.
 4. **Failure:** with Wi-Fi and data off, FILE. Expect `FAILED · STILL PENDING`
-   under each row and the button still counting them; restore the network and
-   FILE again.
+   under each row and the button reading `RETRY n`; restore the network and
+   FILE again. Hold a discard offline past its window (or leave the screen):
+   expect it failed and pending, not `DISCARDED`.
+   **Refusal:** against a read-only Switchyard token, FILE a TICKET. Expect the
+   one-sentence refusal on the row, the raw JSON only behind the row's tap, and
+   the button reading `1 REFUSED`, not `NOTHING TO FILE`.
 5. **Override:** tap a different lane on a row. Expect `YOUR CHOICE`, and
    `NEEDS INPUT` if the destination wants something the proposal lacked; FILE
    it.

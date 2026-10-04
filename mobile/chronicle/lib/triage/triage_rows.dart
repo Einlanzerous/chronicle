@@ -67,9 +67,15 @@ class Discarded extends LocalState {
 }
 
 class Problem extends LocalState {
-  const Problem(this.status, this.reason);
+  const Problem(this.status, this.reason, {this.raw});
   final ProblemStatus status;
+
+  /// What the row says: a plain sentence, never an upstream's JSON.
   final String reason;
+
+  /// What the server actually said, when [reason] is a reading of it. Kept so
+  /// the technical text is reachable (behind the row's tap) and not lost.
+  final String? raw;
 }
 
 class TriageRow {
@@ -77,7 +83,6 @@ class TriageRow {
     required this.item,
     this.local = const Pending(),
     this.draft,
-    this.confirmed = false,
     this.notice,
   });
 
@@ -89,11 +94,6 @@ class TriageRow {
   /// land so the next FILE (or the editor) starts from it, not the proposal.
   final Draft? draft;
 
-  /// A proposal the server did not call confident, which the person has looked
-  /// at and confirmed as shown (a tap on its already-picked lane). The
-  /// confidence flag is a hint for the default, never a licence to file blind.
-  final bool confirmed;
-
   /// One line carried across a re-read -- "the proposal changed".
   final String? notice;
 
@@ -104,7 +104,6 @@ class TriageRow {
     LocalState? local,
     Draft? draft,
     bool clearDraft = false,
-    bool? confirmed,
     String? notice,
     bool clearNotice = false,
   }) =>
@@ -112,7 +111,6 @@ class TriageRow {
         item: item ?? this.item,
         local: local ?? this.local,
         draft: clearDraft ? null : (draft ?? this.draft),
-        confirmed: confirmed ?? this.confirmed,
         notice: clearNotice ? null : (notice ?? this.notice),
       );
 }
@@ -174,15 +172,39 @@ bool isWaiting(TriageRow row) {
   return l is! Accepted && l is! Held && l is! Discarding && l is! Discarded;
 }
 
-/// Whether ACCEPT ALL takes this row. `pre_acceptable` is the server's -- the
-/// one reader of the confidence threshold -- and this only adds "and nobody
-/// has touched it here". A row the server already answered about is never
-/// swept up again by a batch key.
+/// Whether the header's ACCEPT ALL takes this row: the Scribe's own pick,
+/// complete, and untouched here -- no lane tapped, no edit, not a discard.
+///
+/// `pre_acceptable` is NOT part of this (CHRN-137). It is the server's reading
+/// of the confidence threshold, a hint for a default and nothing more; on real
+/// data none of a day's proposals cleared it, and a gate that nothing passes
+/// turns "zero taps per memo" into one tap per memo. What stops a row going out
+/// is a proposal the server would refuse, which [proposalProblem] names.
 bool isPrefilled(TriageRow row) =>
-    row.local is Pending &&
-    row.draft == null &&
-    rowKind(row) == RowKind.prefilled &&
-    row.item.preAcceptable;
+    row.local is Pending && row.draft == null && rowKind(row) == RowKind.prefilled && proposalProblem(row.item) == null;
+
+/// What the Scribe's own proposal is missing that the server requires, in a
+/// person's words, or null when it is complete. Read from the proposal as the
+/// server stored it: the editor's fallbacks (the nearest page, the transcript as
+/// text) are for a person filling a blank, not for filing as shown, so a
+/// `→ no project` ticket or a `→ no page` note is named here and stays out.
+String? proposalProblem(BatchItem item) {
+  final p = item.proposal;
+  if (p == null || p.destination == ProposalDestinationEnum.DISCARD) return null;
+  return validateDraft(Draft(
+    destination: p.destination.value,
+    title: p.title ?? '',
+    pagePath: p.pagePath ?? '',
+    projectKey: p.projectKey ?? '',
+    verb: p.verb?.value ?? 'create',
+    targetNote: p.targetNote ?? '',
+    text: switch (p.destination) {
+      ProposalDestinationEnum.NOTE => p.body ?? '',
+      ProposalDestinationEnum.TICKET => p.description ?? '',
+      _ => p.openingPost ?? '',
+    },
+  ));
+}
 
 /// The lane a row shows as picked: the person's choice if they made one,
 /// otherwise the Scribe's. Null when there is neither.
@@ -197,41 +219,54 @@ enum Filing { file, discard, none }
 ///  - a staged choice files as itself (a DISCARD choice discards), unless it is
 ///    still missing something the destination requires -- then the row is
 ///    waiting on the person and FILE leaves it alone;
-///  - an untouched row files as shown when the Scribe is confident or the
-///    person confirmed it, and a proposed DISCARD discards;
+///  - an untouched row files as shown when its proposal is complete
+///    ([proposalProblem]), whatever the server's confidence flag says, and a
+///    proposed DISCARD discards;
 ///  - a row whose last attempt `failed` is simply filed again, which is the
 ///    retry; one the server refused or needs input for is not, until the
 ///    person changes it.
 Filing filingOf(TriageRow row) {
   final l = row.local;
   if (l is! Pending && l is! Problem) return Filing.none;
+  // Refused, or asking for input: the same decision is not sent again. Changing
+  // the row clears this (the controller's `_changed`), which is "a new decision".
+  if (l is Problem && l.status != ProblemStatus.failed) return Filing.none;
   final d = row.draft;
   if (d != null) {
     if (d.destination == 'DISCARD') return Filing.discard;
     return validateDraft(d) == null ? Filing.file : Filing.none;
   }
-  if (l is Problem && l.status != ProblemStatus.failed) return Filing.none;
   switch (rowKind(row)) {
     case RowKind.discardProposed:
       return Filing.discard;
     case RowKind.prefilled:
-      return row.item.preAcceptable || row.confirmed ? Filing.file : Filing.none;
+      return proposalProblem(row.item) == null ? Filing.file : Filing.none;
     default:
       return Filing.none;
   }
 }
 
-/// What a staged choice is still missing, in a person's words, or null.
+/// What a row still needs before FILE will take it, in a person's words, or
+/// null: a staged choice missing a field, or a proposal that never had one.
 String? stagedProblem(TriageRow row) {
   final d = row.draft;
-  if (d == null || d.destination == 'DISCARD') return null;
-  return validateDraft(d);
+  if (d != null) return d.destination == 'DISCARD' ? null : validateDraft(d);
+  if (rowKind(row) != RowKind.prefilled) return null;
+  return proposalProblem(row.item);
 }
 
-/// FILE's label: the pending outcome. `FILE 3 · DISCARD 1`, `FILE 3`, `DISCARD 1`.
-String fileLabel(int file, int discard) {
-  if (file == 0 && discard == 0) return 'NOTHING TO FILE';
-  return [if (file > 0) 'FILE $file', if (discard > 0) 'DISCARD $discard'].join(' · ');
+/// FILE's label: the pending outcome, and the rows it cannot send. `FILE 3 ·
+/// DISCARD 1`; `RETRY 2` for rows whose last send failed; `1 REFUSED` for a
+/// row the server refused. It never says `NOTHING TO FILE` while a row is
+/// refused or failed -- those are what is left, and the button says so.
+String fileLabel(int file, int discard, {int retry = 0, int refused = 0}) {
+  final parts = [
+    if (file > 0) 'FILE $file',
+    if (retry > 0) 'RETRY $retry',
+    if (discard > 0) 'DISCARD $discard',
+    if (refused > 0) '$refused REFUSED',
+  ];
+  return parts.isEmpty ? 'NOTHING TO FILE' : parts.join(' · ');
 }
 
 /// Moves a row onto [lane]. Returns the draft that stages it, built from the
@@ -424,29 +459,71 @@ TriageRow applyResult(TriageRow row, TriageResult result, {required bool edited,
         ..clearedFields = result.cleared.isNotEmpty ? result.cleared : row.item.clearedFields;
       return row.copyWith(
         item: item,
-        local: Problem(
-          ProblemStatus.needsInput,
-          _reason(result.reason, 'A target no longer resolves — supply it and confirm.'),
-        ),
+        local: _problem(ProblemStatus.needsInput, result.reason, 'A target no longer resolves — supply it and confirm.'),
       );
     case 'stale':
       return row.copyWith(
         local: const Problem(ProblemStatus.stale, 'The proposal changed since this screen read it.'),
       );
     case 'refused':
-      return row.copyWith(local: Problem(ProblemStatus.refused, _reason(result.reason, 'Refused.')));
+      return row.copyWith(local: _problem(ProblemStatus.refused, result.reason, 'The server refused this decision.'));
     default:
-      return row.copyWith(
-        local: Problem(ProblemStatus.failed, _reason(result.reason, 'It did not land. Nothing was lost.')),
-      );
+      return row.copyWith(local: _problem(ProblemStatus.failed, result.reason, 'It did not land. Nothing was lost.'));
   }
 }
 
-String _reason(String? given, String fallback) => (given == null || given.isEmpty) ? fallback : given;
+Problem _problem(ProblemStatus status, String? given, String fallback) {
+  if (given == null || given.trim().isEmpty) return Problem(status, fallback);
+  final plain = plainReason(given);
+  return Problem(status, plain ?? given, raw: plain == null ? null : given);
+}
 
 /// A request that never produced per-item results at all.
-TriageRow failRow(TriageRow row, String reason) =>
-    row.copyWith(local: Problem(ProblemStatus.failed, reason));
+TriageRow failRow(TriageRow row, String reason) {
+  final plain = plainReason(reason);
+  return row.copyWith(local: Problem(ProblemStatus.failed, plain ?? reason, raw: plain == null ? null : reason));
+}
+
+/// A server's reason as a sentence a person can act on, or null when it is
+/// already one.
+///
+/// The server relays what an upstream said, verbatim, so a reason can be
+/// `switchyard: POST /v1/tickets: Forbidden: {"error":{"code":"forbidden",
+/// "message":"requires scope(s): tickets:write — token holds: tickets:read"}}`.
+/// What can be recognised is mapped -- a forbidden or scope refusal, an
+/// unreachable upstream, an unconfigured one -- and anything else that looks
+/// like upstream text (JSON, or long) gets a short generic sentence. The row
+/// keeps the raw text, behind its tap, for whoever has to fix the cause.
+String? plainReason(String raw) {
+  final lower = raw.toLowerCase();
+  final upstream =
+      raw.contains('{') || raw.contains('}') || lower.startsWith('switchyard:') || lower.startsWith('amber:');
+  String? scope(String label) => RegExp('$label[^:]*:\\s*([\\w:.\\-]+)').firstMatch(raw)?.group(1);
+
+  if (lower.contains('forbidden') || lower.contains('requires scope') || RegExp(r'\b403\b').hasMatch(lower)) {
+    final need = scope('requires scope');
+    final holds = scope('token holds');
+    return "Chronicle's Switchyard token is not allowed to do this"
+        '${need != null && holds != null ? ' (it needs $need and holds $holds)' : ''}.';
+  }
+  if (lower.contains('unauthorized') || RegExp(r'\b401\b').hasMatch(lower)) {
+    return "Switchyard did not accept Chronicle's token.";
+  }
+  if (lower.contains('not configured') || lower.contains('unconfigured')) {
+    return 'Switchyard is not set up on the Chronicle server.';
+  }
+  if (upstream &&
+      (lower.contains('unreachable') ||
+          lower.contains('connection refused') ||
+          lower.contains('no such host') ||
+          lower.contains('timed out') ||
+          lower.contains('timeout') ||
+          lower.contains('deadline exceeded'))) {
+    return 'Chronicle could not reach Switchyard. Nothing was lost.';
+  }
+  if (upstream || raw.length > 160) return 'The server could not complete this. Tap the row for the technical detail.';
+  return null;
+}
 
 /// Folds a fresh batch into the rows on screen. What this session decided
 /// stays as it is drawn. A row still waiting takes the server's current word

@@ -16,6 +16,7 @@ import 'package:chronicle/features/triage/triage_screen.dart';
 import 'package:chronicle/theme/theme.dart';
 import 'package:chronicle/theme/tokens.dart';
 import 'package:chronicle/triage/triage_controller.dart';
+import 'package:chronicle/triage/triage_rows.dart' show Problem;
 import 'package:chronicle_api/api.dart' as gen;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -108,7 +109,9 @@ void main() {
       expect(find.text('NOTE CREATED · CHR-0311'), findsOneWidget);
       expect(find.text('DISCUSSION OPENED'), findsOneWidget);
       // The discard enters its undo window rather than being sent.
-      expect(find.text('DISCARDED · UNDO 10 MIN'), findsOneWidget);
+      // Not sent, so it WILL discard; it never reads DISCARDED before `applied`.
+      expect(find.text('DISCARDS IN 10 MIN'), findsOneWidget);
+      expect(find.textContaining('DISCARDED'), findsNothing);
       expect(fileText(tester), 'NOTHING TO FILE');
     });
 
@@ -134,23 +137,52 @@ void main() {
       expect(api.requests.single.single.proposalOverride!.destination, 'DISCARD');
     });
 
-    testWidgets('a memo with no proposal, and a low-confidence one, are not filed blind', (tester) async {
+    testWidgets('every complete proposal is filed in one request, whatever the server\'s confidence flag says', (tester) async {
+      // None of these is `pre_acceptable`: on real data none of a day's were.
       final api = FakeTriageApi([
-        item('a'),
-        item('n', pre: false, status: 'needs_input', withProposal: false),
-        item('l', pre: false),
+        item('a', pre: false),
+        item('b', pre: false, dest: 'NOTE', verb: 'create'),
+        item('c', pre: false, dest: 'DISCUSSION'),
+      ])
+        ..answer = (d) => applied(d.memoId, dest: const {'a': 'TICKET', 'b': 'NOTE', 'c': 'DISCUSSION'}[d.memoId]!);
+      await _Harness(api).pump(tester);
+
+      expect(fileText(tester), 'FILE 3');
+      expect(find.textContaining('LOW CONFIDENCE'), findsNothing);
+      await tester.tap(k('file'));
+      await settle(tester);
+
+      expect(api.requests, hasLength(1));
+      expect(api.requests.single.map((d) => d.memoId), ['a', 'b', 'c']);
+      expect(api.requests.single.every((d) => d.proposalOverride == null), isTrue, reason: 'filed as shown');
+    });
+
+    testWidgets('a proposal missing a required field is not counted, and names the field', (tester) async {
+      // What the device showed: `→ no project · spike` and `→ no page`.
+      final api = FakeTriageApi([
+        item('a', pre: false),
+        item('t', complete: false),
+        item('n', dest: 'NOTE', verb: 'create', complete: false),
+        item('x', pre: false, status: 'needs_input', withProposal: false),
       ]);
+      await _Harness(api).pump(tester);
+
+      expect(fileText(tester), 'FILE 1', reason: 'only the complete one');
+      expect(find.textContaining('→ no project'), findsOneWidget);
+      expect(find.textContaining('→ no page'), findsOneWidget);
+      expect(find.textContaining('NEEDS INPUT · A ticket needs a project key'), findsOneWidget);
+      expect(find.textContaining('NEEDS INPUT · A note must name the page it belongs on.'), findsOneWidget);
+      await tester.tap(k('file'));
+      await settle(tester);
+      expect(api.requests.single.map((d) => d.memoId), ['a']);
+    });
+
+    testWidgets('a memo with no proposal is not filed blind', (tester) async {
+      final api = FakeTriageApi([item('a'), item('n', pre: false, status: 'needs_input', withProposal: false)]);
       await _Harness(api).pump(tester);
 
       expect(fileText(tester), 'FILE 1');
       expect(find.textContaining('NO PROPOSAL'), findsOneWidget);
-      expect(find.textContaining('LOW CONFIDENCE · TAP THE LANE TO CONFIRM'), findsOneWidget);
-
-      // Tapping the already-picked lane is the person's confirmation.
-      await tester.tap(k('lane-l-TICKET'));
-      await tester.pump();
-      expect(fileText(tester), 'FILE 2');
-      expect(find.textContaining('LOW CONFIDENCE'), findsNothing);
     });
 
     testWidgets('ACCEPT ALL commits only the untouched pre-filled set; FILE commits the lanes as they stand', (tester) async {
@@ -162,7 +194,8 @@ void main() {
       ]);
       await _Harness(api).pump(tester);
 
-      await tester.tap(k('lane-c-TICKET')); // c is overridden, so it is not "pre-filled" any more
+      // c is overridden (to a ticket with no project, so it needs input too), so it is not "pre-filled" any more.
+      await tester.tap(k('lane-c-TICKET'));
       await tester.pump();
       await tester.tap(k('accept-all'));
       await settle(tester);
@@ -394,7 +427,7 @@ void main() {
       await tester.tap(k('file'));
       await settle(tester);
       expect(find.text('FAILED · STILL PENDING'), findsOneWidget);
-      expect(fileText(tester), 'FILE 1', reason: 'still pending, so still counted');
+      expect(fileText(tester), 'RETRY 1', reason: 'still pending, so still counted -- as a retry');
 
       fail = false;
       await tester.tap(k('file'));
@@ -414,7 +447,7 @@ void main() {
       await settle(tester);
 
       expect(find.text('REFUSED · STILL PENDING'), findsOneWidget);
-      expect(fileText(tester), 'NOTHING TO FILE');
+      expect(fileText(tester), '1 REFUSED', reason: 'never NOTHING TO FILE while a row is refused');
       // One lane tap changes the decision, and it is filed again.
       await tester.tap(k('lane-a-DISCUSSION'));
       await tester.pump();
@@ -431,7 +464,7 @@ void main() {
 
       expect(find.text('FAILED · STILL PENDING'), findsNWidgets(2));
       expect(find.textContaining('Chronicle could not be reached'), findsNWidgets(2));
-      expect(fileText(tester), 'FILE 2');
+      expect(fileText(tester), 'RETRY 2');
     });
 
     testWidgets('a batch that cannot be read says so instead of showing an empty day', (tester) async {
@@ -440,6 +473,142 @@ void main() {
 
       expect(k('load-error'), findsOneWidget);
       expect(k('empty'), findsNothing);
+    });
+  });
+
+  group('a held discard is pending until the server says applied', () {
+    testWidgets('shows the minutes left and an undo, and counts down', (tester) async {
+      final api = FakeTriageApi([item('x', dest: 'DISCARD')]);
+      final h = _Harness(api);
+      await h.pump(tester);
+
+      await tester.tap(k('file'));
+      await settle(tester);
+      expect(find.text('DISCARDS IN 10 MIN'), findsOneWidget);
+      expect(k('undo-x'), findsOneWidget);
+      expect(find.textContaining('DISCARDED'), findsNothing);
+
+      h.now = h.now.add(const Duration(minutes: 3));
+      await tester.pump(const Duration(seconds: 16));
+      expect(find.text('DISCARDS IN 7 MIN'), findsOneWidget);
+      expect(api.requests, isEmpty);
+    });
+
+    testWidgets('reads DISCARDED only after the server answers applied', (tester) async {
+      final api = FakeTriageApi([item('x', dest: 'DISCARD')]);
+      final h = _Harness(api);
+      await h.pump(tester);
+
+      await tester.tap(k('file'));
+      await settle(tester);
+      h.now = h.now.add(const Duration(minutes: 11));
+      await tester.pump(const Duration(seconds: 16));
+      await settle(tester);
+
+      expect(api.requests, hasLength(1));
+      expect(find.text('DISCARDED'), findsOneWidget);
+      expect(find.textContaining('DISCARDS IN'), findsNothing);
+    });
+
+    testWidgets('a send that cannot reach the server leaves it failed and still pending, never DISCARDED', (tester) async {
+      final api = FakeTriageApi([item('x', dest: 'DISCARD')]);
+      final h = _Harness(api);
+      await h.pump(tester);
+
+      await tester.tap(k('file'));
+      await settle(tester);
+      api.unreachable = true;
+      h.now = h.now.add(const Duration(minutes: 11));
+      await tester.pump(const Duration(seconds: 16));
+      await settle(tester);
+
+      expect(find.text('FAILED · STILL PENDING'), findsOneWidget);
+      expect(find.textContaining('DISCARDED'), findsNothing);
+      expect(fileText(tester), 'RETRY 1');
+
+      // Retrying sends it now: its window has already run.
+      api.unreachable = false;
+      await tester.tap(k('file'));
+      await settle(tester);
+      expect(find.text('DISCARDED'), findsOneWidget);
+    });
+
+    testWidgets('a discard that fails as the screen is left is not lost, and is still a discard when it comes back', (tester) async {
+      // The person's own choice (the proposal was a ticket), so a failed send
+      // must not turn it back into a ticket proposal.
+      final api = FakeTriageApi([item('a')]);
+      final h = _Harness(api);
+      await h.pump(tester);
+
+      await tester.tap(k('open-a'));
+      await tester.pumpAndSettle();
+      await tester.tap(k('confirm-discard-a'));
+      await tester.pumpAndSettle();
+      await tester.tap(k('file'));
+      await settle(tester);
+      expect(find.text('DISCARDS IN 10 MIN'), findsOneWidget);
+
+      api.unreachable = true;
+      await tester.pumpWidget(const SizedBox()); // leaving the screen flushes it
+      await settle(tester);
+      expect(api.requests, hasLength(1), reason: 'the send was attempted on leaving');
+      final row = h.container.read(triageControllerProvider).rows.single;
+      expect(row.local, isA<Problem>(), reason: 'the failure is recorded, not dropped');
+
+      api.unreachable = false;
+      await tester.pumpWidget(UncontrolledProviderScope(
+        container: h.container,
+        child: MaterialApp(theme: chronicleTheme(), home: const TriageScreen()),
+      ));
+      await settle(tester);
+      expect(find.text('FAILED · STILL PENDING'), findsOneWidget);
+      expect(k('discard-strip-a'), findsOneWidget, reason: 'still a discard, not the ticket it was proposed as');
+      expect(k('lane-a-TICKET'), findsNothing);
+      expect(fileText(tester), 'RETRY 1');
+    });
+  });
+
+  group('a refusal is a sentence, and the button reports it', () {
+    const forbidden = 'switchyard: POST /v1/tickets: Forbidden: {"error":{"code":"forbidden","message":'
+        '"requires scope(s): tickets:write — token holds: tickets:read","request_id":"r1"}}';
+
+    testWidgets('upstream JSON becomes a plain sentence on the row; the raw text is behind the row\'s tap', (tester) async {
+      final api = FakeTriageApi([item('a')])
+        ..answer = (d) => gen.TriageResult(memoId: d.memoId, status: 'refused', reason: forbidden);
+      await _Harness(api).pump(tester);
+
+      await tester.tap(k('file'));
+      await settle(tester);
+
+      expect(find.text('REFUSED · STILL PENDING'), findsOneWidget);
+      expect(
+        find.text("Chronicle's Switchyard token is not allowed to do this (it needs tickets:write and holds tickets:read)."),
+        findsOneWidget,
+      );
+      expect(find.textContaining('{"error"'), findsNothing);
+      expect(find.textContaining('/v1/tickets'), findsNothing);
+      // The pinned button reports it instead of reading NOTHING TO FILE.
+      expect(fileText(tester), '1 REFUSED');
+
+      await tester.tap(k('open-a'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('confirm-raw-a')), findsOneWidget);
+      expect(find.textContaining('POST /v1/tickets'), findsOneWidget);
+    });
+
+    testWidgets('refused and failed rows are both reported alongside what can still be filed', (tester) async {
+      final api = FakeTriageApi([item('a'), item('b'), item('c')])
+        ..answer = (d) => switch (d.memoId) {
+              'a' => gen.TriageResult(memoId: 'a', status: 'refused', reason: forbidden),
+              'b' => gen.TriageResult(memoId: 'b', status: 'failed', reason: 'Switchyard did not answer.'),
+              _ => applied(d.memoId),
+            };
+      await _Harness(api).pump(tester);
+
+      await tester.tap(k('file'));
+      await settle(tester);
+
+      expect(fileText(tester), 'RETRY 1 · 1 REFUSED');
     });
   });
 

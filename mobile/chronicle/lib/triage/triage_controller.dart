@@ -197,8 +197,8 @@ class TriageController extends Notifier<TriageState> {
   /// A tap on a lane. The Scribe's pick is already filled, so this is the
   /// override: tapping another lane stages that destination (sent by [fileAll],
   /// not now), tapping the proposal's own lane puts the row back to the Scribe's
-  /// pick -- or, for a proposal the server was not confident about, confirms it
-  /// as shown.
+  /// pick. Changing a row the server refused is a new decision, so the refusal
+  /// is cleared and FILE takes it again.
   ///
   /// What the new destination needs that the proposal did not carry (a note's
   /// page, a ticket's project) is left blank, and the row says it needs input
@@ -208,10 +208,18 @@ class TriageController extends Notifier<TriageState> {
     if (r == null || !isDecidable(r)) return;
     final staged = draftForLane(r, lane);
     if (staged == null) {
-      _update(memoId, (x) => x.copyWith(clearDraft: true, confirmed: !x.item.preAcceptable, clearNotice: true));
+      _update(memoId, (x) => _changed(x.copyWith(clearDraft: true, clearNotice: true)));
     } else {
-      _update(memoId, (x) => x.copyWith(draft: staged, confirmed: false, clearNotice: true));
+      _update(memoId, (x) => _changed(x.copyWith(draft: staged, clearNotice: true)));
     }
+  }
+
+  /// A row the person has just changed is no longer the decision the server
+  /// refused (or asked for input on). A `failed` one stays failed: that was the
+  /// network's doing, not the decision's, and FILE is still its retry.
+  TriageRow _changed(TriageRow r) {
+    final l = r.local;
+    return l is Problem && l.status != ProblemStatus.failed ? r.copyWith(local: const Pending()) : r;
   }
 
   /// Stages the editor's draft for [fileAll]. An override is not a patch, so the
@@ -219,23 +227,28 @@ class TriageController extends Notifier<TriageState> {
   void stage(String memoId, Draft draft) {
     final r = row(memoId);
     if (r == null || !isDecidable(r)) return;
-    _update(memoId, (x) => x.copyWith(draft: draft, confirmed: false, clearNotice: true));
+    _update(memoId, (x) => _changed(x.copyWith(draft: draft, clearNotice: true)));
   }
 
-  /// How many rows FILE would send, and how many it would discard.
-  ({int file, int discard}) filing() {
-    var file = 0, discard = 0;
+  /// What FILE would do, for its label: rows it would send, rows whose last
+  /// send failed and it would send again (`retry`), discards, and the rows the
+  /// server refused, which it leaves alone and reports.
+  ({int file, int retry, int discard, int refused}) filing() {
+    var file = 0, retry = 0, discard = 0, refused = 0;
     for (final r in state.rows) {
+      final l = r.local;
+      final again = l is Problem && l.status == ProblemStatus.failed;
+      if (l is Problem && l.status == ProblemStatus.refused) refused++;
       switch (filingOf(r)) {
         case Filing.file:
-          file++;
+          again ? retry++ : file++;
         case Filing.discard:
-          discard++;
+          again ? retry++ : discard++;
         case Filing.none:
           break;
       }
     }
-    return (file: file, discard: discard);
+    return (file: file, retry: retry, discard: discard, refused: refused);
   }
 
   /// FILE: the commit for the lanes as they stand. Everything [filingOf] takes
@@ -254,7 +267,13 @@ class TriageController extends Notifier<TriageState> {
               ? _Outgoing(acceptDecision(r.item, single: false), edited: false)
               : _Outgoing(editDecision(r.item, d), edited: true));
         case Filing.discard:
-          discards.add(r.memoId);
+          // A discard whose send already failed has had its window: filing it
+          // again sends it now, rather than holding it another ten minutes.
+          if (r.local is Problem) {
+            out.add(_Outgoing(discardDecision(r.item), edited: false, discard: true));
+          } else {
+            discards.add(r.memoId);
+          }
         case Filing.none:
           break;
       }
@@ -363,22 +382,36 @@ class TriageController extends Notifier<TriageState> {
 
   // -- Discard, with its undo window -------------------------------------------
 
+  /// Holds a discard for [discardUndo]. Nothing is sent yet, so the row says it
+  /// WILL discard and when -- never that it has: `DISCARDED` is for a discard the
+  /// server answered `applied` ([Discarded]). The choice stays on the row as a
+  /// DISCARD draft, so a send that fails leaves the row a discard still pending
+  /// and not a proposal for something else.
   void discard(String memoId) {
     final r = row(memoId);
     if (r == null || !isDecidable(r)) return;
-    _update(memoId, (x) => x.copyWith(clearNotice: true, clearDraft: true, local: Discarding(_now().add(discardUndo))));
+    _update(
+      memoId,
+      (x) => x.copyWith(
+        clearNotice: true,
+        draft: const Draft(destination: 'DISCARD'),
+        local: Discarding(_now().add(discardUndo)),
+      ),
+    );
     unawaited(_refillIfDone());
   }
 
   void undoDiscard(String memoId) {
     final r = row(memoId);
     if (r == null || r.local is! Discarding) return;
-    _update(memoId, (x) => x.copyWith(local: const Pending()));
+    _update(memoId, (x) => x.copyWith(clearDraft: true, local: const Pending()));
   }
 
   /// Sends the discards whose window has closed -- or all of them (leaving the
-  /// screen ends the window: the row said DISCARDED and there is nowhere left
-  /// to undo it from).
+  /// screen ends the window: there is nowhere left to undo it from). A send that
+  /// fails -- the network, a refusal -- leaves the row failed and still pending
+  /// ([_send]); it is not dropped, and it stays on the controller, which outlives
+  /// the screen, so the row is there when the screen is opened again.
   Future<void> flushDiscards({required bool all}) {
     // The screen calls this from its own dispose, which can be the container's
     // too (a test tearing down, an app being torn out): nothing to send then.

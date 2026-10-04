@@ -15,6 +15,7 @@ gen.BatchItem item(
   String? title,
   DateTime? capturedAt,
   bool withProposal = true,
+  bool complete = true,
   gen.LinkState? link,
 }) {
   final destination = switch (dest) {
@@ -46,15 +47,16 @@ gen.BatchItem item(
             reason: 'A clear to-do.',
             title: title ?? 'Title $id',
             nearestPage: null,
-            projectKey: dest == 'TICKET' ? 'CHRN' : null,
+            projectKey: dest == 'TICKET' && complete ? 'CHRN' : null,
             ticketType: dest == 'TICKET' ? 'task' : null,
             description: dest == 'TICKET' ? 'Do the thing.' : null,
-            pagePath: dest == 'NOTE' ? 'estate/notes' : null,
+            pagePath: dest == 'NOTE' && complete ? 'estate/notes' : null,
             body: dest == 'NOTE' ? 'Body.' : null,
             verb: verb == null
                 ? null
                 : gen.ProposalVerbEnum.values.firstWhere((v) => v.value == verb),
-            targetNote: verb == 'append' ? 'CHR-0001' : null,
+            targetNote: verb == 'append' || verb == 'supersede' ? 'CHR-0001' : null,
+            openingPost: dest == 'DISCUSSION' ? 'Discuss it.' : null,
           )
         : null,
   );
