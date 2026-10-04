@@ -8,8 +8,8 @@ nothing. **CHRN-61** adds the durable offline queue this README's own
 [queue section](#the-durable-offline-queue-chrn-61) describes.
 
 The `DISCARD NOW / 30 DAYS / FOREVER` confirm is CHRN-62 and batch triage is
-CHRN-63 — both `review_mode: decision`, so they owe a written decision before
-any code, same as CHRN-60 and CHRN-61 did.
+CHRN-63; the [triage section](#batch-triage-chrn-63) below describes the
+latter.
 
 ## The toolkit, and why it was not a fresh decision
 
@@ -39,7 +39,7 @@ CI pins the same two versions (`.github/workflows/mobile.yml`).
 ```sh
 flutter pub get
 flutter analyze          # the lint gate -- run AFTER the last edit, not before
-flutter test             # 238 tests, no hardware
+flutter test             # 411 tests, no hardware
 flutter build apk --debug
 ```
 
@@ -190,7 +190,7 @@ thing that has ever cleared a dead token here.
 
 ### Verification status
 
-`flutter analyze`, `flutter test` (238 tests, including a faithful in-Dart
+`flutter analyze`, `flutter test` (411 tests, including a faithful in-Dart
 fake Chronicle server, a kill harness over every I/O boundary of a
 multi-chunk upload, and a genuine two-engine race) and `flutter build apk
 --debug` are all green — see the commits on `chrn-61-durable-upload-queue`.
@@ -295,6 +295,60 @@ On the phone, each queue row carries `AUDIO · 30 DAYS` / `FOREVER` / `DISCARD
 NOW`, or `DEFAULT (30 DAYS)` for a skip or an expired grace. On the web, the note's
 provenance block already renders the server's own reading of it:
 `PRUNES <date>`, `PINNED — KEPT`, or `PRUNES AT THE NEXT SWEEP`.
+
+## Batch triage (CHRN-63)
+
+Board 1a's B2: **Home -> Evening triage** (`/triage`, behind the sign-in
+redirect -- triage reads and decides on the server, so a device with no
+credential has nothing to show). A day's memos, each with the Scribe's proposal
+pre-filled; **ACCEPT ALL PRE-FILLED** takes every row the server marks
+`pre_acceptable`, and a pre-filled row carries its own **ACCEPT**, so the common
+case is one tap per memo. Tapping a row's transcript opens the single-memo
+confirm (the whole transcript, the proposal in full); **EDIT** is the per-item
+override.
+
+It is a port of the web `/triage` screen (CHRN-55), not a second reading of the
+contract: the rules live in `lib/triage/triage_rows.dart` beside
+`web/src/lib/triage.ts` and say the same things.
+
+- **A failed item stays visibly pending.** Only `applied` takes a row out of the
+  batch; `failed`, `refused`, `stale` and `needs_input` each leave it in place
+  under `... · STILL PENDING` with the server's reason, and a network failure
+  says to retry (a replay answers `applied` from the recorded decision).
+- **ACCEPT ALL never sets `confirm_edit`.** That is the per-item confirmation an
+  append or supersede costs; only a single ACCEPT or the confirm sheet sends it.
+- **A discard is held back, not recalled.** `discarded` is terminal on the
+  server, so `UNDO 10 MIN` means the request is not sent until the window
+  closes, the screen is left or the next batch loads. Kill the app inside the
+  window and the memo is simply still waiting.
+- **An accepted ticket is one tap from open.** The card is coral (Switchyard's
+  reserved colour), reads `LINKED · NOT COPIED`, carries the upstream's own
+  state word and its age, and says `SWITCHYARD UNREACHABLE` rather than showing a
+  confident stale value (CLAUDE.md invariant 2). The whole card is the tap; it
+  opens the `ticket_url` the server answered with in the browser
+  (`url_launcher`).
+- **Capture times are read defensively.** A device clock can assert any value
+  from year 100 to 9900 (CHRN-118), so a time before 2020 or more than a day
+  ahead is drawn `--:--` and never as a date it was not.
+- **Named deferrals:** the web's DEFERRED list (parked memos from earlier
+  evenings) is not on the phone; a memo held here shows as held until the
+  screen is left, and the web lists it. Batches are the server's 25 at a time.
+
+### The device pass for CHRN-63
+
+Still owed -- the tests prove the behaviour on a 412 x 915 surface, not on the
+phone. On a debug build against a server with a few transcribed memos and the
+Scribe on:
+
+1. **Home -> Evening triage.** Expect the day label, the counts line and one
+   row per memo with its proposal in steel. Every button is a comfortable tap.
+2. **ACCEPT ALL PRE-FILLED** once. Expect the pre-filled rows to read
+   `ACCEPTED`, any needing input to stay.
+3. **A TICKET row:** tap the coral card. Expect the Switchyard ticket open in
+   the browser, one tap from the row.
+4. **Failure:** with Wi-Fi and data off, ACCEPT a row. Expect
+   `FAILED · STILL PENDING` and a RETRY; restore the network and RETRY.
+5. **Override:** EDIT a row, change its destination, CONFIRM. Expect `EDITED`.
 
 ## Pruning the phone's copy (CHRN-120)
 
@@ -728,8 +782,12 @@ lib/
     queue_controller.dart  the in-app triggers
     queue_label.dart   the screen label, as a pure function of persisted state
     background.dart    the WorkManager headless entrypoint
+  triage/              CHRN-63: batch triage -- see the section below
+    triage_rows.dart   the rules, as pure functions (a port of web/src/lib/triage.ts)
+    triage_controller.dart  the batch, the decisions, the ticket cards
   theme/               tokens ported from web/src/styles/tokens.css
   features/
+    triage/            board 1a's B2 -- the day's memos, ACCEPT ALL, override, the ticket card
     signin/            scan, or paste the link
     home/               account, address, connection state
     capture/           board 1a screens 01/02 -- idle, recording; CHRN-62's retention card

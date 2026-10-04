@@ -13,9 +13,9 @@ import '../../theme/tokens.dart';
 /// whether that address is answering.
 ///
 /// **This is deliberately not the capture screen.** One-tap capture is CHRN-60,
-/// the confirm is CHRN-62 and batch triage is CHRN-63 — all three are
-/// `review_mode: decision` or have boards of their own, and CHRN-59's job is the
-/// skeleton underneath them. What this screen does own is the honest answer to
+/// the confirm is CHRN-62 and batch triage is CHRN-63 — all three have boards of
+/// their own, and CHRN-59's job is the skeleton underneath them; this screen
+/// only links to them. What this screen does own is the honest answer to
 /// "is the server reachable", because that is the clause CHRN-59 has to
 /// demonstrate.
 class HomeScreen extends ConsumerWidget {
@@ -65,6 +65,16 @@ class HomeScreen extends ConsumerWidget {
               FilledButton(
                 onPressed: () => context.go(captureRoute),
                 child: const Text('Record a memo'),
+              ),
+
+              const SizedBox(height: space4),
+              Text('TRIAGE', style: microLabel()),
+              const SizedBox(height: space2),
+              OutlinedButton(
+                key: const ValueKey('home-triage'),
+                onPressed: () => context.go(triageRoute),
+                style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(minTapTarget)),
+                child: const Text('Evening triage'),
               ),
 
               const SizedBox(height: space4),
