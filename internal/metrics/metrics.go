@@ -167,9 +167,8 @@ func (s Snapshot) Alerts() []Alert {
 
 	if s.ok("prune") && s.Prune.Violated() {
 		out = append(out, Alert{slog.LevelError, "prune_violation", fmt.Sprintf(
-			"audio was pruned that the rules say should be kept: %d without a durable transcript, "+
-				"%d pinned, %d before the window (memos %v)",
-			s.Prune.WithoutTranscript, s.Prune.Pinned, s.Prune.Early, s.Prune.ViolatingMemos)})
+			"audio was pruned for %d memo(s) with no durable transcript; the recording was the only copy (memos %v)",
+			s.Prune.WithoutTranscript, s.Prune.ViolatingMemos)})
 	}
 	if s.ok("queue") && s.Queue.OldestCapturedAt != nil {
 		if age := s.At.Sub(*s.Queue.OldestCapturedAt); age > QueueStall {
@@ -231,7 +230,6 @@ func (s Snapshot) Log(l *slog.Logger) {
 	if s.ok("prune") {
 		attrs = append(attrs, "prune_24h", s.Prune.Last24h, "prune_24h_bytes", s.Prune.Last24hBytes,
 			"prune_total", s.Prune.Total, "prune_held_back", s.Prune.HeldBack,
-			"prune_violations", s.Prune.WithoutTranscript+s.Prune.Pinned+s.Prune.Early,
 			"prune_without_transcript", s.Prune.WithoutTranscript)
 	}
 	l.Info("metrics snapshot", attrs...)
@@ -360,10 +358,8 @@ func (s Snapshot) Prometheus() string {
 		}
 		g("chronicle_prune_held_back", "memos past their window that the gate refuses to prune for want of a durable transcript")
 		v("chronicle_prune_held_back", "", p.HeldBack)
-		g("chronicle_prune_violations", "pruned memos that broke a rule the pruner must obey, by rule; every one should be 0 forever")
+		g("chronicle_prune_violations", "pruned memos with no durable transcript, by rule; should be 0 forever")
 		v("chronicle_prune_violations", `rule="no_durable_transcript"`, p.WithoutTranscript)
-		v("chronicle_prune_violations", `rule="pinned"`, p.Pinned)
-		v("chronicle_prune_violations", `rule="before_window"`, p.Early)
 	}
 	return b.String()
 }

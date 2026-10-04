@@ -252,19 +252,6 @@ func TestPruneMetricsSeesAnIncorrectDeletion(t *testing.T) {
 	backdate(t, s, ctx, base.ID, 31*24*time.Hour)
 	mark(base.ID)
 
-	// Variant 3: pinned.
-	pinned := newTranscribableMemo(t, s, ctx, "pm-pin@example.test")
-	durable(t, s, ctx, pinned.ID, "whisper.cpp/small.en")
-	if _, err := s.pool.Exec(ctx, `UPDATE tier2.memos SET retention = 'forever' WHERE id = $1`, pinned.ID); err != nil {
-		t.Fatal(err)
-	}
-	mark(pinned.ID)
-
-	// Variant 4: pruned the day it was captured, with no DISCARD NOW.
-	early := newTranscribableMemo(t, s, ctx, "pm-early@example.test")
-	durable(t, s, ctx, early.ID, "whisper.cpp/small.en")
-	mark(early.ID)
-
 	p, err = s.PruneMetrics(ctx, window)
 	if err != nil {
 		t.Fatal(err)
@@ -272,16 +259,8 @@ func TestPruneMetricsSeesAnIncorrectDeletion(t *testing.T) {
 	if p.WithoutTranscript != 2 {
 		t.Errorf("without transcript = %d, want 2 (never transcribed + below the floor)", p.WithoutTranscript)
 	}
-	if p.Pinned != 1 {
-		t.Errorf("pinned = %d, want 1", p.Pinned)
-	}
-	// The never-transcribed and below-floor memos were backdated past the
-	// window and the pinned one is `forever`, so exactly one is early.
-	if p.Early != 1 {
-		t.Errorf("early = %d, want 1", p.Early)
-	}
 	if !p.Violated() {
-		t.Fatal("four incorrect deletions were not reported as a violation")
+		t.Fatal("two incorrect deletions were not reported as a violation")
 	}
 	named := map[uuid.UUID]bool{}
 	for _, id := range p.ViolatingMemos {
@@ -289,7 +268,6 @@ func TestPruneMetricsSeesAnIncorrectDeletion(t *testing.T) {
 	}
 	for name, id := range map[string]uuid.UUID{
 		"never transcribed": none.ID, "below the floor": base.ID,
-		"pinned": pinned.ID, "before the window": early.ID,
 	} {
 		if !named[id] {
 			t.Errorf("the %s memo is not among the named violations", name)
@@ -300,9 +278,15 @@ func TestPruneMetricsSeesAnIncorrectDeletion(t *testing.T) {
 	}
 }
 
-// A DISCARD NOW MEMO PRUNED INSIDE ITS WINDOW IS CORRECT. Without this the
-// early rule would fire on every deliberate discard.
-func TestPruneMetricsAcceptsDiscardNowInsideTheWindow(t *testing.T) {
+// A CORRECT PRUNE STAYS CORRECT WHATEVER HAPPENS TO THE ROW AFTERWARDS.
+//
+// The review of this ticket found that IngestMemo's ratchet can raise
+// retention on an already-pruned memo (a re-delivery carrying `forever`), and
+// that a check reading retention NOW would then report a correct prune as a
+// violation permanently. The metric therefore rests on the transcript alone,
+// and this pins that: a DISCARD NOW prune inside the window, then a retention
+// raise of the kind the ratchet allows, must both read clean.
+func TestPruneMetricsIgnoresRetentionAfterThePrune(t *testing.T) {
 	s, ctx := newTestStore(t)
 	m := newTranscribableMemo(t, s, ctx, "pm-discard@example.test")
 	durable(t, s, ctx, m.ID, "whisper.cpp/small.en")
@@ -310,11 +294,17 @@ func TestPruneMetricsAcceptsDiscardNowInsideTheWindow(t *testing.T) {
 		`UPDATE tier2.memos SET retention = 'discard_now', audio_pruned_at = now() WHERE id = $1`, m.ID); err != nil {
 		t.Fatal(err)
 	}
-	p, err := s.PruneMetrics(ctx, 30*24*time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p.Total != 1 || p.Violated() {
-		t.Fatalf("a deliberate discard: %+v", p)
+	for _, retention := range []string{"discard_now", "forever"} {
+		if _, err := s.pool.Exec(ctx,
+			`UPDATE tier2.memos SET retention = $2 WHERE id = $1`, m.ID, retention); err != nil {
+			t.Fatal(err)
+		}
+		p, err := s.PruneMetrics(ctx, 30*24*time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Total != 1 || p.Violated() {
+			t.Fatalf("with retention %q after the prune: %+v", retention, p)
+		}
 	}
 }

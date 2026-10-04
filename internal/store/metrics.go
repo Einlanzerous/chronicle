@@ -252,21 +252,26 @@ type PruneMetrics struct {
 	// calendar says it should be.
 	HeldBack int64
 
-	// Violations are pruned memos that should not have been, by the rules the
-	// pruner is supposed to obey. EVERY ONE OF THESE SHOULD BE ZERO FOREVER:
-	// they are the "an incorrect deletion would be obvious the next morning"
-	// half of CHRN-69's Done-when. They re-derive each rule independently of
-	// the pruner's own clause (prunableClause) rather than reusing it -- a
-	// check that shared the pruner's predicate would agree with it when it was
-	// wrong.
+	// WithoutTranscript is pruned memos that have no durable transcript. EVERY
+	// ONE OF THESE SHOULD BE ZERO FOREVER: it is the "an incorrect deletion
+	// would be obvious the next morning" half of CHRN-69's Done-when, and it is
+	// THE WORST THING THIS SYSTEM CAN DO (CLAUDE.md invariant 1) -- the audio
+	// was the only copy of that thought.
 	//
-	// WithoutTranscript: no durable transcript existed. THE WORST THING THIS
-	// SYSTEM CAN DO (CLAUDE.md invariant 1): the audio was the only copy.
-	// Pinned: retention is `forever`. Early: retention `days_30` and the window
-	// had not passed.
+	// It re-derives the gate from DurableClause rather than reusing the
+	// pruner's own clause (prunableClause): a check that shared the pruner's
+	// predicate would agree with it when it was wrong.
+	//
+	// DELIBERATELY THE ONLY RULE. Two more were written -- pruned while
+	// retention is `forever`, and pruned before the window under `days_30` --
+	// and removed on review, because they read retention NOW and not as it was
+	// at the prune. IngestMemo's ratchet can still raise retention on an
+	// already-pruned memo (a re-delivery carrying a higher one: no
+	// audio_pruned_at condition in its ON CONFLICT), after which a correct
+	// prune would read as a violation forever and train the operator to ignore
+	// the alarm. A transcript, by contrast, is never deleted and never
+	// rewritten once complete, so its absence now means its absence then.
 	WithoutTranscript int64
-	Pinned            int64
-	Early             int64
 
 	// ViolatingMemos names up to ten of them, newest prune first, so the line
 	// that reports a violation says which memos to look at.
@@ -274,36 +279,31 @@ type PruneMetrics struct {
 }
 
 // Violated reports whether any rule was broken.
-func (p PruneMetrics) Violated() bool {
-	return p.WithoutTranscript+p.Pinned+p.Early > 0
-}
+func (p PruneMetrics) Violated() bool { return p.WithoutTranscript > 0 }
 
 // PruneMetrics reads the prune ledger. window is the retention window the
-// pruner runs with (audio.ProjectionWindow), so "early" means the same thing
-// here as there.
+// pruner runs with (audio.ProjectionWindow), used only for the held-back
+// count so it means the same thing here as there.
 func (s *Store) PruneMetrics(ctx context.Context, window time.Duration) (PruneMetrics, error) {
 	var p PruneMetrics
-	// $1 window secs, $2 runner allow-list, $3 model allow-list: the same
-	// parameter order DurableClause documents.
+	// $1 is the 24-hour span in seconds, $2 the runner allow-list and $3 the
+	// model allow-list: DurableClause's own parameter order, with $1 free.
 	const noDurable = `NOT EXISTS (SELECT 1 FROM tier2.transcripts
 	                               WHERE memo_id = m.id AND ` + DurableClause + `)`
-	const early = `m.retention = 'days_30'
-	               AND m.audio_pruned_at < m.captured_at + make_interval(secs => $1)`
+	day := (24 * time.Hour).Seconds()
 
 	err := s.pool.QueryRow(ctx, `
-		SELECT count(*) FILTER (WHERE m.audio_pruned_at > now() - interval '24 hours'),
-		       coalesce(sum(m.byte_size) FILTER (WHERE m.audio_pruned_at > now() - interval '24 hours'), 0),
+		SELECT count(*) FILTER (WHERE m.audio_pruned_at > now() - make_interval(secs => $1)),
+		       coalesce(sum(m.byte_size) FILTER (WHERE m.audio_pruned_at > now() - make_interval(secs => $1)), 0),
 		       count(*),
 		       coalesce(sum(m.byte_size), 0),
 		       max(m.audio_pruned_at),
-		       count(*) FILTER (WHERE `+noDurable+`),
-		       count(*) FILTER (WHERE m.retention = 'forever'),
-		       count(*) FILTER (WHERE `+early+`)
+		       count(*) FILTER (WHERE `+noDurable+`)
 		  FROM tier2.memos m
 		 WHERE m.audio_pruned_at IS NOT NULL`,
-		window.Seconds(), SufficientRunners, SufficientModels).
+		day, SufficientRunners, SufficientModels).
 		Scan(&p.Last24h, &p.Last24hBytes, &p.Total, &p.TotalBytes, &p.LastPrunedAt,
-			&p.WithoutTranscript, &p.Pinned, &p.Early)
+			&p.WithoutTranscript)
 	if err != nil {
 		return p, fmt.Errorf("store: prune metrics: %w", err)
 	}
@@ -312,10 +312,10 @@ func (s *Store) PruneMetrics(ctx context.Context, window time.Duration) (PruneMe
 		SELECT m.id
 		  FROM tier2.memos m
 		 WHERE m.audio_pruned_at IS NOT NULL
-		   AND (`+noDurable+` OR m.retention = 'forever' OR (`+early+`))
+		   AND `+noDurable+`
 		 ORDER BY m.audio_pruned_at DESC
-		 LIMIT 10`,
-		window.Seconds(), SufficientRunners, SufficientModels)
+		 LIMIT $1`,
+		10, SufficientRunners, SufficientModels)
 	if err != nil {
 		return p, fmt.Errorf("store: prune violations: %w", err)
 	}

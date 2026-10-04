@@ -165,7 +165,7 @@ func TestPrometheusCarriesAllFourNumbers(t *testing.T) {
 		`chronicle_routing_decisions{window="7d",outcome="unaided"} 2`,
 		`chronicle_routing_agreement_ratio{window="7d"} 0.75`,
 		`chronicle_prune_bytes_24h 4096`,
-		`chronicle_prune_violations{rule="pinned"} 0`,
+		`chronicle_prune_violations{rule="no_durable_transcript"} 0`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)

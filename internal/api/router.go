@@ -318,13 +318,6 @@ func NewRouter(d Deps) http.Handler {
 	// /app/, and GET / only redirects there. Go 1.22's mux prefers the more
 	// specific pattern, so a documented route under a different prefix is
 	// never shadowed by this catch-all.
-	// GET /metrics (CHRN-69): the second hand-registered route, and unlike the
-	// SPA it is an API payload -- so it goes through guarded() with the owner
-	// credential rather than around the policy. It is not in openapi.yaml
-	// because it is a scraper's text format, not part of the API the clients
-	// are generated against; see getMetrics.
-	mux.HandleFunc("GET /metrics", routed.guarded(a.requireOwner, a.getMetrics))
-
 	webHandler := d.Web
 	if webHandler == nil {
 		webHandler = web.Handler()
@@ -334,11 +327,19 @@ func NewRouter(d Deps) http.Handler {
 	})
 	mux.Handle("/app/", webHandler)
 
+	// GET /metrics (CHRN-69): the second hand-registered route, and unlike the
+	// SPA it is an API payload -- so it goes through guarded() with the owner
+	// credential rather than around the policy. It is not in openapi.yaml
+	// because it is a scraper's text format, not part of the API the clients
+	// are generated against; see getMetrics.
+	mux.HandleFunc("GET /metrics", routed.guarded(a.requireOwner, a.getMetrics))
+
 	if d.Accounts == nil {
 		return requestLogger(d.Logger, mux)
 	}
 
-	// NOTHING IS HAND-REGISTERED ANY MORE, WITH ONE EXCEPTION ABOVE. Every
+	// NOTHING IS HAND-REGISTERED ANY MORE, WITH TWO EXCEPTIONS ABOVE (the SPA
+	// mount, and GET /metrics, which is guarded by hand). Every
 	// API route this service serves is in openapi.yaml, was registered above
 	// by the generator, and carries the credential policy.go declares for it
 	// — which is what CHRN-97 set out to make true and what the four guards
