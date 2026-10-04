@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.0](https://github.com/Einlanzerous/chronicle/compare/mobile-v0.2.0...mobile-v0.3.0) (2026-10-04)
+
+
+### Features
+
+* **api:** notes-only search any account may call — GET /notes/search (CHRN-116) ([#152](https://github.com/Einlanzerous/chronicle/issues/152)) ([5e3f958](https://github.com/Einlanzerous/chronicle/commit/5e3f958a1a3416901882ce4b8f975f9124059410))
+* **api:** pin a memo's audio after the fact — raise retention from the note view (CHRN-128) ([#144](https://github.com/Einlanzerous/chronicle/issues/144)) ([7e8b33c](https://github.com/Einlanzerous/chronicle/commit/7e8b33ce10d2ae1744dd28f686c83f7a4d866ec4))
+* **mobile:** on-device batch triage with a ticket deep link (CHRN-63) ([#147](https://github.com/Einlanzerous/chronicle/issues/147)) ([703afaf](https://github.com/Einlanzerous/chronicle/commit/703afaf34e0ea297434b4f0752293cd921d90fa9))
+
+
+### Bug Fixes
+
+* **mobile:** triage files every complete proposal, a held discard says it will discard, a refusal is a sentence (CHRN-137) ([#151](https://github.com/Einlanzerous/chronicle/issues/151)) ([24b939f](https://github.com/Einlanzerous/chronicle/commit/24b939f32a238c035e9f4aeeeea2225bea903cb1))
+
 ## 0.2.0 (2026-09-27)
 
 
