@@ -560,6 +560,42 @@ It checks on a schedule and notifies. The signature check is Android's own, not
 Obtainium's: the installer accepts an update only when it is signed within the
 app's lineage, the same rule as `adb install -r`.
 
+The configuration, read off Obtainium 1.6.17 on the Pixel (2026-10-03) with the
+app already installed at 0.2.0. *Add App*, the source URL above, then under
+*Additional options*:
+
+| setting | value |
+|---|---|
+| Filter APKs by regular expression | `^chronicle-.*\.apk$` |
+| Fallback to older releases | **on** (its default) |
+| Reconcile version string with version detected from OS | **on** (its default) |
+| Trim version string with RegEx | empty |
+| Sort method | Release date |
+| Include prereleases, Verify the 'latest' tag, Track-only | off |
+
+Only the filter is typed; the rest are Obtainium's defaults, listed because two
+of them carry weight. **Fallback to older releases** is what makes the filter
+enough: the newest Release in this repository is usually a server `v*` one with
+no APK, and with the fallback on Obtainium walks back to the newest Release
+that has a matching asset. Turn it off and it stops at the server release and
+finds nothing. **Reconcile** is what squares the tag `mobile-v0.2.0` with the
+installed `versionName 0.2.0`: with it on and no trim regex, the app page reads
+`mobile-v0.2.0 Installed / Latest`, lists `chronicle-0.2.0.apk`, and the
+*Update* button is disabled.
+
+That reading was taken after Obtainium had installed `chronicle-0.2.0.apk` over
+the existing 0.2.0 once, during setup: Android now records Obtainium as the
+app's installer, with the same version code and signer, and the app opened
+still signed in. So an install through Obtainium is seen working; whether it
+would have adopted the existing install without that reinstall is not.
+
+Its *Certificate Hashes* show both certificates in the lineage -- `EF:F5:B6:32…`
+(the old debug key) and `38:15:EA:FB…` (the release key) -- which is the
+rotation from [Signing, and the key](#signing-and-the-key) seen from outside.
+
+Not yet seen: an update to a newer version through it. The first one is
+`mobile-v0.3.0`.
+
 The fallback with no app on the phone is GitHub's *Watch -> Custom ->
 Releases* email, then install as above.
 
