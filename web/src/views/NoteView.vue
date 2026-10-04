@@ -214,7 +214,6 @@ async function loadProvenance(ref_: string, seq: number): Promise<void> {
   provenanceRevisions.value = zipped
 }
 
-/** One block per memo, oldest first -- the list's own order. */
 // ── Keeping the recording (CHRN-128) ─────────────────────────────────────
 //
 // One action: raise this memo's retention to `forever`. The server only ever
@@ -252,6 +251,7 @@ async function pinAudio(memoId: string): Promise<void> {
   }
 }
 
+/** One block per memo, oldest first -- the list's own order. */
 const provenanceBlocks = computed(() =>
   provenance.value.map((entry) => provenanceBlock(entry, provenanceRevisions.value.get(entry.revision_seq))),
 )
