@@ -26,6 +26,11 @@ void main() {
       expect(redirectFor(location: queueRoute, ready: false), isNull);
     });
 
+    test('triage needs a credential: it reads and decides on the server', () {
+      expect(redirectFor(location: triageRoute, ready: false), '/sign-in');
+      expect(redirectFor(location: triageRoute, ready: true), isNull);
+    });
+
     test('every other route without a credential goes to the front door', () {
       expect(redirectFor(location: '/', ready: false), '/sign-in');
     });

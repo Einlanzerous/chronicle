@@ -48,3 +48,13 @@ final uploadsApiProvider = Provider<UploadsApi>(
 final memosApiProvider = Provider<MemosApi>(
   (ref) => MemosApi(ref.watch(apiClientProvider)),
 );
+
+/// CHRN-63's triage screen: the batch, the decisions, hold and release.
+final triageApiProvider = Provider<TriageApi>(
+  (ref) => TriageApi(ref.watch(apiClientProvider)),
+);
+
+/// The live card under an accepted ticket (`POST /references/resolve`).
+final referencesApiProvider = Provider<ReferencesApi>(
+  (ref) => ReferencesApi(ref.watch(apiClientProvider)),
+);

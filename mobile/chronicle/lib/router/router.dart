@@ -39,6 +39,7 @@ import '../features/capture/capture_screen.dart';
 import '../features/home/home_screen.dart';
 import '../features/queue/queue_screen.dart';
 import '../features/signin/sign_in_screen.dart';
+import '../features/triage/triage_screen.dart';
 
 /// The one route that is reachable without a credential.
 const captureRoute = '/capture';
@@ -49,7 +50,10 @@ const captureRoute = '/capture';
 /// this gone anywhere" -- not a reason to bounce the screen that says so.
 const queueRoute = '/queue';
 
-final routerProvider = Provider<GoRouter>((ref) {
+/// CHRN-63's batch triage. Unlike capture and queue it needs a credential.
+const triageRoute = '/triage';
+
+final routerProvider =Provider<GoRouter>((ref) {
   return GoRouter(
     initialLocation: '/',
     // Rebuilt when either fact changes, so clearing the token on a 401 bounces
@@ -64,6 +68,9 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/sign-in', builder: (_, _) => const SignInScreen()),
       GoRoute(path: captureRoute, builder: (_, _) => const CaptureScreen()),
       GoRoute(path: queueRoute, builder: (_, _) => const QueueScreen()),
+      // Behind the sign-in redirect on purpose: triage reads and decides on the
+      // server, so there is nothing to show a device with no credential.
+      GoRoute(path: triageRoute, builder: (_, _) => const TriageScreen()),
     ],
   );
 });

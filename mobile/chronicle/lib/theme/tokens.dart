@@ -91,3 +91,21 @@ const minTapTarget = 44.0;
 /// actually needs."
 const String? fontSans = null; // platform sans
 const String fontMono = 'monospace';
+
+/// Newsreader is the canvas's serif for what a person said (a memo's title);
+/// bundled the same way and at the same time as the other faces above, so it is
+/// a role here and the platform serif until then.
+const String fontSerif = 'serif';
+
+/// Board 1b's B2 -- the lane (CHRN-63). Ported from the canvas's own frame, not
+/// from `web/src/styles/tokens.css`: the web client has no token for it yet, so
+/// this is the first place the discussion colour is named. Coral and vellum
+/// are the ones above ([refSwitchyard], [chSignal]); discussion is the third
+/// lane's fill, and like them it means that destination and nothing else.
+const chDiscussion = Color(0xFFC08CD8);
+
+/// A lane the Scribe did not pick, and the control surfaces on board 1a.
+const chLaneOff = Color(0xFF15161A);
+
+/// The dimmest text on the canvas: a memo's duration, a discard's reason.
+const chTextDim = Color(0xFF4C4A46);

@@ -8,8 +8,8 @@ nothing. **CHRN-61** adds the durable offline queue this README's own
 [queue section](#the-durable-offline-queue-chrn-61) describes.
 
 The `DISCARD NOW / 30 DAYS / FOREVER` confirm is CHRN-62 and batch triage is
-CHRN-63 — both `review_mode: decision`, so they owe a written decision before
-any code, same as CHRN-60 and CHRN-61 did.
+CHRN-63; the [triage section](#batch-triage-chrn-63) below describes the
+latter.
 
 ## The toolkit, and why it was not a fresh decision
 
@@ -39,7 +39,7 @@ CI pins the same two versions (`.github/workflows/mobile.yml`).
 ```sh
 flutter pub get
 flutter analyze          # the lint gate -- run AFTER the last edit, not before
-flutter test             # 238 tests, no hardware
+flutter test             # 420 tests, no hardware
 flutter build apk --debug
 ```
 
@@ -190,7 +190,7 @@ thing that has ever cleared a dead token here.
 
 ### Verification status
 
-`flutter analyze`, `flutter test` (238 tests, including a faithful in-Dart
+`flutter analyze`, `flutter test` (420 tests, including a faithful in-Dart
 fake Chronicle server, a kill harness over every I/O boundary of a
 multi-chunk upload, and a genuine two-engine race) and `flutter build apk
 --debug` are all green — see the commits on `chrn-61-durable-upload-queue`.
@@ -295,6 +295,96 @@ On the phone, each queue row carries `AUDIO · 30 DAYS` / `FOREVER` / `DISCARD
 NOW`, or `DEFAULT (30 DAYS)` for a skip or an expired grace. On the web, the note's
 provenance block already renders the server's own reading of it:
 `PRUNES <date>`, `PINNED — KEPT`, or `PRUNES AT THE NEXT SWEEP`.
+
+## Batch triage (CHRN-63)
+
+Board 1b's B2, "Route decision, variation -- the lane": **Home -> Evening
+triage** (`/triage`, behind the sign-in redirect -- triage reads and decides on
+the server, so a device with no credential has nothing to show). A day's memos,
+each with the Scribe's pick filled in across three lanes, `TICKET` / `NOTE` /
+`DISC` (coral, vellum, `chDiscussion`), the other two dim, and one mono line
+under it with where the pick goes. **One primary button is pinned to the foot
+and its label is the pending outcome, `FILE 3 · DISCARD 1`: that is the commit.**
+So the common case is zero taps per memo and one to file, and a wrong proposal
+costs one tap on the right lane. A memo the Scribe would discard is dimmed and
+shows a bordered `DISCARD` strip with its reason in place of the lanes.
+
+Board 1a's frame 06 is the card an accepted ticket gets: `LINKED · NOT COPIED`, a
+coral left rule, the key, the ticket's title, `OPEN ↗`.
+
+The rules live in `lib/triage/triage_rows.dart`, beside `web/src/lib/triage.ts`
+(CHRN-55), and say the same things; the first version of this screen was a port
+of the web's rows and was reworked to the board.
+
+- **Nothing is sent until FILE.** A lane tap stages the choice on the row; FILE
+  sends every row it counts in one request -- as shown, or as the person's
+  override -- and the discards enter their undo window.
+- **Override is a tap on a different lane**, and an override is not a patch: the
+  server builds the decision from the override alone and validates it like a
+  model's. So a lane tap carries the title and text across, and what the new
+  destination needs that the proposal did not carry (a note's page, a ticket's
+  project key) is left blank: the row says `NEEDS INPUT · ...` and FILE leaves
+  it alone until the row's own tap supplies it. Nothing is guessed.
+- **A proposal the server is not confident about is not filed blind.**
+  `pre_acceptable` is a hint for the default, never a licence; such a row says
+  `LOW CONFIDENCE · TAP THE LANE TO CONFIRM` and joins FILE when its picked
+  lane is tapped.
+- **Tapping a row's title** opens the single-memo confirm: the whole transcript,
+  the proposal in full, and `ACCEPT AS SHOWN` -- which sends that memo on its
+  own, now, and is the only path that carries the per-item `confirm_edit` an
+  append or supersede costs -- plus EDIT (title, project, page, text), HOLD and
+  DISCARD. Neither FILE nor the header's `ACCEPT ALL` ever sets `confirm_edit`.
+- **`ACCEPT ALL` (header)** commits the untouched pre-filled set exactly as it
+  did before the rework; **FILE** commits the lanes as they stand (that set,
+  plus confirmed, overridden and discarded rows). Whether the header action
+  should instead reset every row to the Scribe's pick is an open question: the
+  canvas draws both and does not say.
+- **A failed item stays visibly pending.** Only `applied` takes a row out of the
+  batch; `failed`, `refused`, `stale` and `needs_input` each leave it in place
+  under `... · STILL PENDING` with the server's reason. There is no per-row
+  RETRY: a failed row is still counted in FILE, which is the retry. A refused
+  row waits for a changed decision. A network failure says to retry (a replay
+  answers `applied` from the recorded decision).
+- **A discard is held back, not recalled.** `discarded` is terminal on the
+  server, so `UNDO 10 MIN` means the request is not sent until the window
+  closes, the screen is left or the next batch loads. Kill the app inside the
+  window and the memo is simply still waiting.
+- **An accepted ticket is one tap from open.** The whole card is the tap; it
+  opens the `ticket_url` the server answered with in the browser
+  (`url_launcher`). The card carries the upstream's own state word and its age,
+  and says `SWITCHYARD UNREACHABLE` rather than showing a confident stale value
+  (CLAUDE.md invariant 2).
+- **44 px.** The canvas draws the lanes 38 px tall; the epic's 44 px minimum tap
+  target wins, so every lane, the title and `ACCEPT ALL` have a hit area of at
+  least 44 px.
+- **Capture times are read defensively.** A device clock can assert any value
+  from year 100 to 9900 (CHRN-118), so a time before 2020 or more than a day
+  ahead is drawn `--:--` and never as a date it was not.
+- **Named deferrals:** the web's DEFERRED list (parked memos from earlier
+  evenings) is not on the phone; a memo held here shows as held until the
+  screen is left, and the web lists it. The discussion colour `chDiscussion`
+  is ported from the canvas frame, not from `web/src/styles/tokens.css`, which
+  has no token for it yet. Batches are the server's 25 at a time.
+
+### The device pass for CHRN-63
+
+Still owed -- the tests prove the behaviour on a 412 x 915 surface, not on the
+phone. On a debug build against a server with a few transcribed memos and the
+Scribe on:
+
+1. **Home -> Evening triage.** Expect the sub-line, one row per memo with the
+   Scribe's lane filled, and `FILE n · DISCARD m` pinned at the foot. Compare
+   against board 1b's B2.
+2. **FILE** once. Expect the rows to read `... CREATED` and a proposed discard
+   to read `DISCARDED · UNDO 10 MIN`.
+3. **A TICKET row:** tap the coral card. Expect the Switchyard ticket open in
+   the browser, one tap from the row.
+4. **Failure:** with Wi-Fi and data off, FILE. Expect `FAILED · STILL PENDING`
+   under each row and the button still counting them; restore the network and
+   FILE again.
+5. **Override:** tap a different lane on a row. Expect `YOUR CHOICE`, and
+   `NEEDS INPUT` if the destination wants something the proposal lacked; FILE
+   it.
 
 ## Pruning the phone's copy (CHRN-120)
 
@@ -728,8 +818,12 @@ lib/
     queue_controller.dart  the in-app triggers
     queue_label.dart   the screen label, as a pure function of persisted state
     background.dart    the WorkManager headless entrypoint
+  triage/              CHRN-63: batch triage -- see the section below
+    triage_rows.dart   the rules, as pure functions (a port of web/src/lib/triage.ts)
+    triage_controller.dart  the batch, the decisions, the ticket cards
   theme/               tokens ported from web/src/styles/tokens.css
   features/
+    triage/            board 1b B2 (the lanes, FILE), board 1a 06 (the ticket card)
     signin/            scan, or paste the link
     home/               account, address, connection state
     capture/           board 1a screens 01/02 -- idle, recording; CHRN-62's retention card
