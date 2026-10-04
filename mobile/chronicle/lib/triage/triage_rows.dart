@@ -73,14 +73,26 @@ class Problem extends LocalState {
 }
 
 class TriageRow {
-  const TriageRow({required this.item, this.local = const Pending(), this.draft, this.notice});
+  const TriageRow({
+    required this.item,
+    this.local = const Pending(),
+    this.draft,
+    this.confirmed = false,
+    this.notice,
+  });
 
   final BatchItem item;
   final LocalState local;
 
-  /// What the person typed, kept when an edit did not land so EDIT reopens it
-  /// rather than the proposal.
+  /// What the person chose instead of the Scribe's pick -- a tap on another
+  /// lane, or the editor -- staged until FILE sends it, and kept if it did not
+  /// land so the next FILE (or the editor) starts from it, not the proposal.
   final Draft? draft;
+
+  /// A proposal the server did not call confident, which the person has looked
+  /// at and confirmed as shown (a tap on its already-picked lane). The
+  /// confidence flag is a hint for the default, never a licence to file blind.
+  final bool confirmed;
 
   /// One line carried across a re-read -- "the proposal changed".
   final String? notice;
@@ -92,6 +104,7 @@ class TriageRow {
     LocalState? local,
     Draft? draft,
     bool clearDraft = false,
+    bool? confirmed,
     String? notice,
     bool clearNotice = false,
   }) =>
@@ -99,6 +112,7 @@ class TriageRow {
         item: item ?? this.item,
         local: local ?? this.local,
         draft: clearDraft ? null : (draft ?? this.draft),
+        confirmed: confirmed ?? this.confirmed,
         notice: clearNotice ? null : (notice ?? this.notice),
       );
 }
@@ -165,7 +179,73 @@ bool isWaiting(TriageRow row) {
 /// has touched it here". A row the server already answered about is never
 /// swept up again by a batch key.
 bool isPrefilled(TriageRow row) =>
-    row.local is Pending && rowKind(row) == RowKind.prefilled && row.item.preAcceptable;
+    row.local is Pending &&
+    row.draft == null &&
+    rowKind(row) == RowKind.prefilled &&
+    row.item.preAcceptable;
+
+/// The lane a row shows as picked: the person's choice if they made one,
+/// otherwise the Scribe's. Null when there is neither.
+String? pickOf(TriageRow row) => row.draft?.destination ?? row.item.proposal?.destination.value;
+
+/// What FILE does with a row.
+enum Filing { file, discard, none }
+
+/// Whether FILE takes this row, and as what. The button's label is the count of
+/// these, so what it says is what it sends.
+///
+///  - a staged choice files as itself (a DISCARD choice discards), unless it is
+///    still missing something the destination requires -- then the row is
+///    waiting on the person and FILE leaves it alone;
+///  - an untouched row files as shown when the Scribe is confident or the
+///    person confirmed it, and a proposed DISCARD discards;
+///  - a row whose last attempt `failed` is simply filed again, which is the
+///    retry; one the server refused or needs input for is not, until the
+///    person changes it.
+Filing filingOf(TriageRow row) {
+  final l = row.local;
+  if (l is! Pending && l is! Problem) return Filing.none;
+  final d = row.draft;
+  if (d != null) {
+    if (d.destination == 'DISCARD') return Filing.discard;
+    return validateDraft(d) == null ? Filing.file : Filing.none;
+  }
+  if (l is Problem && l.status != ProblemStatus.failed) return Filing.none;
+  switch (rowKind(row)) {
+    case RowKind.discardProposed:
+      return Filing.discard;
+    case RowKind.prefilled:
+      return row.item.preAcceptable || row.confirmed ? Filing.file : Filing.none;
+    default:
+      return Filing.none;
+  }
+}
+
+/// What a staged choice is still missing, in a person's words, or null.
+String? stagedProblem(TriageRow row) {
+  final d = row.draft;
+  if (d == null || d.destination == 'DISCARD') return null;
+  return validateDraft(d);
+}
+
+/// FILE's label: the pending outcome. `FILE 3 · DISCARD 1`, `FILE 3`, `DISCARD 1`.
+String fileLabel(int file, int discard) {
+  if (file == 0 && discard == 0) return 'NOTHING TO FILE';
+  return [if (file > 0) 'FILE $file', if (discard > 0) 'DISCARD $discard'].join(' · ');
+}
+
+/// Moves a row onto [lane]. Returns the draft that stages it, built from the
+/// person's last choice or else the proposal, so the title and the text carry
+/// across; whatever the new destination requires that this cannot supply is
+/// left blank and [stagedProblem] names it -- the row then needs input, rather
+/// than anything being guessed for the person.
+///
+/// Null means "back to the Scribe's pick": the lane tapped is the proposal's.
+Draft? draftForLane(TriageRow row, String lane) {
+  if (lane == row.item.proposal?.destination.value) return null;
+  final base = row.draft ?? draftFor(row.item);
+  return base.copyWith(destination: lane);
+}
 
 /// append and supersede write into a note somebody already wrote.
 bool editsExistingNote(Proposal? p) =>

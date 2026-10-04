@@ -194,16 +194,73 @@ class TriageController extends Notifier<TriageState> {
     return _send([for (final r in batch) _Outgoing(acceptDecision(r.item, single: false), edited: false)]);
   }
 
-  /// An override. Sends the draft in full -- an override is not a patch.
-  Future<void> edit(String memoId, Draft draft) {
+  /// A tap on a lane. The Scribe's pick is already filled, so this is the
+  /// override: tapping another lane stages that destination (sent by [fileAll],
+  /// not now), tapping the proposal's own lane puts the row back to the Scribe's
+  /// pick -- or, for a proposal the server was not confident about, confirms it
+  /// as shown.
+  ///
+  /// What the new destination needs that the proposal did not carry (a note's
+  /// page, a ticket's project) is left blank, and the row says it needs input
+  /// ([stagedProblem]) instead of sending a decision the server would refuse.
+  void pickLane(String memoId, String lane) {
     final r = row(memoId);
-    if (r == null || !isDecidable(r)) return Future.value();
-    if (draft.destination == 'DISCARD') {
-      discard(memoId);
-      return Future.value();
+    if (r == null || !isDecidable(r)) return;
+    final staged = draftForLane(r, lane);
+    if (staged == null) {
+      _update(memoId, (x) => x.copyWith(clearDraft: true, confirmed: !x.item.preAcceptable, clearNotice: true));
+    } else {
+      _update(memoId, (x) => x.copyWith(draft: staged, confirmed: false, clearNotice: true));
     }
-    _update(memoId, (x) => x.copyWith(draft: draft));
-    return _send([_Outgoing(editDecision(r.item, draft), edited: true)]);
+  }
+
+  /// Stages the editor's draft for [fileAll]. An override is not a patch, so the
+  /// draft carries every field its destination requires.
+  void stage(String memoId, Draft draft) {
+    final r = row(memoId);
+    if (r == null || !isDecidable(r)) return;
+    _update(memoId, (x) => x.copyWith(draft: draft, confirmed: false, clearNotice: true));
+  }
+
+  /// How many rows FILE would send, and how many it would discard.
+  ({int file, int discard}) filing() {
+    var file = 0, discard = 0;
+    for (final r in state.rows) {
+      switch (filingOf(r)) {
+        case Filing.file:
+          file++;
+        case Filing.discard:
+          discard++;
+        case Filing.none:
+          break;
+      }
+    }
+    return (file: file, discard: discard);
+  }
+
+  /// FILE: the commit for the lanes as they stand. Everything [filingOf] takes
+  /// goes in one request -- accepted as shown, or as the person's override -- and
+  /// the discards enter their undo window. NEVER `single`: `confirm_edit` is the
+  /// per-item confirmation an append or a supersede costs, so a row that needs
+  /// it comes back `refused` and stays pending, to be confirmed on its own.
+  Future<void> fileAll() async {
+    final out = <_Outgoing>[];
+    final discards = <String>[];
+    for (final r in state.rows) {
+      switch (filingOf(r)) {
+        case Filing.file:
+          final d = r.draft;
+          out.add(d == null
+              ? _Outgoing(acceptDecision(r.item, single: false), edited: false)
+              : _Outgoing(editDecision(r.item, d), edited: true));
+        case Filing.discard:
+          discards.add(r.memoId);
+        case Filing.none:
+          break;
+      }
+    }
+    discards.forEach(discard);
+    await _send(out);
   }
 
   Future<void> _send(List<_Outgoing> out) async {
@@ -309,7 +366,7 @@ class TriageController extends Notifier<TriageState> {
   void discard(String memoId) {
     final r = row(memoId);
     if (r == null || !isDecidable(r)) return;
-    _update(memoId, (x) => x.copyWith(clearNotice: true, local: Discarding(_now().add(discardUndo))));
+    _update(memoId, (x) => x.copyWith(clearNotice: true, clearDraft: true, local: Discarding(_now().add(discardUndo))));
     unawaited(_refillIfDone());
   }
 

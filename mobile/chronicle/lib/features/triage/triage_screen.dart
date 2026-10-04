@@ -1,22 +1,37 @@
-/// Board 1a, B2 -- batch triage on the phone (CHRN-63).
+/// Board 1b, B2 -- batch triage on the phone (CHRN-63): "Route decision,
+/// variation -- the lane".
 ///
-/// A day's memos, each pre-filled with the Scribe's proposal. The interaction
-/// budget is ONE TAP per memo in the common case: a pre-filled row carries its
-/// own ACCEPT, and ACCEPT ALL takes every one the server is confident about.
-/// Anything that needs two taps for a correct proposal has failed at the thing
-/// this screen exists to do.
+/// A day's memos, each with the Scribe's pick already filled in on three
+/// lanes -- `TICKET` / `NOTE` / `DISC` -- and ONE primary button pinned to the
+/// foot whose label is the pending outcome, `FILE 3 · DISCARD 1`. That button
+/// is the commit, so the common case is zero taps per memo and one to file, and
+/// a wrong proposal costs one tap on the right lane. (The ticket's "one tap per
+/// memo" budget is met with room to spare; anything that needs two taps for a
+/// correct proposal has failed at the thing this screen exists to do.)
 ///
 /// What the screen draws, and why each is not decoration:
 ///
-///  - THE PROPOSAL IS THE ONLY STEEL. It is generated (tier 1, CLAUDE.md
-///    invariant 1); a person's decision beside it is vellum.
+///  - THE SCRIBE'S PICK IS A FILL, NOT A CHOICE MADE. It is generated (tier 1,
+///    CLAUDE.md invariant 1), so a pick the person has not touched is the
+///    Scribe's, and a lane the person tapped is theirs and says so in the
+///    detail line. Nothing is sent until FILE.
 ///  - A FAILED ITEM STAYS VISIBLY PENDING. Only `applied` takes a row out of
 ///    the batch; every other answer keeps it in place under a plain
-///    `... · STILL PENDING` label with the server's own reason, and a retry.
-///  - AN ACCEPTED TICKET IS ONE TAP FROM OPEN. The card under it is coral
-///    (Switchyard's reserved colour), says `LINKED · NOT COPIED`, carries the
-///    upstream's state word and its age, and says so when the upstream is
-///    unreachable rather than showing a confident stale value (invariant 2).
+///    `... · STILL PENDING` label with the server's reason. There is no per-row
+///    RETRY because FILE is the retry: a failed row is still counted in it.
+///  - AN ACCEPTED TICKET IS ONE TAP FROM OPEN. Board 1a's frame 06 card: a coral
+///    left rule, the key, the ticket's title, `OPEN ↗`, under `LINKED · NOT
+///    COPIED`; the upstream's state word and its age ride with it, and an
+///    unreachable upstream says so rather than showing a confident stale value
+///    (invariant 2).
+///
+/// Everything the lanes cannot say -- the title, the project, the page, the
+/// whole transcript, HOLD, and the single-memo confirm an append needs -- is
+/// behind a tap on the row's title, so it is one tap further for the memo that
+/// wants reading and none for the memo that does not.
+///
+/// **The canvas draws the lanes 38 px tall; the epic's 44 px minimum tap target
+/// wins**, so each lane's hit area is 44 px.
 library;
 
 import 'dart:async';
@@ -24,13 +39,23 @@ import 'dart:async';
 import 'package:chronicle_api/api.dart' as gen;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 
 import '../../theme/theme.dart';
 import '../../theme/tokens.dart';
 import '../../triage/triage_controller.dart';
 import '../../triage/triage_rows.dart';
 import 'triage_editor.dart';
+
+/// The three lanes, left to right, with the label the canvas draws.
+const _lanes = [('TICKET', 'TICKET'), ('NOTE', 'NOTE'), ('DISCUSSION', 'DISC')];
+
+/// A lane's fill when it is the pick: coral for a ticket (Switchyard's reserved
+/// colour), vellum for a note, [chDiscussion] for a discussion.
+Color _laneColor(String destination) => switch (destination) {
+      'TICKET' => refSwitchyard,
+      'NOTE' => chSignal,
+      _ => chDiscussion,
+    };
 
 class TriageScreen extends ConsumerStatefulWidget {
   const TriageScreen({super.key});
@@ -65,64 +90,92 @@ class _TriageScreenState extends ConsumerState<TriageScreen> {
     final s = ref.watch(triageControllerProvider);
     final now = ref.watch(triageClockProvider)();
     final counts = countRows(s.rows);
-    final day = batchDayLabel(s.rows.map((r) => r.item.capturedAt), now);
+    final plan = _ctl.filing();
 
     return Scaffold(
       body: SafeArea(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(space3, space3, space3, 0),
+            Container(
+              height: 52,
+              padding: const EdgeInsets.symmetric(horizontal: space4),
+              decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: chRaised))),
               child: Row(
                 children: [
                   Expanded(
-                    child: Text(
-                      'EVENING TRIAGE${day == null ? '' : ' · $day'}',
-                      style: microLabel(color: chSignal, size: sizeSm),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Evening triage',
+                          style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: chText),
+                        ),
+                        if (s.loaded)
+                          Text(
+                            key: const ValueKey('header-counts'),
+                            _subline(counts, s.more),
+                            style: microLabel(size: sizeXxs),
+                          ),
+                      ],
                     ),
                   ),
-                  TextButton(
-                    onPressed: () => context.go('/'),
-                    style: TextButton.styleFrom(minimumSize: const Size(minTapTarget, minTapTarget)),
-                    child: const Text('Home'),
+                  InkWell(
+                    key: const ValueKey('accept-all'),
+                    onTap: counts.prefilled == 0 ? null : _ctl.acceptAll,
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(minHeight: minTapTarget, minWidth: minTapTarget),
+                      child: Center(
+                        child: Text(
+                          'ACCEPT ALL',
+                          style: microLabel(color: counts.prefilled == 0 ? chTextDim : chSignal, size: 10),
+                        ),
+                      ),
+                    ),
                   ),
                 ],
               ),
             ),
-            if (s.loaded)
-              Padding(
-                key: const ValueKey('header-counts'),
-                padding: const EdgeInsets.symmetric(horizontal: space3),
-                child: Text(headerCounts(counts, more: s.more), style: microLabel(size: sizeXs)),
-              ),
-            const SizedBox(height: space2),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: space3),
+            Expanded(child: _Body(state: s, now: now)),
+            Container(
+              padding: const EdgeInsets.fromLTRB(space4, 14, space4, 14),
+              decoration: const BoxDecoration(border: Border(top: BorderSide(color: chRaised))),
               child: SizedBox(
                 width: double.infinity,
+                height: 52,
                 child: FilledButton(
-                  key: const ValueKey('accept-all'),
-                  onPressed: counts.prefilled == 0 ? null : _ctl.acceptAll,
-                  style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(minTapTarget)),
-                  child: Text('ACCEPT ALL PRE-FILLED · ${counts.prefilled}'),
+                  key: const ValueKey('file'),
+                  onPressed: plan.file + plan.discard == 0 ? null : _ctl.fileAll,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: chSignal,
+                    foregroundColor: chBase,
+                    shape: const RoundedRectangleBorder(),
+                  ),
+                  child: Text(
+                    fileLabel(plan.file, plan.discard),
+                    style: const TextStyle(
+                      fontFamily: fontMono,
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 1.5,
+                    ),
+                  ),
                 ),
               ),
             ),
-            const SizedBox(height: space1),
-            Expanded(child: _Body(state: s, now: now)),
-            if (s.loaded)
-              Container(
-                key: const ValueKey('footer-counts'),
-                width: double.infinity,
-                padding: const EdgeInsets.all(space3),
-                decoration: const BoxDecoration(border: Border(top: BorderSide(color: chLine))),
-                child: Text(footerCounts(counts, more: s.more), style: microLabel(size: sizeXxs)),
-              ),
           ],
         ),
       ),
     );
+  }
+
+  /// `4 MEMOS · SCRIBE PRE-FILLED`, plus how many did not land. [more] is the
+  /// batch cap talking: the server hands over one screen (25) and no total.
+  static String _subline(TriageCounts c, bool more) {
+    final noun = c.waiting == 1 && !more ? 'MEMO' : 'MEMOS';
+    return '${c.waiting}${more ? '+' : ''} $noun · SCRIBE PRE-FILLED'
+        '${c.failed > 0 ? ' · ${c.failed} FAILED' : ''}';
   }
 }
 
@@ -159,10 +212,8 @@ class _Body extends ConsumerWidget {
     }
     return RefreshIndicator(
       onRefresh: ref.read(triageControllerProvider.notifier).load,
-      child: ListView.separated(
-        padding: const EdgeInsets.all(space3),
+      child: ListView.builder(
         itemCount: state.rows.length,
-        separatorBuilder: (_, _) => const SizedBox(height: space2),
         itemBuilder: (context, i) => _RowCard(row: state.rows[i], state: state, now: now),
       ),
     );
@@ -182,58 +233,95 @@ class _RowCard extends ConsumerWidget {
     final kind = rowKind(row);
     final local = row.local;
     final item = row.item;
-    final stuck = _isStuck(row, kind);
     final id = row.memoId;
     final p = item.proposal;
+    final pick = pickOf(row);
+    final decidable = isDecidable(row) && local is! Sending;
+    final discarding = filingOf(row) == Filing.discard;
+    final stuck = _isStuck(row, kind);
+    final missing = stagedProblem(row);
 
-    return Container(
+    final body = Container(
       key: ValueKey('row-$id'),
+      padding: const EdgeInsets.symmetric(horizontal: space4, vertical: 15),
       decoration: BoxDecoration(
-        color: chRaised,
-        // No radius: Flutter cannot round a border whose sides differ, and the
-        // grey left rule on a stuck row is the whole point of the difference.
         border: Border(
-          left: BorderSide(color: stuck ? chTextMeta : chLine, width: stuck ? 3 : 1),
-          top: const BorderSide(color: chLine),
-          right: const BorderSide(color: chLine),
-          bottom: const BorderSide(color: chLine),
+          bottom: const BorderSide(color: chRaised),
+          // The grey left rule is the board's mark for a decision that did not
+          // finish; nothing else uses it.
+          left: stuck ? const BorderSide(color: chTextMeta, width: 3) : BorderSide.none,
         ),
       ),
-      padding: const EdgeInsets.all(space3),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            '${formatClock(item.capturedAt, now)} · ${formatDuration(item.durationMs)}',
-            style: monoMeta(size: sizeXs),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            children: [
+              Text(formatClock(item.capturedAt, now), style: monoMeta(color: chTextMeta, size: sizeXs)),
+              const SizedBox(width: 9),
+              Text(formatDuration(item.durationMs), style: monoMeta(color: chTextDim, size: sizeXxs + 0.5)),
+            ],
           ),
-          const SizedBox(height: space1),
-          // Tapping the excerpt opens the one-off confirm: the whole transcript
-          // and the proposal in full, for the memo that wants reading first.
+          // The title, and the one way to everything the lanes do not say: the
+          // whole transcript, HOLD, the title and project, and the single-memo
+          // confirm an append needs.
           InkWell(
             key: ValueKey('open-$id'),
-            onTap: isDecidable(row) ? () => _openConfirm(context, ctl) : null,
+            onTap: decidable ? () => _openConfirm(context, ctl) : null,
             child: ConstrainedBox(
               constraints: const BoxConstraints(minHeight: minTapTarget),
               child: Align(
                 alignment: Alignment.centerLeft,
                 child: Text(
-                  item.excerpt,
+                  _title(),
                   maxLines: 3,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: sizeMd, color: chText),
+                  style: TextStyle(
+                    fontFamily: fontSerif,
+                    fontSize: 16.5,
+                    height: 1.42,
+                    color: discarding ? chText2 : chText,
+                  ),
                 ),
               ),
             ),
           ),
-          if (p != null && (kind == RowKind.prefilled || kind == RowKind.discardProposed || kind == RowKind.needsInput))
-            _ProposalBlock(item: item, proposal: p),
-          if (kind == RowKind.needsInput && p == null)
-            Padding(
-              padding: const EdgeInsets.only(top: space1),
-              child: Text(
-                item.error ?? 'NO PROPOSAL · NEEDS YOUR INPUT',
-                style: microLabel(size: sizeXxs),
+          if (_showsLanes(kind, local, discarding)) ...[
+            _LaneRow(
+              memoId: id,
+              pick: pick,
+              enabled: decidable,
+              onPick: (lane) => ctl.pickLane(id, lane),
+            ),
+            if (_detail(pick, p, missing) case final line?)
+              Padding(
+                padding: const EdgeInsets.only(top: 9),
+                child: Text(line, key: ValueKey('detail-$id'), style: monoMeta(color: chTextMeta, size: sizeXxs + 0.5)),
+              ),
+          ] else if (discarding && local is! Discarding)
+            // A discard is shown as one: bordered, with the Scribe's reason, in
+            // place of the lanes. Override is the row's own tap.
+            Container(
+              key: ValueKey('discard-strip-$id'),
+              height: 38,
+              margin: const EdgeInsets.only(top: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              decoration: BoxDecoration(border: Border.all(color: chLine)),
+              child: Row(
+                children: [
+                  Text('DISCARD', style: microLabel(color: chTextMeta, size: sizeXxs + 0.5)),
+                  const SizedBox(width: 11),
+                  Expanded(
+                    child: Text(
+                      row.draft != null ? 'your choice' : (p?.reason ?? ''),
+                      textAlign: TextAlign.right,
+                      overflow: TextOverflow.ellipsis,
+                      style: monoMeta(color: chTextDim, size: sizeXxs + 0.5),
+                    ),
+                  ),
+                ],
               ),
             ),
           if (local is Problem) _problemLine(local),
@@ -242,30 +330,82 @@ class _RowCard extends ConsumerWidget {
               padding: const EdgeInsets.only(top: space1),
               child: Text(row.notice!, key: ValueKey('notice-$id'), style: microLabel(color: chText2, size: sizeXxs)),
             ),
-          if (local is Held)
+          if (local is Held) ...[
             _stateLine('HELD · NOT NOW${local.reason.isEmpty ? '' : ' · ${local.reason}'}'),
-          if (local is Discarding)
+            _textAction('RELEASE', 'release', () => ctl.release(id)),
+          ],
+          if (local is Discarding) ...[
             _stateLine('DISCARDED · UNDO ${undoMinutesLeft(local.due, now)} MIN'),
+            _textAction('UNDO', 'undo', () => ctl.undoDiscard(id)),
+          ],
           if (local is Discarded) _stateLine('DISCARDED'),
           if (kind == RowKind.linkInFlight) _stateLine('DECIDED · WAITING FOR SWITCHYARD'),
-          if (kind == RowKind.linkUnresolved) _stateLine('DECIDED · LINK NOT FOUND YET · STILL PENDING', stuck: true),
-          if (kind == RowKind.linkAmbiguous) _stateLine('DECIDED · MORE THAN ONE TICKET MATCHES · STILL PENDING', stuck: true),
+          if (kind == RowKind.linkUnresolved) _stateLine('DECIDED · LINK NOT FOUND YET · STILL PENDING'),
+          if (kind == RowKind.linkAmbiguous) _stateLine('DECIDED · MORE THAN ONE TICKET MATCHES · STILL PENDING'),
           if (item.link?.state == 'refused' && local is! Accepted)
-            _stateLine('SWITCHYARD REFUSED · ${item.link?.refusedReason ?? 'CHANGE THE DECISION'}', stuck: true),
-          if (local is Accepted) _acceptedBlock(local, ref),
+            _stateLine('SWITCHYARD REFUSED · ${item.link?.refusedReason ?? 'CHANGE THE DECISION'}'),
+          if (local is Accepted) _acceptedBlock(local),
           if (kind == RowKind.sending) _stateLine('SENDING…'),
-          _actions(context, ctl, kind),
         ],
       ),
     );
+
+    // A discard reads as set aside: the row dims, the way the canvas draws it.
+    return discarding || local is Discarding || local is Discarded ? Opacity(opacity: .55, child: body) : body;
   }
 
-  Widget _stateLine(String text, {bool stuck = false}) => Padding(
+  /// A memo's title: the proposal's, else the transcript's own first words.
+  String _title() {
+    final t = (row.draft?.title.isNotEmpty ?? false) ? row.draft!.title : row.item.proposal?.title;
+    return (t != null && t.isNotEmpty) ? t : row.item.excerpt;
+  }
+
+  /// Lanes are for a row that is still waiting on a decision; a discard has its
+  /// strip instead, and a row that has been decided is past choosing.
+  bool _showsLanes(RowKind kind, LocalState local, bool discarding) {
+    if (discarding) return false;
+    if (local is Accepted || local is Held || local is Discarding || local is Discarded) return false;
+    return kind == RowKind.prefilled || kind == RowKind.needsInput || kind == RowKind.discardProposed;
+  }
+
+  /// The mono line under the lanes: where the pick goes, or what it still needs.
+  String? _detail(String? pick, gen.Proposal? p, String? missing) {
+    if (missing != null) return 'NEEDS INPUT · $missing TAP THE TITLE TO ADD IT';
+    if (pick == null) return row.item.error ?? 'NO PROPOSAL · TAP THE TITLE TO ADD DETAIL';
+    final d = row.draft;
+    final mine = d != null;
+    final String where;
+    switch (pick) {
+      case 'TICKET':
+        final key = mine ? d.projectKey : (p?.projectKey ?? '');
+        final type = mine ? d.ticketType : (p?.ticketType ?? 'task');
+        where = '→ ${key.isEmpty ? 'no project' : key} · $type';
+      case 'NOTE':
+        final path = mine ? d.pagePath : (p?.pagePath ?? p?.nearestPage ?? '');
+        final verb = mine ? d.verb : (p?.verb?.value ?? 'create');
+        where = '→ ${path.isEmpty ? 'no page' : path.split('/').join(' / ')}${verb == 'create' ? '' : ' · $verb'}';
+      default:
+        where = '→ open question';
+    }
+    if (mine) return '$where · YOUR CHOICE';
+    if (row.item.preAcceptable || row.confirmed) return where;
+    return '$where · LOW CONFIDENCE · TAP THE LANE TO CONFIRM';
+  }
+
+  Widget _stateLine(String text) => Padding(
         padding: const EdgeInsets.only(top: space1),
-        child: Text(
-          text,
-          key: ValueKey('state-${row.memoId}'),
-          style: microLabel(color: stuck ? chText2 : chTextMeta, size: sizeXxs),
+        child: Text(text, key: ValueKey('state-${row.memoId}'), style: microLabel(color: chTextMeta, size: sizeXxs)),
+      );
+
+  Widget _textAction(String label, String keyName, VoidCallback onTap) => InkWell(
+        key: ValueKey('$keyName-${row.memoId}'),
+        onTap: onTap,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: minTapTarget, minWidth: minTapTarget),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Text(label, style: microLabel(color: chSignal, size: sizeXs)),
+          ),
         ),
       );
 
@@ -290,14 +430,13 @@ class _RowCard extends ConsumerWidget {
     );
   }
 
-  Widget _acceptedBlock(Accepted a, WidgetRef ref) {
+  Widget _acceptedBlock(Accepted a) {
     final r = a.result;
-    final dest = r.destination ?? '';
-    final head = switch (dest) {
-      'TICKET' => 'ACCEPTED · TICKET',
-      'NOTE' => 'ACCEPTED · NOTE${r.noteRef == null ? '' : ' · ${r.noteRef}'}',
-      'DISCUSSION' => 'ACCEPTED · DISCUSSION${r.discussionRef == null ? '' : ' · ${r.discussionRef}'}',
-      _ => 'ACCEPTED',
+    final head = switch (r.destination ?? '') {
+      'TICKET' => 'TICKET CREATED',
+      'NOTE' => 'NOTE CREATED${r.noteRef == null ? '' : ' · ${r.noteRef}'}',
+      'DISCUSSION' => 'DISCUSSION OPENED${r.discussionRef == null ? '' : ' · ${r.discussionRef}'}',
+      _ => 'FILED',
     };
     final key = r.ticketKey;
     return Padding(
@@ -322,57 +461,6 @@ class _RowCard extends ConsumerWidget {
     );
   }
 
-  Widget _actions(BuildContext context, TriageController ctl, RowKind kind) {
-    final id = row.memoId;
-    final local = row.local;
-    Widget btn(String label, String keyName, VoidCallback? onTap, {bool primary = false}) => Expanded(
-          child: Padding(
-            padding: const EdgeInsets.only(right: space1),
-            child: primary
-                ? FilledButton(
-                    key: ValueKey('$keyName-$id'),
-                    onPressed: onTap,
-                    style: FilledButton.styleFrom(minimumSize: const Size(minTapTarget, minTapTarget)),
-                    child: Text(label),
-                  )
-                : OutlinedButton(
-                    key: ValueKey('$keyName-$id'),
-                    onPressed: onTap,
-                    style: OutlinedButton.styleFrom(minimumSize: const Size(minTapTarget, minTapTarget)),
-                    child: Text(label),
-                  ),
-          ),
-        );
-
-    final children = <Widget>[];
-    if (local is Held) {
-      children.add(btn('RELEASE', 'release', () => ctl.release(id)));
-    } else if (local is Discarding) {
-      children.add(btn('UNDO', 'undo', () => ctl.undoDiscard(id)));
-    } else if (local is Problem && local.status == ProblemStatus.failed && row.draft == null && kind == RowKind.prefilled) {
-      // A transient failure of an accept-as-shown is retried as it was.
-      children.add(btn('RETRY', 'accept', () => ctl.accept(id), primary: true));
-      children.add(btn('EDIT', 'edit', () => _edit(context, ctl)));
-    } else if (kind == RowKind.prefilled) {
-      children.add(btn('ACCEPT', 'accept', () => ctl.accept(id), primary: true));
-      children.add(btn('EDIT', 'edit', () => _edit(context, ctl)));
-      children.add(btn('HOLD', 'hold', () => ctl.hold(id)));
-    } else if (kind == RowKind.needsInput) {
-      children.add(btn('EDIT', 'edit', () => _edit(context, ctl), primary: true));
-      children.add(btn('HOLD', 'hold', () => ctl.hold(id)));
-      children.add(btn('DISCARD', 'discard', () => ctl.discard(id)));
-    } else if (kind == RowKind.discardProposed) {
-      children.add(btn('DISCARD', 'discard', () => ctl.discard(id), primary: true));
-      children.add(btn('EDIT', 'edit', () => _edit(context, ctl)));
-      children.add(btn('HOLD', 'hold', () => ctl.hold(id)));
-    }
-    if (children.isEmpty) return const SizedBox.shrink();
-    return Padding(
-      padding: const EdgeInsets.only(top: space2),
-      child: Row(children: children),
-    );
-  }
-
   Future<void> _edit(BuildContext context, TriageController ctl) async {
     final draft = await showTriageEditor(
       context,
@@ -384,7 +472,7 @@ class _RowCard extends ConsumerWidget {
       }.toList()
         ..sort(),
     );
-    if (draft != null) unawaited(ctl.edit(row.memoId, draft));
+    if (draft != null) ctl.stage(row.memoId, draft);
   }
 
   Future<void> _openConfirm(BuildContext context, TriageController ctl) async {
@@ -403,7 +491,7 @@ class _RowCard extends ConsumerWidget {
       case _ConfirmChoice.hold:
         unawaited(ctl.hold(row.memoId));
       case _ConfirmChoice.discard:
-        ctl.discard(row.memoId);
+        ctl.stage(row.memoId, const Draft(destination: 'DISCARD'));
       case null:
         break;
     }
@@ -418,6 +506,54 @@ class _RowCard extends ConsumerWidget {
     final l = row.local;
     return l is Problem && (l.status == ProblemStatus.failed || l.status == ProblemStatus.refused);
   }
+}
+
+/// The three lanes. The pick is filled in its destination's colour and the
+/// others sit dim on [chLaneOff]; a tap on another lane is the override.
+/// Each lane is at least [minTapTarget] tall -- the canvas draws 38 px, and the
+/// epic's 44 px floor wins.
+class _LaneRow extends StatelessWidget {
+  const _LaneRow({required this.memoId, required this.pick, required this.enabled, required this.onPick});
+
+  final String memoId;
+  final String? pick;
+  final bool enabled;
+  final void Function(String lane) onPick;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.only(top: 4),
+        child: Row(
+          children: [
+            for (var i = 0; i < _lanes.length; i++) ...[
+              if (i > 0) const SizedBox(width: 1),
+              Expanded(
+                child: Semantics(
+                  button: true,
+                  selected: pick == _lanes[i].$1,
+                  label: _lanes[i].$1,
+                  child: InkWell(
+                    key: ValueKey('lane-$memoId-${_lanes[i].$1}'),
+                    onTap: enabled ? () => onPick(_lanes[i].$1) : null,
+                    child: Container(
+                      height: minTapTarget,
+                      alignment: Alignment.center,
+                      color: pick == _lanes[i].$1 ? _laneColor(_lanes[i].$1) : chLaneOff,
+                      child: Text(
+                        _lanes[i].$2,
+                        style: microLabel(
+                          color: pick == _lanes[i].$1 ? chBase : chTextMeta,
+                          size: 10,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      );
 }
 
 class _ProposalBlock extends StatelessWidget {
@@ -445,10 +581,7 @@ class _ProposalBlock extends StatelessWidget {
         children: [
           Row(
             children: [
-              Text(
-                destinationTag(p.destination.value),
-                style: microLabel(color: chGenerated, size: sizeXs),
-              ),
+              Text(destinationTag(p.destination.value), style: microLabel(color: chGenerated, size: sizeXs)),
               if (p.verb != null) ...[
                 const SizedBox(width: space1),
                 Text(p.verb!.value.toUpperCase(), style: microLabel(size: sizeXxs)),
@@ -480,9 +613,10 @@ class _ProposalBlock extends StatelessWidget {
   }
 }
 
-/// The accepted ticket, as a live card. Coral is Switchyard's reserved colour
-/// and appears on nothing else here; the card is a LINK, so the whole of it is
-/// the tap that opens the ticket. A cache with no visible age is a copy that
+/// The accepted ticket, as board 1a frame 06's card: `LINKED · NOT COPIED`, a
+/// coral left rule (Switchyard's reserved colour, on nothing else here), the
+/// key, the ticket's title and `OPEN ↗`. The card is a LINK, so the whole of it
+/// is the tap that opens the ticket. A cache with no visible age is a copy that
 /// lies, so the age is drawn, and an unreachable upstream says so instead of
 /// showing a confident stale state.
 class _TicketCardView extends ConsumerWidget {
@@ -509,55 +643,67 @@ class _TicketCardView extends ConsumerWidget {
         status = 'NOT CHECKED';
     }
     final age = card.state == 'resolved' && card.fetchedAt != null
-        ? 'AS OF ${relativeAge(card.fetchedAt!, now)} AGO'
-        : null;
+        ? ' · AS OF ${relativeAge(card.fetchedAt!, now)} AGO'
+        : '';
 
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        key: ValueKey('open-ticket-${card.key}'),
-        onTap: hasUrl
-            ? () async {
-                final opened = await ref.read(triageControllerProvider.notifier).openTicket(card.key);
-                if (!opened && context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Could not open the ticket. Its key is on the card.')),
-                  );
-                }
-              }
-            : null,
-        child: Container(
-          constraints: const BoxConstraints(minHeight: minTapTarget),
-          padding: const EdgeInsets.all(space2),
-          decoration: BoxDecoration(
-            border: Border.all(color: refSwitchyard),
-            borderRadius: BorderRadius.circular(space1),
-          ),
-          child: Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '${card.key} · $status',
-                      key: ValueKey('ticket-status-${card.key}'),
-                      style: microLabel(color: refSwitchyard, size: sizeXs),
-                    ),
-                    if ((card.title ?? '').isNotEmpty)
-                      Text(card.title!, style: const TextStyle(fontSize: sizeBody, color: chText)),
-                    Text(
-                      'LINKED · NOT COPIED${age == null ? '' : ' · $age'}',
-                      style: microLabel(size: sizeXxs),
-                    ),
-                  ],
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('LINKED · NOT COPIED$age', style: microLabel(size: sizeXxs)),
+        const SizedBox(height: space1),
+        Material(
+          color: chLaneOff,
+          child: InkWell(
+            key: ValueKey('open-ticket-${card.key}'),
+            onTap: hasUrl
+                ? () async {
+                    final opened = await ref.read(triageControllerProvider.notifier).openTicket(card.key);
+                    if (!opened && context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Could not open the ticket. Its key is on the card.')),
+                      );
+                    }
+                  }
+                : null,
+            child: Container(
+              constraints: const BoxConstraints(minHeight: 50),
+              padding: const EdgeInsets.symmetric(horizontal: 13, vertical: space1),
+              decoration: const BoxDecoration(
+                border: Border(
+                  top: BorderSide(color: chLine),
+                  right: BorderSide(color: chLine),
+                  bottom: BorderSide(color: chLine),
+                  left: BorderSide(color: refSwitchyard, width: 2),
                 ),
               ),
-              if (hasUrl) const Icon(Icons.arrow_outward, color: refSwitchyard, size: 18),
-            ],
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '${card.key} · $status',
+                          key: ValueKey('ticket-status-${card.key}'),
+                          style: monoMeta(color: refSwitchyard, size: 11),
+                        ),
+                        if ((card.title ?? '').isNotEmpty)
+                          Text(
+                            card.title!,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 13, color: chText2),
+                          ),
+                      ],
+                    ),
+                  ),
+                  if (hasUrl)
+                    Text('OPEN ↗', style: microLabel(color: chSignal, size: 10.5)),
+                ],
+              ),
+            ),
           ),
         ),
-      ),
+      ],
     );
   }
 }
@@ -565,8 +711,10 @@ class _TicketCardView extends ConsumerWidget {
 enum _ConfirmChoice { accept, edit, hold, discard }
 
 /// The single-note confirm: the one-off path for a memo that wants reading
-/// before it is decided. The whole transcript and the proposal in full, with
-/// the same four verbs the row has.
+/// before it is decided. The whole transcript and the proposal in full. ACCEPT
+/// here sends this memo on its own, now, and is the only path that carries the
+/// per-item confirmation an append or a supersede costs; EDIT and DISCARD stage
+/// the choice for FILE like a lane tap does.
 class _ConfirmSheet extends StatelessWidget {
   const _ConfirmSheet({required this.row});
 
@@ -617,9 +765,10 @@ class _ConfirmSheet extends StatelessWidget {
                 ),
               ),
             const SizedBox(height: space3),
-            if (kind == RowKind.prefilled) action('ACCEPT', 'accept', _ConfirmChoice.accept, primary: true),
+            if (kind == RowKind.prefilled)
+              action('ACCEPT AS SHOWN', 'accept', _ConfirmChoice.accept, primary: true),
             action('EDIT', 'edit', _ConfirmChoice.edit, primary: kind != RowKind.prefilled),
-            action('HOLD', 'hold', _ConfirmChoice.hold),
+            action('HOLD · NOT NOW', 'hold', _ConfirmChoice.hold),
             action('DISCARD', 'discard', _ConfirmChoice.discard),
           ],
         ),

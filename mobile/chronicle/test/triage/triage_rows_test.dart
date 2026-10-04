@@ -29,6 +29,53 @@ void main() {
     });
   });
 
+  group('FILE', () {
+    test('its label is the count of what it would send', () {
+      expect(fileLabel(3, 1), 'FILE 3 · DISCARD 1');
+      expect(fileLabel(3, 0), 'FILE 3');
+      expect(fileLabel(0, 2), 'DISCARD 2');
+      expect(fileLabel(0, 0), 'NOTHING TO FILE');
+    });
+
+    test('takes confident rows as shown, a proposed discard as a discard, and nothing it cannot stand behind', () {
+      expect(filingOf(TriageRow(item: item('a'))), Filing.file);
+      expect(filingOf(TriageRow(item: item('a', dest: 'DISCARD'))), Filing.discard);
+      expect(filingOf(TriageRow(item: item('a', pre: false))), Filing.none);
+      expect(filingOf(TriageRow(item: item('a', pre: false), confirmed: true)), Filing.file);
+      expect(filingOf(TriageRow(item: item('a', pre: false, withProposal: false, status: 'needs_input'))), Filing.none);
+      expect(filingOf(TriageRow(item: item('a'), local: const Sending())), Filing.none);
+    });
+
+    test('a failed row is filed again, a refused one waits for a changed decision', () {
+      expect(filingOf(TriageRow(item: item('a'), local: const Problem(ProblemStatus.failed, 'x'))), Filing.file);
+      expect(filingOf(TriageRow(item: item('a'), local: const Problem(ProblemStatus.refused, 'x'))), Filing.none);
+      final changed = TriageRow(
+        item: item('a'),
+        local: const Problem(ProblemStatus.refused, 'x'),
+        draft: draftForLane(TriageRow(item: item('a')), 'DISCUSSION'),
+      );
+      expect(filingOf(changed), Filing.file);
+    });
+  });
+
+  group('a lane tap', () {
+    test('carries the title and text, and leaves blank what the new destination needs', () {
+      final row = TriageRow(item: item('a')); // a TICKET proposal for CHRN
+      final note = draftForLane(row, 'NOTE')!;
+      expect(note.title, 'Title a');
+      expect(note.text, 'Do the thing.');
+      expect(validateDraft(note), 'A note must name the page it belongs on.');
+      final disc = draftForLane(row, 'DISCUSSION')!;
+      expect(validateDraft(disc), isNull);
+      expect(draftForLane(row, 'TICKET'), isNull, reason: 'the proposal\'s own lane is "the Scribe\'s pick"');
+    });
+
+    test('a discussion proposal cannot supply a ticket\'s project', () {
+      final t = draftForLane(TriageRow(item: item('a', dest: 'DISCUSSION')), 'TICKET')!;
+      expect(validateDraft(t), contains('project key'));
+    });
+  });
+
   group('rows', () {
     test('ACCEPT ALL takes only untouched, server-confident, pre-filled rows', () {
       expect(isPrefilled(TriageRow(item: item('a'))), isTrue);
