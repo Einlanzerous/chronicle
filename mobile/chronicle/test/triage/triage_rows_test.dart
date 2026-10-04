@@ -37,24 +37,92 @@ void main() {
       expect(fileLabel(0, 0), 'NOTHING TO FILE');
     });
 
-    test('takes confident rows as shown, a proposed discard as a discard, and nothing it cannot stand behind', () {
+    test('never says NOTHING TO FILE while a row is refused or failed', () {
+      expect(fileLabel(0, 0, refused: 1), '1 REFUSED');
+      expect(fileLabel(0, 0, retry: 2), 'RETRY 2');
+      expect(fileLabel(3, 1, retry: 2, refused: 1), 'FILE 3 · RETRY 2 · DISCARD 1 · 1 REFUSED');
+    });
+
+    test('takes every complete proposal, confident or not, and nothing it cannot stand behind', () {
       expect(filingOf(TriageRow(item: item('a'))), Filing.file);
+      // `pre_acceptable` is a hint for a default, not the gate (CHRN-137).
+      expect(filingOf(TriageRow(item: item('a', pre: false))), Filing.file);
       expect(filingOf(TriageRow(item: item('a', dest: 'DISCARD'))), Filing.discard);
-      expect(filingOf(TriageRow(item: item('a', pre: false))), Filing.none);
-      expect(filingOf(TriageRow(item: item('a', pre: false), confirmed: true)), Filing.file);
       expect(filingOf(TriageRow(item: item('a', pre: false, withProposal: false, status: 'needs_input'))), Filing.none);
       expect(filingOf(TriageRow(item: item('a'), local: const Sending())), Filing.none);
+    });
+
+    test('a proposal missing what the server requires stays out and names the field', () {
+      final ticket = TriageRow(item: item('a', complete: false));
+      expect(filingOf(ticket), Filing.none);
+      expect(stagedProblem(ticket), contains('project key'));
+      final note = TriageRow(item: item('b', dest: 'NOTE', verb: 'create', complete: false));
+      expect(filingOf(note), Filing.none);
+      expect(stagedProblem(note), 'A note must name the page it belongs on.');
+      final append = TriageRow(item: item('c', dest: 'NOTE', verb: 'append'));
+      expect(filingOf(append), Filing.file);
+      expect(isPrefilled(ticket), isFalse);
+      expect(isPrefilled(TriageRow(item: item('d', pre: false))), isTrue);
     });
 
     test('a failed row is filed again, a refused one waits for a changed decision', () {
       expect(filingOf(TriageRow(item: item('a'), local: const Problem(ProblemStatus.failed, 'x'))), Filing.file);
       expect(filingOf(TriageRow(item: item('a'), local: const Problem(ProblemStatus.refused, 'x'))), Filing.none);
-      final changed = TriageRow(
+      // The same refused override is not sent again either.
+      final refusedEdit = TriageRow(
         item: item('a'),
         local: const Problem(ProblemStatus.refused, 'x'),
         draft: draftForLane(TriageRow(item: item('a')), 'DISCUSSION'),
       );
-      expect(filingOf(changed), Filing.file);
+      expect(filingOf(refusedEdit), Filing.none);
+    });
+  });
+
+  group('a server reason is read as a sentence', () {
+    const forbidden = 'switchyard: POST /v1/tickets: Forbidden: {"error":{"code":"forbidden","message":'
+        '"requires scope(s): tickets:write — token holds: tickets:read","request_id":"r1"}}';
+
+    test('the real refusal from the device', () {
+      expect(
+        plainReason(forbidden),
+        "Chronicle's Switchyard token is not allowed to do this (it needs tickets:write and holds tickets:read).",
+      );
+    });
+
+    test('forbidden without a scope, unreachable, unconfigured and unknown JSON each get a sentence', () {
+      expect(plainReason('switchyard: POST /v1/tickets: Forbidden: {}'), "Chronicle's Switchyard token is not allowed to do this.");
+      expect(plainReason('switchyard: Post "http://sy": dial tcp: connection refused {x}'), 'Chronicle could not reach Switchyard. Nothing was lost.');
+      expect(plainReason('switchyard: not configured'), 'Switchyard is not set up on the Chronicle server.');
+      expect(plainReason('{"weird":true}'), startsWith('The server could not complete this.'));
+      expect(plainReason('x' * 200), startsWith('The server could not complete this.'));
+    });
+
+    test("a refusal that does not name Switchyard is not blamed on Switchyard's token", () {
+      // Chronicle's own API refusing this device, and another upstream's 403.
+      expect(plainReason('Forbidden'), isNull);
+      expect(plainReason('403: this session may not triage'), isNull);
+      expect(plainReason('Unauthorized'), isNull);
+      expect(
+        plainReason('amber: GET /v1/cite: Forbidden: {"error":"forbidden"}'),
+        startsWith('The server could not complete this.'),
+      );
+    });
+
+    test('a reason that is already a sentence is left alone', () {
+      expect(plainReason('Project CHRN is archived.'), isNull);
+      expect(plainReason('Chronicle could not be reached. Retry.'), isNull);
+    });
+
+    test('the row keeps the raw text beside the sentence', () {
+      final out = applyResult(
+        TriageRow(item: item('a')),
+        gen.TriageResult(memoId: 'a', status: 'refused', reason: forbidden),
+        edited: false,
+        now: now,
+      );
+      final p = out.local as Problem;
+      expect(p.reason, isNot(contains('{')));
+      expect(p.raw, forbidden);
     });
   });
 
@@ -77,9 +145,8 @@ void main() {
   });
 
   group('rows', () {
-    test('ACCEPT ALL takes only untouched, server-confident, pre-filled rows', () {
+    test('ACCEPT ALL takes only untouched, complete, pre-filled rows', () {
       expect(isPrefilled(TriageRow(item: item('a'))), isTrue);
-      expect(isPrefilled(TriageRow(item: item('a', pre: false))), isFalse);
       expect(isPrefilled(TriageRow(item: item('a', dest: 'DISCARD'))), isFalse);
       expect(
         isPrefilled(TriageRow(item: item('a'), local: const Problem(ProblemStatus.failed, 'x'))),
