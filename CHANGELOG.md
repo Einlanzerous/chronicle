@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.26.0](https://github.com/Einlanzerous/chronicle/compare/v1.25.0...v1.26.0) (2026-10-04)
+
+
+### Features
+
+* **web:** batch triage at a keyboard — the /triage screen (CHRN-55) ([#142](https://github.com/Einlanzerous/chronicle/issues/142)) ([0748834](https://github.com/Einlanzerous/chronicle/commit/0748834e7f8b3aea757b83b560e94f8bd6191f85))
+
 ## [1.25.0](https://github.com/Einlanzerous/chronicle/compare/v1.24.0...v1.25.0) (2026-10-03)
 
 
