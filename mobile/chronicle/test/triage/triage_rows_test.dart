@@ -97,6 +97,17 @@ void main() {
       expect(plainReason('x' * 200), startsWith('The server could not complete this.'));
     });
 
+    test("a refusal that does not name Switchyard is not blamed on Switchyard's token", () {
+      // Chronicle's own API refusing this device, and another upstream's 403.
+      expect(plainReason('Forbidden'), isNull);
+      expect(plainReason('403: this session may not triage'), isNull);
+      expect(plainReason('Unauthorized'), isNull);
+      expect(
+        plainReason('amber: GET /v1/cite: Forbidden: {"error":"forbidden"}'),
+        startsWith('The server could not complete this.'),
+      );
+    });
+
     test('a reason that is already a sentence is left alone', () {
       expect(plainReason('Project CHRN is archived.'), isNull);
       expect(plainReason('Chronicle could not be reached. Retry.'), isNull);

@@ -498,21 +498,27 @@ String? plainReason(String raw) {
   final lower = raw.toLowerCase();
   final upstream =
       raw.contains('{') || raw.contains('}') || lower.startsWith('switchyard:') || lower.startsWith('amber:');
+  // Only a reason that names Switchyard is blamed on Switchyard: `failRow` runs
+  // this on request-level failures too, and a 403 from Chronicle's own API is
+  // about this device's session, not about the server's upstream token.
+  final switchyard = lower.contains('switchyard');
   String? scope(String label) => RegExp('$label[^:]*:\\s*([\\w:.\\-]+)').firstMatch(raw)?.group(1);
 
-  if (lower.contains('forbidden') || lower.contains('requires scope') || RegExp(r'\b403\b').hasMatch(lower)) {
+  if (switchyard &&
+      (lower.contains('forbidden') || lower.contains('requires scope') || RegExp(r'\b403\b').hasMatch(lower))) {
     final need = scope('requires scope');
     final holds = scope('token holds');
     return "Chronicle's Switchyard token is not allowed to do this"
         '${need != null && holds != null ? ' (it needs $need and holds $holds)' : ''}.';
   }
-  if (lower.contains('unauthorized') || RegExp(r'\b401\b').hasMatch(lower)) {
+  if (switchyard && (lower.contains('unauthorized') || RegExp(r'\b401\b').hasMatch(lower))) {
     return "Switchyard did not accept Chronicle's token.";
   }
-  if (lower.contains('not configured') || lower.contains('unconfigured')) {
+  if (switchyard && (lower.contains('not configured') || lower.contains('unconfigured'))) {
     return 'Switchyard is not set up on the Chronicle server.';
   }
-  if (upstream &&
+  if (switchyard &&
+      upstream &&
       (lower.contains('unreachable') ||
           lower.contains('connection refused') ||
           lower.contains('no such host') ||
