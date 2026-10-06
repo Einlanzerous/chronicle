@@ -369,8 +369,9 @@ func TestAnAgentCarriesNoReadMarker(t *testing.T) {
 	}
 
 	// AND IN THE STORE, which is the half that matters: revision 1 of the plan
-	// stated this in Go, and a promise a handler keeps is one CHRN-67's MCP
-	// tools do not inherit.
+	// stated this in Go, and a promise a handler keeps is kept only for
+	// callers of that handler. (CHRN-67's MCP tools were the example; under
+	// CHRN-65 they call the HTTP route, and the point holds without them.)
 	_, err := s.pool.Exec(ctx, `
 		UPDATE tier2.discussion_participants SET last_read_seq = 1, last_read_at = now()
 		 WHERE discussion_id = $1 AND user_id = $2`, d.ID, scribe)

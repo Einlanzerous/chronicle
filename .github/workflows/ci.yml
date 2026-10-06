@@ -183,6 +183,22 @@ jobs:
           fi
           echo "internal/apiclient matches the contract."
 
+      # The MCP server is a CLIENT of Chronicle's HTTP API (CHRN-65): nothing
+      # internal/mcp links may be the store or the HTTP handlers, and
+      # internal/apiclient is the only door. The NON-test graph, deliberately --
+      # the transports' integration tests import internal/api and internal/store
+      # to have a real API to be a client of. Without this step a PR could merge
+      # green with the boundary crossed, because CI does not run verify.sh.
+      # Mirrors verify.sh's step.
+      - name: MCP boundary
+        run: |
+          mod="$(go list -m)"
+          out="$(go list -deps ./internal/mcp/... ./internal/apiclient/... | grep -E "^$mod/internal/(store|api)(/|$)" || true)"
+          if [ -n "$out" ]; then
+            echo "::error::internal/mcp (or internal/apiclient) links the store or the HTTP handlers; it must reach Chronicle only through internal/apiclient:"; echo "$out"; exit 1
+          fi
+          echo "internal/mcp reaches Chronicle only through internal/apiclient."
+
       # asr/ is a subtree with a sealed boundary (CHRN-82 section 2): nothing
       # under it imports anything else in this module, and nothing outside it
       # imports it except through asr/asrtest. asr/Dockerfile enforces the

@@ -181,6 +181,33 @@ apiclient_check() {
   return "$rc"
 }
 
+# The MCP server is a CLIENT of Chronicle's HTTP API (CHRN-65), and this is
+# what makes that a fact rather than an intention: nothing the MCP code links
+# may be the store or the HTTP handlers. internal/apiclient, generated from
+# openapi.yaml, is the only door. With this holding, every MCP tool call
+# reaches a handler, so enforcement lives once -- in the policy table and the
+# database guards -- and an MCP process holds no DSN.
+#
+# THE NON-TEST GRAPH, unlike asr_boundary_check above, which passes -test.
+# Deliberate: the transports' integration tests run them against the real API
+# handler on the test database, so they live in external _test packages that
+# import internal/api and internal/store. A -test graph would refuse the very
+# tests that prove the boundary works. What ships is what is checked.
+#
+# `internal/api` is matched as that package and anything UNDER it, so the
+# sibling internal/apiclient is not caught by a prefix. The client must not
+# reach internal/api/wire either: it carries its own models.
+mcp_boundary_check() {
+  local mod out
+  mod="$(go list -m)"
+  out="$(go list -deps ./internal/mcp/... ./internal/apiclient/... | grep -E "^$mod/internal/(store|api)(/|$)" || true)"
+  if [ -n "$out" ]; then
+    echo "internal/mcp (or internal/apiclient) links the store or the HTTP handlers; it must reach Chronicle only through internal/apiclient:"
+    echo "$out"
+    return 1
+  fi
+}
+
 step "gofmt"        gofmt_check
 step "go vet"       go vet ./...
 step "build"        go build ./...
@@ -188,6 +215,7 @@ step "asr client"   asrclient_check
 step "api types"    apiwire_check
 step "api client"   apiclient_check
 step "asr boundary" asr_boundary_check
+step "mcp boundary" mcp_boundary_check
 
 # web/ (CHRN-53, CHRN-54): the app skeleton and its design tokens. Skipped
 # with a NOTE when bun is not on PATH, the same shape the database NOTEs

@@ -36,8 +36,9 @@ import (
 // be a person's, which also means an agent cannot open a thread. And CH093: a
 // resolved thread takes no more turns. Both are refused by the store and
 // REPORTED here — this surface does not duplicate the rule and does not get to
-// bypass it. CHRN-67's MCP write tools are the second caller by design, and a
-// rule that lived here would be one they do not inherit.
+// bypass it. A rule that lived here would bind only this handler; in the store
+// it binds every path, which is the property wanted. (CHRN-67's MCP write
+// tools are NOT a second path: under CHRN-65 they are clients of these routes.)
 //
 // ============================================================================
 // AN AGENT PARTICIPATES THROUGH THE SAME DOOR AS A PERSON.
