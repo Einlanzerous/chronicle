@@ -2283,7 +2283,7 @@ export interface components {
         TriageResult: {
             /** Format: uuid */
             memo_id: string;
-            /** @description What happened to this one — landed, refused, stale, and so on. */
+            /** @description What happened to this one — landed, refused, stale, and so on. `refused` means nothing was created or written for this item; sending it again is a new attempt. */
             status: string;
             destination?: string;
             ticket_key?: string;

@@ -14,14 +14,14 @@ import (
 // T2 — lock the link row, then the memo row, decide, act, commit.
 //
 // THE BRANCH TABLE IS THE TICKET. Everything hard about CHRN-33 is which of
-// these five arms a given attempt takes, and the two arms that look redundant
+// these four arms a given attempt takes, and the two arms that look redundant
 // are the ones that matter:
 //
 //	already confirmed?  → applied with the stored key. NO OUTWARD CALL.
 //	memo not transcribed? → refused. No side effect, and nothing sent.
-//	refused and not re-armed? → refused with the status that refused it.
-//	row pre-existed?    → ambiguous → refused; otherwise failed, naming the
-//	                      sweep. **NEVER CREATE.**
+//	row pre-existed?    → ambiguous → refused; refused a moment ago by a
+//	                      racing batch → refused with its reason; otherwise
+//	                      failed, naming the sweep. **NEVER CREATE.**
 //	row is ours         → create with the STORED decision and STORED key,
 //	                      confirm, advance the memo, commit.
 
@@ -89,9 +89,9 @@ func (s *Service) decide(ctx context.Context, res Result, att store.LinkAttempt)
 			// WAS ATTEMPTED, and this one never reached the wire.
 			return store.LinkResolution{Action: store.LinkDrop}, r, nil
 		case store.ClaimRearmed:
-			// A CORRECTION TO AN EARLIER REFUSAL, on a memo that has since been
-			// held. Dropping here would delete the record of the decision this
-			// one was correcting, and the operator would find the memo waiting
+			// A NEW ATTEMPT AFTER AN EARLIER REFUSAL, on a memo that is not
+			// `transcribed`. Dropping here would delete the record of the attempt
+			// this one was retrying, and the operator would find the memo waiting
 			// in the morning with no account of either attempt — which is the
 			// exact failure "a refusal marks, it does not delete" exists to
 			// prevent. Marked instead, which also keeps the sweep off it.
@@ -102,17 +102,7 @@ func (s *Service) decide(ctx context.Context, res Result, att store.LinkAttempt)
 		return leave, r, nil
 	}
 
-	// ---- 3 · A refusal that this decision did not re-arm. ----
-	//
-	// T1 re-arms a refused row when the decision DIFFERS, with a fresh
-	// idempotency key. Reaching here means the resend was identical, and an
-	// identical resend refuses identically — Switchyard has the same answer
-	// cached under the same key. Saying so is more useful than replaying it.
-	if link.Refused() {
-		return leave, refuse(res, refusedReason(link)), nil
-	}
-
-	// ---- 4 · The row pre-existed. NEVER CREATE FOR ONE. ----
+	// ---- 3 · The row pre-existed. NEVER CREATE FOR ONE. ----
 	//
 	// This arm is why `ours` is threaded from T1 rather than inferred here. A
 	// row somebody else wrote is the sweep's business, and creating for one
@@ -126,12 +116,22 @@ func (s *Service) decide(ctx context.Context, res Result, att store.LinkAttempt)
 					"because confirming either would orphan the other",
 				link.CandidateKeys)), nil
 		}
+		if link.Refused() {
+			// T1 re-arms every refused row (CHRN-141), so a refused row that is
+			// not ours was PENDING at this batch's T1 and has been refused since:
+			// another batch re-armed it and its create was refused between this
+			// batch's two transactions. The sweep never reads a refused row, so
+			// the answer below would be untrue for it.
+			return leave, refuse(res, fmt.Sprintf(
+				"another decision for this memo was refused while this one waited (%s); "+
+					"send it again and it is attempted afresh", link.RefusedReason)), nil
+		}
 		return leave, failed(res,
 			"another decision for this memo has not finished landing; the sweep will resolve it, "+
 				"and this batch will report the outcome"), nil
 	}
 
-	// ---- 5 · Ours. ----
+	// ---- 4 · Ours. ----
 
 	// A destination with no outward call is confirmed here and now, through the
 	// same code path as every other one — which is what makes a replayed
@@ -174,9 +174,9 @@ func (s *Service) decide(ctx context.Context, res Result, att store.LinkAttempt)
 		if errors.As(err, &se) && !se.Retryable() {
 			// MARKED, NOT DELETED. The operator is owed an account of why their
 			// decision evaporated, and the row is the only thing that can give
-			// them one. A corrected decision re-arms this same row with a fresh
-			// key, which is what stops Switchyard's cached 4xx refusing the
-			// correction for the next twenty-four hours.
+			// them one. A new accept re-arms this same row with a fresh key,
+			// which is what stops Switchyard's cached 4xx answering the next
+			// attempt for twenty-four hours.
 			status := se.Status
 			return store.LinkResolution{
 				Action:        store.LinkRefuse,
@@ -217,15 +217,6 @@ func memoMovedReason(state string) string {
 			"and nothing was sent"
 	}
 	return fmt.Sprintf("this memo moved to %q since you fetched it, so it is no longer awaiting a decision", state)
-}
-
-func refusedReason(link store.MemoLink) string {
-	if link.RefusedStatus != nil {
-		return fmt.Sprintf("Switchyard already refused this decision with %d, and it has that answer cached: %s. "+
-			"Change the decision — a different project, type, title or description — and it will be sent afresh.",
-			*link.RefusedStatus, link.RefusedReason)
-	}
-	return link.RefusedReason + " — change the decision and it will be attempted afresh."
 }
 
 func failed(res Result, reason string) Result {

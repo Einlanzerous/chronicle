@@ -187,6 +187,50 @@ describe('TriageView -- forty memos at a keyboard', () => {
     wrapper.unmount()
   })
 
+  it('a row the server already refused says ACCEPT tries it again, and ⏎ sends it unchanged', async () => {
+    const refused = memo(1, {
+      link: {
+        destination: 'TICKET',
+        state: 'refused',
+        decided_at: '2026-10-04T09:00:00-05:00',
+        refused_status: 403,
+        refused_reason: 'requires scope(s): tickets:write',
+        refused_at: '2026-10-04T09:00:01-05:00',
+      } as never,
+    })
+    const server = fakeServer([refused])
+    const wrapper = await mountView()
+
+    const row = wrapper.find('.ch-tri-row')
+    expect(row.text()).toContain('REFUSED 403 · STILL PENDING')
+    expect(row.text()).toContain('requires scope(s): tickets:write ACCEPT tries it again.')
+    expect(row.text()).not.toContain('the same decision is refused the same way')
+
+    await press('Enter')
+    expect(server.decisions).toHaveLength(1)
+    expect(server.decisions[0].memo_id).toBe(refused.memo_id)
+    expect(server.decisions[0].override).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('a row refused in this session is retried unchanged by ⏎, not sent to the editor', async () => {
+    let fixed = false
+    const server = fakeServer([memo(1)], () => (fixed ? 'applied' : 'refused'))
+    const wrapper = await mountView()
+
+    await press('Enter')
+    const row = wrapper.find('.ch-tri-row')
+    expect(row.text()).toContain('REFUSED · STILL PENDING')
+    expect(row.text()).toContain('RETRY')
+
+    fixed = true
+    await press('Enter')
+    expect(server.decisions).toHaveLength(2)
+    expect(server.decisions[1].override).toBeUndefined()
+    expect(wrapper.find('.ch-tri-row').classes()).toContain('is-accepted')
+    wrapper.unmount()
+  })
+
   it('E opens the editor, keys typed into it decide nothing, and ⏎ sends a whole override', async () => {
     const server = fakeServer([
       memo(1, { status: 'needs_input', pre_acceptable: false, proposal: { ...memo(1).proposal!, page_path: undefined } }),

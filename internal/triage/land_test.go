@@ -459,6 +459,54 @@ func TestAPendingLocalRowIsSweptWithAnHonestReason(t *testing.T) {
 	}
 }
 
+// A REFUSED NOTE ROW LANDS ON THE NEXT ACCEPT (CHRN-141). The row above — no
+// `sent_*` fields, refused by the sweep — had no way out before: a NOTE has
+// nothing on the row to change, so the claim never re-armed it, and the landing
+// read the refused row as somebody else's and answered "another decision for
+// this memo is in flight" for a memo nothing was in flight on.
+func TestARefusedNoteRowLandsWhenAcceptedAgain(t *testing.T) {
+	h := newHarness(t)
+	withCorpus(t, h, []string{"estate"}, nil)
+	memo := h.ownMemo("a landing that died halfway, decided again")
+	h.propose(memo.ID, noteProposal(scribe.VerbCreate, "estate", ""))
+
+	if _, _, err := h.store.ClaimMemoLink(h.ctx, store.Decision{
+		MemoID: memo.ID, Destination: store.LinkNote,
+		IdempotencyKey: "chronicle-decision-orphan",
+	}); err != nil {
+		t.Fatalf("ClaimMemoLink: %v", err)
+	}
+	if _, err := h.sweeper().Sweep(h.ctx); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if l := h.link(memo.ID); !l.Refused() || l.SentTitle != "" {
+		t.Fatalf("link = %+v, want a refused NOTE row with no sent_* fields", l)
+	}
+
+	res := h.apply(h.owner, h.accept(memo.ID))[0]
+	if res.Status != StatusApplied {
+		t.Fatalf("status %q (%s), want applied", res.Status, res.Reason)
+	}
+	l := h.link(memo.ID)
+	if !l.Confirmed() || l.Refused() || l.NoteID == nil {
+		t.Fatalf("link = %+v, want it confirmed onto a note", l)
+	}
+	n, err := h.store.NoteByNumber(h.ctx, mustNumber(t, res.NoteRef))
+	if err != nil {
+		t.Fatalf("NoteByNumber(%s): %v", res.NoteRef, err)
+	}
+	onPage, err := h.store.NotesOnPage(h.ctx, n.PageID)
+	if err != nil {
+		t.Fatalf("NotesOnPage: %v", err)
+	}
+	if len(onPage) != 1 {
+		t.Fatalf("%d notes on the page, want exactly 1", len(onPage))
+	}
+	if h.state(memo.ID) != store.StateTriaged {
+		t.Errorf("memo state %q, want triaged", h.state(memo.ID))
+	}
+}
+
 // The batch GET renders a landed note's handle. Before this a confirmed NOTE
 // link showed a destination and nothing else.
 func TestTheBatchGETRendersALandedNotesHandle(t *testing.T) {

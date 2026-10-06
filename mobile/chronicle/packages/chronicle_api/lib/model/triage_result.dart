@@ -27,7 +27,7 @@ class TriageResult {
 
   String memoId;
 
-  /// What happened to this one — landed, refused, stale, and so on.
+  /// What happened to this one — landed, refused, stale, and so on. `refused` means nothing was created or written for this item; sending it again is a new attempt.
   String status;
 
   ///

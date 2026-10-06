@@ -2221,7 +2221,7 @@ type TriageResult struct {
 	NoteRef *string `json:"note_ref,omitempty"`
 	Reason  *string `json:"reason,omitempty"`
 
-	// Status What happened to this one — landed, refused, stale, and so on.
+	// Status What happened to this one — landed, refused, stale, and so on. `refused` means nothing was created or written for this item; sending it again is a new attempt.
 	Status    string  `json:"status"`
 	TicketKey *string `json:"ticket_key,omitempty"`
 	TicketUrl *string `json:"ticket_url,omitempty"`

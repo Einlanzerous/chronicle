@@ -63,55 +63,71 @@ func TestASecondClaimOnOneMemoIsNotOurs(t *testing.T) {
 	}
 }
 
-// A REFUSED ROW IS RE-ARMED BY A DIFFERENT DECISION, and only by a different
-// one. That is what lets an operator correct a misfile without waiting out
-// Switchyard's 24-hour idempotency cache.
-func TestARefusedRowIsReArmedByANewDecisionOnly(t *testing.T) {
+// A REFUSED ROW IS RE-ARMED BY ANY NEW ACCEPT, changed or not (CHRN-141). No
+// refusal Chronicle records is permanent — the credential is fixed, the project
+// is restored, the memo is re-transcribed — so the same decision under a fresh
+// key is a new attempt, and the claim does not guess which refusals would
+// repeat. Asserted for a refusal Switchyard made and for one Chronicle reached
+// on its own, because the two differ only in `refused_status` and the claim
+// must not read it.
+func TestARefusedRowIsReArmedByAnyNewAccept(t *testing.T) {
 	s, ctx := newTestStore(t)
 	memoID := seedTriageable(t, s, ctx, strings.Repeat("b", 64))
 
 	if _, _, err := s.ClaimMemoLink(ctx, aDecision(memoID, "key-1")); err != nil {
 		t.Fatal(err)
 	}
-	status := 404
-	if _, err := s.ResolveMemoLink(ctx, memoID, ClaimInserted,
-		func(context.Context, LinkAttempt) (LinkResolution, error) {
-			return LinkResolution{Action: LinkRefuse, RefusedStatus: &status,
-				RefusedReason: "project is archived"}, nil
-		}); err != nil {
-		t.Fatalf("refuse: %v", err)
+	refuse := func(claim LinkClaim, status *int, reason string) {
+		t.Helper()
+		if _, err := s.ResolveMemoLink(ctx, memoID, claim,
+			func(context.Context, LinkAttempt) (LinkResolution, error) {
+				return LinkResolution{Action: LinkRefuse, RefusedStatus: status,
+					RefusedReason: reason, Swept: true, CandidateKeys: []string{"CHRN-7"}}, nil
+			}); err != nil {
+			t.Fatalf("refuse: %v", err)
+		}
+		if l, _ := s.MemoLinkFor(ctx, memoID); !l.Refused() || l.SweptAt == nil || l.CandidateKeys == nil {
+			t.Fatalf("the setup did not leave a refused, swept row: %+v", l)
+		}
+	}
+	rearmed := func(what string, l MemoLink, claim LinkClaim, err error, key string) {
+		t.Helper()
+		switch {
+		case err != nil:
+			t.Fatalf("%s: %v", what, err)
+		case claim != ClaimRearmed:
+			t.Fatalf("%s claimed %q, want %q", what, claim, ClaimRearmed)
+		case l.RefusedAt != nil || l.RefusedStatus != nil || l.RefusedReason != "":
+			t.Fatalf("%s: the re-armed row still carries the refusal: %+v", what, l)
+		case l.SweptAt != nil || l.CandidateKeys != nil:
+			t.Fatalf("%s: the re-arm kept the previous attempt's sweep findings: %+v", what, l)
+		case l.SentIdempotencyKey != key:
+			t.Fatalf("%s: sent_idempotency_key = %q, want the fresh one", what, l.SentIdempotencyKey)
+		}
+		if stored, _ := s.MemoLinkFor(ctx, memoID); !stored.Pending() {
+			t.Fatalf("%s: the stored row is not pending: %+v", what, stored)
+		}
 	}
 
-	// An IDENTICAL resend is not ours: it would refuse identically.
-	_, claim, err := s.ClaimMemoLink(ctx, aDecision(memoID, "key-2"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if claim != ClaimExisting {
-		t.Fatalf("an identical resend of a refused decision claimed %q", claim)
-	}
-	if l, _ := s.MemoLinkFor(ctx, memoID); !l.Refused() {
-		t.Fatal("the identical resend cleared the refusal")
-	}
+	// Refused by Switchyard, then the IDENTICAL decision under a fresh key.
+	status := 403
+	refuse(ClaimInserted, &status, "requires scope(s): tickets:write")
+	l, claim, err := s.ClaimMemoLink(ctx, aDecision(memoID, "key-2"))
+	rearmed("an identical resend of a Switchyard refusal", l, claim, err, "key-2")
 
-	// A DIFFERENT decision is.
-	corrected := aDecision(memoID, "key-3")
+	// Refused with NO status — Chronicle's own refusal — and the same again.
+	refuse(ClaimRearmed, nil, "this memo moved")
+	l, claim, err = s.ClaimMemoLink(ctx, aDecision(memoID, "key-3"))
+	rearmed("an identical resend of a null-status refusal", l, claim, err, "key-3")
+
+	// A DIFFERENT decision re-arms too, as it always did.
+	refuse(ClaimRearmed, &status, "requires scope(s): tickets:write")
+	corrected := aDecision(memoID, "key-4")
 	corrected.ProjectKey = "SWY"
-	l, claim, err := s.ClaimMemoLink(ctx, corrected)
-	if err != nil {
-		t.Fatal(err)
-	}
-	switch {
-	case claim != ClaimRearmed:
-		t.Fatalf("a corrected decision claimed %q, want %q", claim, ClaimRearmed)
-	case l.Refused():
-		t.Fatal("the re-armed row is still refused")
-	case l.SentIdempotencyKey != "key-3":
-		t.Fatalf("sent_idempotency_key = %q, want the fresh one", l.SentIdempotencyKey)
-	case l.SentProjectKey != "SWY":
+	l, claim, err = s.ClaimMemoLink(ctx, corrected)
+	rearmed("a corrected decision", l, claim, err, "key-4")
+	if l.SentProjectKey != "SWY" {
 		t.Fatalf("sent_project_key = %q, want the correction", l.SentProjectKey)
-	case l.SweptAt != nil || l.CandidateKeys != nil:
-		t.Fatalf("the re-arm kept the previous decision's sweep findings: %+v", l)
 	}
 }
 
@@ -138,6 +154,34 @@ func TestReArmingNeedsAFreshIdempotencyKey(t *testing.T) {
 	_, _, err := s.ClaimMemoLink(ctx, corrected)
 	if !errors.Is(err, ErrLinkKeyReused) {
 		t.Fatalf("err = %v, want ErrLinkKeyReused", err)
+	}
+}
+
+// AND SO IS AN UNCHANGED DECISION UNDER THE REFUSED KEY. Before CHRN-141 this
+// never reached CH022: the claim declined an identical decision first. Now the
+// claim re-arms it, so the trigger is the only thing between an unchanged
+// resend and a replay of Switchyard's cached refusal — and the row stays
+// refused, with the key it was refused under.
+func TestReArmingAnUnchangedDecisionNeedsAFreshIdempotencyKeyToo(t *testing.T) {
+	s, ctx := newTestStore(t)
+	memoID := seedTriageable(t, s, ctx, strings.Repeat("9", 64))
+
+	if _, _, err := s.ClaimMemoLink(ctx, aDecision(memoID, "reused-key")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ResolveMemoLink(ctx, memoID, ClaimInserted,
+		func(context.Context, LinkAttempt) (LinkResolution, error) {
+			return LinkResolution{Action: LinkRefuse, RefusedReason: "no"}, nil
+		}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := s.ClaimMemoLink(ctx, aDecision(memoID, "reused-key"))
+	if !errors.Is(err, ErrLinkKeyReused) {
+		t.Fatalf("err = %v, want ErrLinkKeyReused", err)
+	}
+	if l, _ := s.MemoLinkFor(ctx, memoID); !l.Refused() || l.SentIdempotencyKey != "reused-key" {
+		t.Fatalf("the refused claim changed the row: %+v", l)
 	}
 }
 

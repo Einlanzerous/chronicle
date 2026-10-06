@@ -98,9 +98,10 @@ describe('rowKind', () => {
     expect(isDecidable(row({ link: { ...link, state: 'refused' } }))).toBe(true)
   })
 
-  it('a transient failure retries as shown; a refusal needs the editor', () => {
+  it('a transient failure and a refusal both retry as shown; a cleared target needs the editor', () => {
     expect(rowKind(row({}, { kind: 'problem', status: 'failed', reason: 'x' }))).toBe('prefilled')
-    expect(rowKind(row({}, { kind: 'problem', status: 'refused', reason: 'x' }))).toBe('needs-input')
+    expect(rowKind(row({}, { kind: 'problem', status: 'refused', reason: 'x' }))).toBe('prefilled')
+    expect(rowKind(row({}, { kind: 'problem', status: 'needs_input', reason: 'x' }))).toBe('needs-input')
     const failedEdit: TriageRow = { ...row({}, { kind: 'problem', status: 'failed', reason: 'x' }), draft: draftFor(item()) }
     expect(rowKind(failedEdit)).toBe('needs-input')
   })

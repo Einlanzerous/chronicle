@@ -23,8 +23,8 @@ import (
 // and keeping it would not be merely redundant, it would be wrong. Committed on
 // its own, the claim leaves a PENDING NOTE ROW between the two commits, and
 // sweepOne answers those before every batch: a process that died in the gap
-// would find its identical replay refused under its own key, for a landing that
-// had no side effect anywhere. CHRN-95 ruling 3.
+// would find its replay answered with a refusal, for a landing that had no
+// side effect anywhere. CHRN-95 ruling 3.
 //
 // So: claim, write, confirm and advance, all on one transaction. A pending NOTE
 // or DISCUSSION row cannot exist, which is a stronger claim than "the local
@@ -207,8 +207,9 @@ func (s *Store) inLandingTx(ctx context.Context, d Decision, link *MemoLink,
 		if claimed.Confirmed() {
 			return ErrAlreadyLanded
 		}
-		// Somebody else's pending row. The same answer T1 gives a waiter,
-		// because from a client's side these are one situation.
+		// Somebody else's pending row — never a refused one, which the claim
+		// re-arms and counts as ours (CHRN-141). The same answer T1 gives a
+		// waiter, because from a client's side these are one situation.
 		return ErrLinkLocked
 	}
 

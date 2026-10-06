@@ -138,8 +138,8 @@ RowKind rowKind(TriageRow row) {
   if (local is Discarding) return RowKind.discarding;
   if (local is Discarded) return RowKind.discarded;
   // A decision ALREADY RECORDED outranks the proposal: the memo is waiting for
-  // the sweep, not for a person. `refused` is the exception -- Switchyard
-  // caches the refusal, so the remedy is a changed decision.
+  // the sweep, not for a person. `refused` is the exception -- nothing was
+  // created, and the server takes a new accept as a new attempt (CHRN-141).
   switch (row.item.link?.state) {
     case 'in_flight':
       return RowKind.linkInFlight;
@@ -148,9 +148,9 @@ RowKind rowKind(TriageRow row) {
     case 'ambiguous':
       return RowKind.linkAmbiguous;
   }
-  // A transient failure of an accept-as-shown is retried as it was; everything
-  // else the server sent back needs the editor.
-  if (local is Problem && (local.status != ProblemStatus.failed || row.draft != null)) {
+  // A transient failure or a refusal of an accept-as-shown is retried as it
+  // was; everything else the server sent back needs the editor.
+  if (local is Problem && (!retriable(local) || row.draft != null)) {
     return RowKind.needsInput;
   }
   final p = row.item.proposal;
@@ -222,15 +222,21 @@ enum Filing { file, discard, none }
 ///  - an untouched row files as shown when its proposal is complete
 ///    ([proposalProblem]), whatever the server's confidence flag says, and a
 ///    proposed DISCARD discards;
-///  - a row whose last attempt `failed` is simply filed again, which is the
-///    retry; one the server refused or needs input for is not, until the
-///    person changes it.
+///  - a row whose last attempt `failed` or was `refused` is simply filed
+///    again, which is the retry: a refusal means nothing was created, and the
+///    server attempts the same decision afresh (CHRN-141). One it needs input
+///    for is not, until the person changes it.
+/// Whether FILE sends a row in this state again as it stands. `failed` was the
+/// network's doing and `refused` created nothing; either way the same decision
+/// is a new attempt.
+bool retriable(Problem p) => p.status == ProblemStatus.failed || p.status == ProblemStatus.refused;
+
 Filing filingOf(TriageRow row) {
   final l = row.local;
   if (l is! Pending && l is! Problem) return Filing.none;
-  // Refused, or asking for input: the same decision is not sent again. Changing
+  // Asking for input, or stale: the same decision is not sent again. Changing
   // the row clears this (the controller's `_changed`), which is "a new decision".
-  if (l is Problem && l.status != ProblemStatus.failed) return Filing.none;
+  if (l is Problem && !retriable(l)) return Filing.none;
   final d = row.draft;
   if (d != null) {
     if (d.destination == 'DISCARD') return Filing.discard;
@@ -256,9 +262,10 @@ String? stagedProblem(TriageRow row) {
 }
 
 /// FILE's label: the pending outcome, and the rows it cannot send. `FILE 3 ·
-/// DISCARD 1`; `RETRY 2` for rows whose last send failed; `1 REFUSED` for a
-/// row the server refused. It never says `NOTHING TO FILE` while a row is
-/// refused or failed -- those are what is left, and the button says so.
+/// DISCARD 1`; `RETRY 2` for rows whose last send failed or was refused;
+/// `1 REFUSED` for a refused row it will not send as it stands (its staged
+/// choice is missing something). It never says `NOTHING TO FILE` while a row
+/// is refused or failed -- those are what is left, and the button says so.
 String fileLabel(int file, int discard, {int retry = 0, int refused = 0}) {
   final parts = [
     if (file > 0) 'FILE $file',

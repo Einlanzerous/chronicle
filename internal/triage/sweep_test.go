@@ -383,8 +383,8 @@ func TestAnUnreachableSweepKeepsWhatAnEarlierPassFound(t *testing.T) {
 // land and marking it refused is right. A 4xx on the SEARCH means the lookup
 // failed and says nothing about whether a ticket exists. Marking that refused
 // used to be terminal — `refused_at` is exactly what stops the sweep claiming
-// the row again — so the ticket was stranded, and worse: the operator, told to
-// change their decision, re-armed the row, T2 never searches, and a SECOND
+// the row again — so the ticket was stranded, and worse: the operator's next
+// accept re-armed the row, T2 never searches, and a SECOND
 // ticket was created for one memo. The recovery mechanism manufacturing the
 // duplicate the whole design exists to prevent.
 //
