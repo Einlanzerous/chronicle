@@ -102,7 +102,7 @@ jobs:
       #   internal/api/session  The credential surface: cookie flags, the
       #                         text/plain CSRF refusal, body limits, SSO
       #                         completion.
-      #   internal/api/cfaccess Access JWT verification. SERV-131 exists because
+      #   internal/cfaccess/    Access JWT verification. SERV-131 exists because
       #                         three hand-rolled copies of this diverged into a
       #                         panic (LYCM-122); until that shared module
       #                         lands, this file is the estate's third copy.
