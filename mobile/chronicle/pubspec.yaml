@@ -59,6 +59,11 @@ dependencies:
   workmanager: ^0.10.10
   url_launcher: ^6.3.3
 
+  # CHRN-64: the one evening nudge. A plugin and not a channel on MainActivity
+  # because the pass that posts runs in workmanager's headless engine, where
+  # MainActivity's channels do not exist. See lib/notify/.
+  flutter_local_notifications: ^22.3.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

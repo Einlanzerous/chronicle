@@ -18,6 +18,9 @@
 /// headless isolate that repeatedly throws is a worse outcome than one
 /// that quietly does nothing until the next scheduled attempt.
 ///
+/// **It also runs CHRN-64's evening nudge** (`lib/notify/nudge.dart`), after
+/// the queue and whether or not the foreground is alive.
+///
 /// **Does not run `recoverAll`.** "Is anybody recording this?" is answered
 /// by an in-process registry reachable only through `MainActivity`'s method
 /// channel, which does not exist in this engine -- guessing wrong here
@@ -33,12 +36,15 @@ import 'dart:ui';
 
 import 'package:chronicle_api/api.dart';
 import 'package:crypto/crypto.dart' show sha256;
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:workmanager/workmanager.dart';
 
 import '../api/transport.dart';
 import '../capture/capture_record.dart';
+import '../notify/nudge.dart';
+import '../notify/nudge_surface.dart';
 import 'audio_gate_transport.dart';
 import 'engine.dart';
 import 'prune.dart';
@@ -96,18 +102,12 @@ void queueCallbackDispatcher() {
 }
 
 Future<bool> _runBackgroundPass(Map<String, dynamic>? inputData) async {
-  final rootPath = inputData?[capturesRootInputKey] as String?;
-  if (rootPath == null || rootPath.isEmpty) return true;
-
-  if (IsolateNameServer.lookupPortByName(queueForegroundPortName) != null) {
-    return true; // the foreground is alive; its own triggers cover this pass
-  }
-
   final String? token;
   final String? serverUrl;
+  final SharedPreferences prefs;
   try {
     token = await const FlutterSecureStorage().read(key: _tokenStorageKey);
-    final prefs = await SharedPreferences.getInstance();
+    prefs = await SharedPreferences.getInstance();
     serverUrl = prefs.getString(_serverUrlPrefsKey);
   } catch (_) {
     // Credential-encrypted storage can be unreadable before first-unlock
@@ -120,17 +120,45 @@ Future<bool> _runBackgroundPass(Map<String, dynamic>? inputData) async {
     return true;
   }
 
-  final root = Directory(rootPath);
-  if (!await root.exists()) return true;
-
   final apiClient = ApiClient(basePath: serverUrl)..client = ChronicleClient(token: token);
-  await runBackgroundQueuePass(
-    root: root,
-    token: token,
-    serverUrl: serverUrl,
-    engine: QueueEngine(transport: UploadsApiTransport(UploadsApi(apiClient))),
-    gate: MemosApiAudioGateTransport(MemosApi(apiClient)),
-  );
+
+  // The queue first: sending what somebody said outranks telling them a number.
+  // The foreground being alive excuses this isolate from the QUEUE only -- its
+  // own triggers cover that -- and not from the nudge below, because a process
+  // that is alive is usually alive in somebody's pocket.
+  final rootPath = inputData?[capturesRootInputKey] as String?;
+  if (rootPath != null &&
+      rootPath.isNotEmpty &&
+      IsolateNameServer.lookupPortByName(queueForegroundPortName) == null) {
+    final root = Directory(rootPath);
+    if (await root.exists()) {
+      await runBackgroundQueuePass(
+        root: root,
+        token: token,
+        serverUrl: serverUrl,
+        engine: QueueEngine(transport: UploadsApiTransport(UploadsApi(apiClient))),
+        gate: MemosApiAudioGateTransport(MemosApi(apiClient)),
+      );
+    }
+  }
+
+  // CHRN-64's evening nudge. Its failure is logged and never the worker's: an
+  // unreachable server at 18:15 is retried by the next wake, not by WorkManager.
+  // Logged rather than swallowed, so "no notification" in a device pass can be
+  // told apart from "the read has been failing" (lib/notify/nudge.dart).
+  try {
+    final surface = LocalNudgeSurface();
+    await surface.init();
+    final decision = await runNudgePass(
+      fetch: () => TriageApi(apiClient).getTriageBatch(),
+      surface: surface,
+      prefs: prefs,
+      now: DateTime.now(),
+    );
+    debugPrint('chronicle.nudge: ${decision.kind.name} count=${decision.count}');
+  } catch (err) {
+    debugPrint('chronicle.nudge: pass failed: $err');
+  }
 
   // Always Result.success: a capture that failed or got rejected is not a
   // WORKER failure, it is a fact this pass already recorded correctly.

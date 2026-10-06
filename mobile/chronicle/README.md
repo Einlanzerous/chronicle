@@ -39,7 +39,7 @@ CI pins the same two versions (`.github/workflows/mobile.yml`).
 ```sh
 flutter pub get
 flutter analyze          # the lint gate -- run AFTER the last edit, not before
-flutter test             # 434 tests, no hardware
+flutter test             # 452 tests, no hardware
 flutter build apk --debug
 ```
 
@@ -411,6 +411,53 @@ Scribe on:
 5. **Override:** tap a different lane on a row. Expect `YOUR CHOICE`, and
    `NEEDS INPUT` if the destination wants something the proposal lacked; FILE
    it.
+
+## The evening nudge (CHRN-64)
+
+One notification, in the evening, saying how many memos are waiting:
+`9 memos waiting for triage`. Tapping it opens triage. It carries a count and
+nothing else — no transcript, no title — so a lock screen shows nobody what was
+said.
+
+### A poll, not a push
+
+Catenary's R2 gate measured FCM (data-only, `priority: HIGH`) reaching a cold,
+deep-Doze phone in seconds: 60 of 60, worst case 6.07 s. That is the right
+answer to a chat message that has to arrive *now*, and this is not that. A
+nudge owed *once, some time this evening* does not need to pierce Doze, so it
+does not pay for it: the periodic WorkManager wake the queue already runs
+(`lib/queue/background.dart`) asks `GET /triage/batch` and posts locally.
+No Firebase project, no device-token table, no sender on the server, and
+nothing leaves the estate to tell a phone a number.
+
+The cost, stated: Doze defers that wake to a maintenance window, so the nudge
+lands some minutes after 18:00 rather than at it, and later still on a phone
+left untouched on a desk — picking it up ends Doze and the wake follows. And
+**a force-stopped app gets nothing**, WorkManager included, until it is next
+opened. That is Android's rule, the same one R2 recorded for FCM.
+
+### The rule (`lib/notify/nudge.dart`)
+
+- **Waiting** means routed and undecided: a row whose proposal is `absent` is
+  not ready, and a row that already carries a `link` has been decided — on the
+  web or anywhere — and is only finishing its journey to Switchyard.
+- **Posted** when a memo is waiting that no earlier nudge covered, the local
+  hour is 18:00–21:59, and nothing was posted yet today. So a batch is announced
+  once; left untouched, it is not announced again tomorrow; a memo that arrives
+  at 20:00 waits for tomorrow's.
+- **Withdrawn** when the last waiting memo is decided elsewhere. While it is
+  still in the shade its number is corrected in place, silently; a dismissed one
+  is never brought back.
+- A full batch reads `25+`: the server hands over a screen and no total.
+- **A read that fails posts nothing, remembers nothing, and logs**
+  `chronicle.nudge: pass failed: …`. Every pass logs its decision
+  (`adb logcat -d | grep chronicle.nudge`), so a quiet evening can be told
+  apart from a poll that has been failing — R2's own lesson about silent zeros.
+
+The channel is `Triage`, default importance: one sound, once. Making it silent
+is the system's per-channel setting, not an app preference. The permission is
+the `POST_NOTIFICATIONS` the first recording already asks for; refused, nothing
+is posted and nothing is remembered as delivered.
 
 ## Pruning the phone's copy (CHRN-120)
 
@@ -880,6 +927,9 @@ lib/
     queue_controller.dart  the in-app triggers
     queue_label.dart   the screen label, as a pure function of persisted state
     background.dart    the WorkManager headless entrypoint
+  notify/              CHRN-64: the evening nudge -- see its section above
+    nudge.dart         the rule: when one notification is owed, and for what
+    nudge_surface.dart the platform: post, withdraw, hear the tap
   triage/              CHRN-63: batch triage -- see the section below
     triage_rows.dart   the rules, as pure functions (a port of web/src/lib/triage.ts)
     triage_controller.dart  the batch, the decisions, the ticket cards
