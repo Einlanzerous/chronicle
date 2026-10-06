@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.29.0](https://github.com/Einlanzerous/chronicle/compare/v1.28.0...v1.29.0) (2026-10-06)
+
+
+### Features
+
+* **auth:** the Access exchange tells a browser from the hosted MCP endpoint, and admits only people (CHRN-65) ([#157](https://github.com/Einlanzerous/chronicle/issues/157)) ([bce6f14](https://github.com/Einlanzerous/chronicle/commit/bce6f14380b6724af96a1299bee7cd99c617ed53))
+
+
+### Bug Fixes
+
+* **triage:** a refused decision is attempted again when accepted unchanged (CHRN-141) ([#155](https://github.com/Einlanzerous/chronicle/issues/155)) ([a106bd8](https://github.com/Einlanzerous/chronicle/commit/a106bd83a6898fc1e1435f57855ff592ffc7ccb2))
+
 ## [1.28.0](https://github.com/Einlanzerous/chronicle/compare/v1.27.0...v1.28.0) (2026-10-04)
 
 
