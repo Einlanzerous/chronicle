@@ -213,6 +213,24 @@ describe('TriageView -- forty memos at a keyboard', () => {
     wrapper.unmount()
   })
 
+  it('a row refused in this session is retried unchanged by ⏎, not sent to the editor', async () => {
+    let fixed = false
+    const server = fakeServer([memo(1)], () => (fixed ? 'applied' : 'refused'))
+    const wrapper = await mountView()
+
+    await press('Enter')
+    const row = wrapper.find('.ch-tri-row')
+    expect(row.text()).toContain('REFUSED · STILL PENDING')
+    expect(row.text()).toContain('RETRY')
+
+    fixed = true
+    await press('Enter')
+    expect(server.decisions).toHaveLength(2)
+    expect(server.decisions[1].override).toBeUndefined()
+    expect(wrapper.find('.ch-tri-row').classes()).toContain('is-accepted')
+    wrapper.unmount()
+  })
+
   it('E opens the editor, keys typed into it decide nothing, and ⏎ sends a whole override', async () => {
     const server = fakeServer([
       memo(1, { status: 'needs_input', pre_acceptable: false, proposal: { ...memo(1).proposal!, page_path: undefined } }),

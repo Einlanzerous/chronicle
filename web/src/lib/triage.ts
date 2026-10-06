@@ -100,10 +100,13 @@ export function rowKind(row: TriageRow): RowKind {
     case 'ambiguous':
       return 'link-ambiguous'
   }
-  // A transient failure of an accept-as-shown is retried with the same key
-  // (⏎ again). Everything else the server sent back -- a refusal, a cleared
-  // target, a failed EDIT whose draft is kept on the row -- needs the editor.
-  if (row.local.kind === 'problem' && (row.local.status !== 'failed' || row.draft)) return 'needs-input'
+  // A transient failure or a refusal of an accept-as-shown is retried as it
+  // was (⏎ again): a refusal created nothing, and the server attempts the same
+  // decision afresh (CHRN-141). Everything else the server sent back -- a
+  // cleared target, a stale proposal, an EDIT whose draft is kept on the row --
+  // needs the editor.
+  const retriable = row.local.kind === 'problem' && (row.local.status === 'failed' || row.local.status === 'refused')
+  if (row.local.kind === 'problem' && (!retriable || row.draft)) return 'needs-input'
   if (row.item.status !== 'valid' || !row.item.proposal) return 'needs-input'
   if (row.item.proposal.destination === 'DISCARD') return 'discard-proposed'
   return 'prefilled'
