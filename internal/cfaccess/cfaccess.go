@@ -1,7 +1,11 @@
-package api
-
-// Cloudflare Access JWT verification (CHRN-71), ported from Lyceum's
-// internal/api/cfaccess.go, which mirrors Switchyard's SWY-161.
+// Package cfaccess verifies Cloudflare Access JWTs (CHRN-71), ported from
+// Lyceum's internal/api/cfaccess.go, which mirrors Switchyard's SWY-161.
+//
+// It is a package of its own, importing nothing but the standard library,
+// because it has two callers that must not import each other (CHRN-65): the
+// API's sign-in exchange, and the hosted MCP transport, which verifies the
+// assertion on every request and is a CLIENT of the API -- it may not reach
+// internal/api, and through it the store, to borrow a verifier.
 //
 // A browser reaching Chronicle through the tunnel has already cleared Access,
 // and the edge injects a `Cf-Access-Jwt-Assertion` header carrying a
@@ -24,6 +28,7 @@ package api
 // closed explicitly: the algorithm is pinned to RS256, so a token cannot
 // downgrade to `none` and an RSA public key can never be replayed as an HMAC
 // secret, and issuer, audience and expiry are all checked rather than trusted.
+package cfaccess
 
 import (
 	"context"
@@ -44,13 +49,13 @@ import (
 )
 
 const (
-	// cfJWKSCacheMaxAge bounds how long a fetched key set is served before a
-	// refresh; cfJWKSRefreshCooldown throttles refetches triggered by an
+	// jwksCacheMaxAge bounds how long a fetched key set is served before a
+	// refresh; jwksRefreshCooldown throttles refetches triggered by an
 	// unknown key id, so a burst of tokens signed by a rotated-away key cannot
 	// hammer the certs endpoint.
-	cfJWKSCacheMaxAge     = 10 * time.Minute
-	cfJWKSRefreshCooldown = 30 * time.Second
-	cfJWKSFetchTimeout    = 10 * time.Second
+	jwksCacheMaxAge     = 10 * time.Minute
+	jwksRefreshCooldown = 30 * time.Second
+	jwksFetchTimeout    = 10 * time.Second
 
 	// maxJWKSBytes bounds the remote key document.
 	maxJWKSBytes = 1 << 20
@@ -58,10 +63,10 @@ const (
 	minRSAModulusBits = 2048
 )
 
-// CFAccessVerifier verifies Access JWTs for one Access application, caching the
-// team domain's JWKS in memory. Build it with NewCFAccessVerifier; the zero
-// value is not usable.
-type CFAccessVerifier struct {
+// Verifier verifies Access JWTs for one team domain against the audience tags
+// it was built with, caching the team's JWKS in memory. Build it with New; the
+// zero value is not usable.
+type Verifier struct {
 	issuer     string   // https://<teamDomain>
 	aud        []string // the Access applications' audience tags
 	certsURL   string   // https://<teamDomain>/cdn-cgi/access/certs
@@ -73,15 +78,17 @@ type CFAccessVerifier struct {
 	lastFetch time.Time                 // when a fetch was last attempted
 }
 
-// NewCFAccessVerifier builds a verifier for a team domain and one or more
-// audience tags. Keys are fetched lazily on first use, so construction cannot
-// fail and boot does not depend on Cloudflare being reachable.
+// New builds a verifier for a team domain and the audience tags it accepts.
+// Keys are fetched lazily on first use, so construction cannot fail and boot
+// does not depend on Cloudflare being reachable.
 //
-// The audience is a list because Access AUD tags are per-application: when
-// CHRN-65 adds an MCP endpoint behind its own Access application, its tokens
-// carry that application's tag and not the web app's. Switchyard reached the
-// same shape the hard way (SWY-260).
-func NewCFAccessVerifier(teamDomain string, aud ...string) *CFAccessVerifier {
+// The audience is a list because Access AUD tags are per-application, and one
+// team signs for all of them. A caller that accepts more than one application
+// must also care WHICH one a token was issued for -- Verify reports it --
+// because the tag is the only thing that tells a browser's assertion from the
+// hosted MCP endpoint's (CHRN-65), and the two are owed different sessions.
+// Switchyard reached the list the hard way (SWY-260).
+func New(teamDomain string, aud []string, opts ...Option) *Verifier {
 	teamDomain = NormalizeTeamDomain(teamDomain)
 	tags := make([]string, 0, len(aud))
 	for _, a := range aud {
@@ -89,12 +96,32 @@ func NewCFAccessVerifier(teamDomain string, aud ...string) *CFAccessVerifier {
 			tags = append(tags, a)
 		}
 	}
-	return &CFAccessVerifier{
+	v := &Verifier{
 		issuer:     "https://" + teamDomain,
 		aud:        tags,
 		certsURL:   "https://" + teamDomain + "/cdn-cgi/access/certs",
-		httpClient: &http.Client{Timeout: cfJWKSFetchTimeout},
+		httpClient: &http.Client{Timeout: jwksFetchTimeout},
 	}
+	for _, opt := range opts {
+		opt(v)
+	}
+	return v
+}
+
+// Option adjusts a Verifier at construction.
+type Option func(*Verifier)
+
+// WithCertsURL replaces where the signing keys are fetched from.
+//
+// A TEST SEAM, and the only one: it exists so a test can sign assertions with
+// a key it generated and serve the matching JWKS from an httptest server,
+// which is the only way to exercise the accepting path at all. Nothing that
+// serves traffic passes it -- the production URL is derived from the team
+// domain above, and a deployment that could point this elsewhere could mint
+// its own identities. It is exported because the hosted MCP transport's tests
+// live in another package and need the same harness.
+func WithCertsURL(url string) Option {
+	return func(v *Verifier) { v.certsURL = url }
 }
 
 // NormalizeTeamDomain reduces a team domain to a bare host, so pasting the
@@ -107,19 +134,19 @@ func NormalizeTeamDomain(v string) string {
 	return strings.TrimSuffix(v, "/")
 }
 
-// errCFAccessInvalid is the single opaque error every verification failure maps
+// ErrInvalid is the single opaque error every verification failure maps
 // to, so a probe cannot distinguish a bad signature from a wrong audience from
 // an expired token.
-var errCFAccessInvalid = errors.New("invalid Cloudflare Access token")
+var ErrInvalid = errors.New("invalid Cloudflare Access token")
 
-// cfAccessAudience decodes the `aud` claim, which Cloudflare emits as either a
+// audience decodes the `aud` claim, which Cloudflare emits as either a
 // string or an array of strings.
-type cfAccessAudience []string
+type audience []string
 
-func (a *cfAccessAudience) UnmarshalJSON(b []byte) error {
+func (a *audience) UnmarshalJSON(b []byte) error {
 	var one string
 	if err := json.Unmarshal(b, &one); err == nil {
-		*a = cfAccessAudience{one}
+		*a = audience{one}
 		return nil
 	}
 	var many []string
@@ -130,27 +157,31 @@ func (a *cfAccessAudience) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// acceptable reports whether the token's audience list intersects the
-// configured tags. An empty configured list matches nothing: "no audience
-// configured" must never read as "any audience will do".
-func (a cfAccessAudience) acceptable(want []string) bool {
+// match returns the first CONFIGURED tag the token's audience list carries.
+// An empty configured list matches nothing: "no audience configured" must
+// never read as "any audience will do".
+//
+// The order is the configured one, not the token's, so which tag is reported
+// for a token carrying two of them is decided by this deployment rather than
+// by whoever minted the token.
+func (a audience) match(want []string) (string, bool) {
 	for _, w := range want {
 		for _, v := range a {
 			if v == w {
-				return true
+				return w, true
 			}
 		}
 	}
-	return false
+	return "", false
 }
 
-// cfAccessClaims is the subset of the Access JWT payload Chronicle reads.
-type cfAccessClaims struct {
-	Iss   string           `json:"iss"`
-	Aud   cfAccessAudience `json:"aud"`
-	Exp   int64            `json:"exp"`
-	Nbf   int64            `json:"nbf"`
-	Email string           `json:"email"`
+// payload is the subset of the Access JWT payload Chronicle reads.
+type payload struct {
+	Iss   string   `json:"iss"`
+	Aud   audience `json:"aud"`
+	Exp   int64    `json:"exp"`
+	Nbf   int64    `json:"nbf"`
+	Email string   `json:"email"`
 }
 
 // jwtHeader is the decoded JWS header.
@@ -159,68 +190,82 @@ type jwtHeader struct {
 	Kid string `json:"kid"`
 }
 
-// Verify checks a Cf-Access-Jwt-Assertion value and returns the verified email.
+// Identity is what a verified assertion establishes: who, and for which
+// Access application.
+type Identity struct {
+	Email string
+	// Audience is the configured tag the token matched. It is one of the
+	// values New was given, never a string taken from the token unchecked.
+	Audience string
+}
+
+// Verify checks a Cf-Access-Jwt-Assertion value and returns the verified
+// identity.
 // It enforces, in order: three JWS segments, RS256, a known signing key, a
 // valid RSA signature, the exact issuer and audience, expiry (and not-before
 // when present), and a non-empty email. Every failure returns the same error.
-func (v *CFAccessVerifier) Verify(ctx context.Context, token string) (string, error) {
+func (v *Verifier) Verify(ctx context.Context, token string) (Identity, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return "", errCFAccessInvalid
+		return Identity{}, ErrInvalid
 	}
 
 	var hdr jwtHeader
 	if err := decodeSegment(parts[0], &hdr); err != nil {
-		return "", errCFAccessInvalid
+		return Identity{}, ErrInvalid
 	}
 	// Pinning the algorithm here is what closes the downgrade holes: only the
 	// RSA path below is ever reachable.
 	if hdr.Alg != "RS256" || hdr.Kid == "" {
-		return "", errCFAccessInvalid
+		return Identity{}, ErrInvalid
 	}
 
 	key, err := v.key(ctx, hdr.Kid)
 	if err != nil {
-		return "", errCFAccessInvalid
+		return Identity{}, ErrInvalid
 	}
 
 	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil {
-		return "", errCFAccessInvalid
+		return Identity{}, ErrInvalid
 	}
 	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
 	if err := rsa.VerifyPKCS1v15(key, crypto.SHA256, digest[:], sig); err != nil {
-		return "", errCFAccessInvalid
+		return Identity{}, ErrInvalid
 	}
 
-	var claims cfAccessClaims
+	var claims payload
 	if err := decodeSegment(parts[1], &claims); err != nil {
-		return "", errCFAccessInvalid
+		return Identity{}, ErrInvalid
 	}
-	if claims.Iss != v.issuer || !claims.Aud.acceptable(v.aud) {
-		return "", errCFAccessInvalid
+	if claims.Iss != v.issuer {
+		return Identity{}, ErrInvalid
+	}
+	matched, ok := claims.Aud.match(v.aud)
+	if !ok {
+		return Identity{}, ErrInvalid
 	}
 	now := time.Now()
 	if claims.Exp == 0 || now.After(time.Unix(claims.Exp, 0)) {
-		return "", errCFAccessInvalid
+		return Identity{}, ErrInvalid
 	}
 	if claims.Nbf != 0 && now.Before(time.Unix(claims.Nbf, 0)) {
-		return "", errCFAccessInvalid
+		return Identity{}, ErrInvalid
 	}
 	if claims.Email == "" {
-		return "", errCFAccessInvalid
+		return Identity{}, ErrInvalid
 	}
-	return claims.Email, nil
+	return Identity{Email: claims.Email, Audience: matched}, nil
 }
 
 // key returns the RSA public key for kid, refreshing the JWKS when the cache is
 // stale or the key is unknown. A stale-but-present key beats a failed refresh,
 // so a transient certs-endpoint outage does not reject a token signed by a key
 // already held.
-func (v *CFAccessVerifier) key(ctx context.Context, kid string) (*rsa.PublicKey, error) {
+func (v *Verifier) key(ctx context.Context, kid string) (*rsa.PublicKey, error) {
 	v.mu.RLock()
 	k, ok := v.keys[kid]
-	fresh := time.Since(v.fetchedAt) < cfJWKSCacheMaxAge
+	fresh := time.Since(v.fetchedAt) < jwksCacheMaxAge
 	v.mu.RUnlock()
 	if ok && fresh {
 		return k, nil
@@ -252,11 +297,11 @@ func (v *CFAccessVerifier) key(ctx context.Context, kid string) (*rsa.PublicKey,
 // — in both, keys stays nil, so every request fetches again immediately.
 // construct-server's guard gets this right by stamping the attempt
 // unconditionally, before the fetch, and that is what is copied here.
-func (v *CFAccessVerifier) refresh(ctx context.Context) error {
+func (v *Verifier) refresh(ctx context.Context) error {
 	v.mu.Lock()
-	if !v.lastFetch.IsZero() && time.Since(v.lastFetch) < cfJWKSRefreshCooldown {
+	if !v.lastFetch.IsZero() && time.Since(v.lastFetch) < jwksRefreshCooldown {
 		v.mu.Unlock()
-		return errCFAccessCooling
+		return errCooling
 	}
 	v.lastFetch = time.Now() // stamped for the ATTEMPT, not for its success
 	v.mu.Unlock()
@@ -276,10 +321,10 @@ func (v *CFAccessVerifier) refresh(ctx context.Context) error {
 	return nil
 }
 
-// errCFAccessCooling means the refresh was skipped by the cooldown, not that it
+// errCooling means the refresh was skipped by the cooldown, not that it
 // failed. The caller treats it the same way — it has no key either way — but
 // keeping them distinct stops a skipped refresh being logged as an outage.
-var errCFAccessCooling = errors.New("cf access: jwks refresh is cooling down")
+var errCooling = errors.New("cf access: jwks refresh is cooling down")
 
 // jwksResponse is the shape of Cloudflare's certs endpoint.
 type jwksResponse struct {

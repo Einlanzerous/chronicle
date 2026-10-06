@@ -17,6 +17,7 @@ import (
 
 	"github.com/Einlanzerous/chronicle/internal/api/apitest"
 	"github.com/Einlanzerous/chronicle/internal/api/wire"
+	"github.com/Einlanzerous/chronicle/internal/cfaccess"
 	"github.com/Einlanzerous/chronicle/internal/store"
 )
 
@@ -32,6 +33,7 @@ type fakeAccounts struct {
 	createErr      error
 	minted         string
 	mintedSessions []string
+	mintedHosted   []string
 	revoked        []string
 }
 
@@ -83,6 +85,12 @@ func (f *fakeAccounts) MintToken(_ context.Context, _ uuid.UUID, _, label string
 	tok := "chr_minted_" + label
 	f.mintedSessions = append(f.mintedSessions, tok)
 	return tok, nil
+}
+
+func (f *fakeAccounts) MintHostedSession(_ context.Context, _ uuid.UUID) (string, time.Time, error) {
+	tok := "chr_minted_hosted"
+	f.mintedHosted = append(f.mintedHosted, tok)
+	return tok, time.Now().Add(store.HostedSessionTTL), nil
 }
 
 func (f *fakeAccounts) GetUserByEmail(_ context.Context, email string) (store.User, error) {
@@ -482,7 +490,7 @@ func TestForgedAccessHeaderIsRefused(t *testing.T) {
 	f := newFakeAccounts()
 	h := NewRouter(Deps{
 		DB: fakePinger{}, Accounts: f, Logger: discardLogger(), Version: "test",
-		CFAccess: NewCFAccessVerifier("team.invalid", "aud"),
+		CFAccess: cfaccess.New("team.invalid", []string{"aud"}),
 	})
 
 	rec := httptest.NewRecorder()

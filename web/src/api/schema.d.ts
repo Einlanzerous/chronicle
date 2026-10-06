@@ -149,6 +149,17 @@ export interface paths {
          *     a verified email matched to an account mints the same kind of session
          *     the invite path does.
          *
+         *     **Which session depends on which Access application the assertion was
+         *     issued for** (CHRN-65). The web application's is a browser: a durable
+         *     session, plus the cookie, and a session the caller already presents is
+         *     reused rather than minted again. The hosted MCP endpoint's is one
+         *     conversation: a session that **expires** — `expires_at` says when — with
+         *     no cookie and no reuse, which the endpoint revokes at
+         *     `DELETE /auth/session` when the conversation ends.
+         *
+         *     **Only a person signs in here.** An agent account answers `403
+         *     sso_agent_account` for either application; an agent signs in by invite.
+         *
          *     **The assertion header is deliberately not declared as a parameter.**
          *     Declaring it required would make the generated wrapper answer `400` when
          *     it is absent, where this operation answers `401` with a code saying
@@ -1620,6 +1631,14 @@ export interface components {
         Session: {
             user: components["schemas"]["User"];
             session_token: string;
+            /**
+             * Format: date-time
+             * @description When `session_token` stops working. **Absent for a session that
+             *     does not expire**, which is every session a device or a browser
+             *     holds. Present for the hosted MCP endpoint's exchange, whose
+             *     sessions are bounded.
+             */
+            expires_at?: string;
         };
         /**
          * @description A single-use invite, shown once. `sign_in_url` is the QR target and is
@@ -3633,7 +3652,10 @@ export interface operations {
                     "application/json": components["schemas"]["SsoError"];
                 };
             };
-            /** @description the assertion verified, and names an email no account holds */
+            /**
+             * @description the assertion verified, and names an email no account holds
+             *     (`sso_no_account`) or one an agent account holds (`sso_agent_account`)
+             */
             403: {
                 headers: {
                     [name: string]: unknown;

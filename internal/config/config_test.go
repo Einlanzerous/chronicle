@@ -668,3 +668,71 @@ func TestLoadTier1WikiDir(t *testing.T) {
 		}
 	})
 }
+
+// CHRN-65 — the hosted MCP endpoint's audience tag has a variable of its own,
+// and the two ways of getting it wrong are refused at boot, because neither
+// would ever fail a request.
+func TestLoadMCPAccessAudience(t *testing.T) {
+	base := func(t *testing.T) {
+		withOwner(t)
+		t.Setenv("CHRONICLE_DATABASE_URL", "postgres://x/y")
+		t.Setenv("CHRONICLE_CF_ACCESS_TEAM_DOMAIN", "team.cloudflareaccess.com")
+		t.Setenv("CHRONICLE_CF_ACCESS_AUD", "web-tag, old-web-tag")
+	}
+
+	t.Run("unset changes nothing", func(t *testing.T) {
+		base(t)
+		t.Setenv("CHRONICLE_MCP_CF_ACCESS_AUD", "")
+		c, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if got := c.AccessAudiences(); len(got) != 2 || got[0] != "web-tag" || got[1] != "old-web-tag" {
+			t.Errorf("AccessAudiences = %v, want the web list alone", got)
+		}
+	})
+
+	t.Run("set is accepted in addition to the web list, after it", func(t *testing.T) {
+		base(t)
+		t.Setenv("CHRONICLE_MCP_CF_ACCESS_AUD", " mcp-tag ")
+		c, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if c.MCPCFAccessAUD != "mcp-tag" {
+			t.Errorf("MCPCFAccessAUD = %q, want mcp-tag", c.MCPCFAccessAUD)
+		}
+		if got := c.AccessAudiences(); len(got) != 3 || got[2] != "mcp-tag" {
+			t.Errorf("AccessAudiences = %v, want the web list then mcp-tag", got)
+		}
+		if len(c.CFAccessAUD) != 2 {
+			t.Errorf("CFAccessAUD = %v; AccessAudiences must not grow the web list", c.CFAccessAUD)
+		}
+	})
+
+	// A tag in both would match as the web audience, and the MCP endpoint's
+	// assertion would be handed a browser's durable session.
+	t.Run("also in the web list is a boot error naming both variables", func(t *testing.T) {
+		base(t)
+		t.Setenv("CHRONICLE_MCP_CF_ACCESS_AUD", "old-web-tag")
+		_, err := Load()
+		if err == nil {
+			t.Fatal("an MCP tag that is also a web tag was accepted")
+		}
+		for _, name := range []string{"CHRONICLE_MCP_CF_ACCESS_AUD", "CHRONICLE_CF_ACCESS_AUD"} {
+			if !strings.Contains(err.Error(), name) {
+				t.Errorf("error %q does not name %s", err, name)
+			}
+		}
+	})
+
+	t.Run("without web SSO is a boot error", func(t *testing.T) {
+		base(t)
+		t.Setenv("CHRONICLE_CF_ACCESS_TEAM_DOMAIN", "")
+		t.Setenv("CHRONICLE_CF_ACCESS_AUD", "")
+		t.Setenv("CHRONICLE_MCP_CF_ACCESS_AUD", "mcp-tag")
+		if _, err := Load(); err == nil {
+			t.Error("an MCP audience with no team domain to verify it against was accepted")
+		}
+	})
+}

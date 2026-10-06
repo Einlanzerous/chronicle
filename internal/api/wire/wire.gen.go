@@ -1996,7 +1996,12 @@ type SearchResults struct {
 // there is no endpoint that returns it a second time, because it is stored
 // hashed.
 type Session struct {
-	SessionToken string `json:"session_token"`
+	// ExpiresAt When `session_token` stops working. **Absent for a session that
+	// does not expire**, which is every session a device or a browser
+	// holds. Present for the hosted MCP endpoint's exchange, whose
+	// sessions are bounded.
+	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
+	SessionToken string     `json:"session_token"`
 
 	// User An account, as the wire carries it. It deliberately holds **no token
 	// material**: a credential is returned exactly once, by the call that

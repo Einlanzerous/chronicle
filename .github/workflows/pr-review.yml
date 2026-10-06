@@ -102,7 +102,7 @@ jobs:
       #   internal/api/session  The credential surface: cookie flags, the
       #                         text/plain CSRF refusal, body limits, SSO
       #                         completion.
-      #   internal/api/cfaccess Access JWT verification. SERV-131 exists because
+      #   internal/cfaccess/    Access JWT verification. SERV-131 exists because
       #                         three hand-rolled copies of this diverged into a
       #                         panic (LYCM-122); until that shared module
       #                         lands, this file is the estate's third copy.
@@ -292,7 +292,7 @@ jobs:
       # assertions, the lineage, and the application id and build types. A
       # weakened guard or a dropped `--lineage` passes every other check and
       # surfaces only on the phone, so they read at the expensive tier.
-      sensitive_paths: '^(internal/store/|internal/scribe/|internal/triage/|asr/|internal/transcribe/|internal/api/(session|cfaccess|ratelimit|router|policy|contract|storage|upload|transcription)|internal/(invite|config|audio|watch|upload|retention)/|cmd/chronicle/|migrations/|deploy/|scripts/|verify\.sh|openapi\.yaml|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore|mobile/chronicle/(lib|test)/capture/capture_record|mobile/chronicle/(lib|test)/queue/(prune|ack|audio_gate|engine_prune|background|queue_controller)|mobile/chronicle/tool/|mobile/chronicle/android/(signing/|app/build\.gradle\.kts))'
+      sensitive_paths: '^(internal/store/|internal/scribe/|internal/triage/|asr/|internal/transcribe/|internal/api/(session|ratelimit|router|policy|contract|storage|upload|transcription)|internal/(invite|config|audio|watch|upload|retention|cfaccess)/|cmd/chronicle/|migrations/|deploy/|scripts/|verify\.sh|openapi\.yaml|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore|mobile/chronicle/(lib|test)/capture/capture_record|mobile/chronicle/(lib|test)/queue/(prune|ack|audio_gate|engine_prune|background|queue_controller)|mobile/chronicle/tool/|mobile/chronicle/android/(signing/|app/build\.gradle\.kts))'
 
       # No `docs_skip_extra`: this repo commits no knowledge-graph cache, and
       # the one generated artifact it does carry is excluded outright in
