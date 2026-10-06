@@ -21,10 +21,12 @@ import (
 // THE THREE PROPERTIES THIS FILE DOES NOT ENFORCE, because the store does:
 // a turn is immutable (CH090), an agent turn requires a person's turn
 // immediately before it (CH091), and a resolved thread takes no more turns
-// (CH093). CHRN-67's MCP write tools are a second caller by design, so a rule
-// that lived here would be one they do not inherit. What this file owns is the
-// ORDERING — seq is allocated under the thread's row lock — and the mapping
-// from those SQLSTATEs onto errors a handler can act on.
+// (CH093). A rule that lived in Go would bind only the Go paths that remembered
+// it; in the schema it binds every writer. (CHRN-67's MCP write tools were once
+// the argument, as a second caller of this package. They are not one -- CHRN-65
+// made MCP a client of the HTTP API -- and the argument never needed them.)
+// What this file owns is the ORDERING — seq is allocated under the thread's row
+// lock — and the mapping from those SQLSTATEs onto errors a handler can act on.
 
 // ErrTurnImmutable is returned when something tries to rewrite a turn. It
 // should be unreachable through this package, which never issues such a

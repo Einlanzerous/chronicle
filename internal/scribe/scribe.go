@@ -2,10 +2,15 @@
 // produce for a memo, and the two validations that stand between a model's
 // output and a triage screen.
 //
-// It is a package rather than a file in internal/api because CHRN-67 exposes
-// routing as an MCP tool. A contract that exists only inside HTTP handlers is
-// one that gets reimplemented for the agent surface, and two implementations of
-// a contract are two contracts.
+// It is a package rather than a file in internal/api because the contract has
+// more than one user inside this binary -- triage lands what it validates, and
+// the eval harness scores against it with no HTTP surface in sight -- and a
+// contract that exists only inside handlers is one that gets reimplemented for
+// the next of them. Two implementations of a contract are two contracts.
+//
+// (It was first justified by CHRN-67 exposing routing as an MCP tool. CHRN-65
+// settled that an MCP tool calls the HTTP route rather than this package, so
+// that is no longer a reason; the ones above are.)
 //
 // The decision is docs/decisions/chrn-32-proposal-contract.md; section numbers
 // in these comments refer to it.

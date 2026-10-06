@@ -31,6 +31,15 @@ own note IDs are `CHR-####` and the two namespaces would collide.
   `user.go` and CHRN-18 put `Memo` in `memo.go`, and a types-only package
   with two files in it earns nothing.
 - `internal/api/` — HTTP surface.
+- `internal/mcp/` — the MCP server (E10): one tool registry behind two
+  transports, `chronicle mcp` (stdio, as the one account a token names) and
+  `chronicle mcp-serve` (hosted HTTP behind Cloudflare Access, no token). It
+  is a **client of the HTTP API**: it reaches Chronicle only through
+  `internal/apiclient/`, the Go client generated from `openapi.yaml` by
+  `scripts/gen-apiclient.sh`, and may import neither `internal/api` nor
+  `internal/store` — `verify.sh`'s `mcp boundary` step and its `ci.yml` mirror
+  enforce that. `internal/cfaccess/` is the Access JWT verifier both it and
+  the API's sign-in exchange use.
 - `web/` — the web client (E8). Vue + Vite; its API types are generated from
   `openapi.yaml` by `scripts/gen-webapi.sh`.
 - `mobile/chronicle/` — the Android client (E9). Flutter, on the Argosy/Lyceum

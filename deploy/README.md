@@ -215,6 +215,64 @@ up differently** — this is the part no repo records, so it lives here.
 
 Without these the Traefik routers exist but nothing routes to them.
 
+## The MCP server (CHRN-65)
+
+Two transports over one tool registry, both subcommands of this image and both
+**clients of the HTTP API** — neither reads `CHRONICLE_DATABASE_URL`.
+
+### `chronicle mcp` — stdio, the agent-attributed path
+
+Runs wherever the agent runs, as the **one account** its token names. Needs no
+deployment here: it reaches the direct host like the Android app does.
+
+| variable | |
+|---|---|
+| `CHRONICLE_URL` | required, no default — `https://chronicle-direct.zerogravity.industries` from outside the network |
+| `CHRONICLE_TOKEN` | required — that account's session token |
+
+**Giving an agent a token** is the path every account uses, and the first step
+is the owner's, through Access:
+
+1. `POST /admin/users` with `{"email": "...", "display_name": "...", "kind": "agent"}` on `chronicle.…` — `/admin` is 403 on the direct host. The response carries a one-time invite.
+2. Redeem it on the direct host: `POST /auth/session` with `{"token": "<invite>", "device_label": "mcp-stdio"}`. The `session_token` in the answer is `CHRONICLE_TOKEN`. It is shown once.
+3. It appears in that account's device list and is revoked from there.
+
+Get the binary with `go install github.com/Einlanzerous/chronicle/cmd/chronicle@<tag>`,
+or run the image: `docker run -i --rm -e CHRONICLE_URL -e CHRONICLE_TOKEN ghcr.io/einlanzerous/chronicle mcp`.
+
+It asks the API whose token it holds before it speaks MCP, and exits non-zero
+with one line on stderr if it cannot find out. Which tools it offers follows
+from the answer: **write tools only to an agent account.** A person's token
+works and reads; it does not write.
+
+### `chronicle mcp-serve` — hosted HTTP, behind its own Access application
+
+For clients that connect from somewhere else's cloud. It is its **own
+container** (this image, `command: ["mcp-serve"]`) behind its **own Access
+application**, declared in `construct-server` (SERV-231), and it **takes no
+token**: each request's Access assertion is verified against this
+application's audience, and each session exchanges it once at
+`POST /auth/sso/cloudflare` for a session as that person — 12 hours at most,
+revoked when the session ends, and offered no write tool.
+
+| variable | |
+|---|---|
+| `CHRONICLE_MCP_API_URL` | where the API is, e.g. `http://chronicle:4009` |
+| `CHRONICLE_MCP_PUBLIC_URL` | the endpoint as clients reach it, path included, e.g. `https://chronicle-mcp.zerogravity.industries/mcp`. Configured, never derived from `Host` |
+| `CHRONICLE_CF_ACCESS_TEAM_DOMAIN` | the same value `serve` has |
+| `CHRONICLE_MCP_CF_ACCESS_AUD` | the **MCP** Access application's audience tag |
+| `CHRONICLE_MCP_PORT` | default `4080`; nothing publishes it |
+
+Three things about that audience tag that are not derivable from the block:
+
+- **It is set in two places and they must agree:** on `chronicle-mcp`, which verifies every request against it, and on `chronicle` itself, which is what makes the exchange mint the bounded session rather than refuse the assertion.
+- **It must not also be put in `CHRONICLE_CF_ACCESS_AUD`.** That list is the web application's. A tag in both would match as a browser and be handed a non-expiring session, so `serve` refuses to boot on the overlap — and on the MCP tag being set with no web SSO at all.
+- **Unset on `chronicle`, nothing changes:** the exchange refuses the MCP audience like any other it does not know, and `mcp-serve` sessions fail at initialize with a 401.
+
+The container needs a stop grace of at least Docker's default 10 s: on
+`SIGTERM` it revokes every open session's token, concurrently, with a 5 s
+timeout. `GET /healthz` on it answers `status`, `version` and `sha`.
+
 ## What is deployed, and what is deliberately not
 
 **Both halves are deployed**, serving the same backend:
@@ -222,7 +280,7 @@ Without these the Traefik routers exist but nothing routes to them.
 | host | entrypoint | middlewares | for |
 |---|---|---|---|
 | `chronicle.…` | `internal` | `cf-access-jwt`, `chronicle-proxy-secret` | browser, via Access → `POST /auth/sso/cloudflare` |
-| `chronicle-direct.…` | `public` | `crowdsec-bouncer`, `strip-cf-access`, `chronicle-proxy-secret` | the app and MCP, via invite → `POST /auth/session` |
+| `chronicle-direct.…` | `public` | `crowdsec-bouncer`, `strip-cf-access`, `chronicle-proxy-secret` | the app and an agent's stdio MCP, via invite → `POST /auth/session` |
 | ↳ `PathPrefix(/auth/)` | `public` | + `chronicle-login-ratelimit` | the credential endpoints specifically |
 | ↳ `PathPrefix(/admin)` | `public` | `deny-all` → blackhole | **403. `/admin` is Access-only** |
 

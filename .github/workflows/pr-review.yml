@@ -106,6 +106,13 @@ jobs:
       #                         three hand-rolled copies of this diverged into a
       #                         panic (LYCM-122); until that shared module
       #                         lands, this file is the estate's third copy.
+      #   internal/mcp/         The MCP server (CHRN-65, Mode C): both transports,
+      #                         and the ONE place a tool is attached to a
+      #                         session. A tool that writes and declares
+      #                         `Mutates: false` is offered to hosted sessions,
+      #                         which act as a person. The hosted transport's
+      #                         per-request Access check and its revoke-on-
+      #                         every-ending are here too.
       #   internal/apiclient/   Only `oapi-codegen.yaml` is read -- the flags
       #                         that generate the client. The generated file
       #                         is in `.github/review-ignore`.
@@ -295,7 +302,7 @@ jobs:
       # assertions, the lineage, and the application id and build types. A
       # weakened guard or a dropped `--lineage` passes every other check and
       # surfaces only on the phone, so they read at the expensive tier.
-      sensitive_paths: '^(internal/store/|internal/scribe/|internal/triage/|asr/|internal/transcribe/|internal/api/(session|ratelimit|router|policy|contract|storage|upload|transcription)|internal/(invite|config|audio|watch|upload|retention|cfaccess|apiclient)/|cmd/chronicle/|migrations/|deploy/|scripts/|verify\.sh|openapi\.yaml|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore|mobile/chronicle/(lib|test)/capture/capture_record|mobile/chronicle/(lib|test)/queue/(prune|ack|audio_gate|engine_prune|background|queue_controller)|mobile/chronicle/tool/|mobile/chronicle/android/(signing/|app/build\.gradle\.kts))'
+      sensitive_paths: '^(internal/store/|internal/scribe/|internal/triage/|asr/|internal/transcribe/|internal/api/(session|ratelimit|router|policy|contract|storage|upload|transcription)|internal/(invite|config|audio|watch|upload|retention|cfaccess|mcp|apiclient)/|cmd/chronicle/|migrations/|deploy/|scripts/|verify\.sh|openapi\.yaml|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore|mobile/chronicle/(lib|test)/capture/capture_record|mobile/chronicle/(lib|test)/queue/(prune|ack|audio_gate|engine_prune|background|queue_controller)|mobile/chronicle/tool/|mobile/chronicle/android/(signing/|app/build\.gradle\.kts))'
 
       # No `docs_skip_extra`: this repo commits no knowledge-graph cache, and
       # the one generated artifact it does carry is excluded outright in

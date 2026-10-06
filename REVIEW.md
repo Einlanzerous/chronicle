@@ -362,27 +362,37 @@ to change and be regenerated.
 
 The six Mode C tickets are the ones that can destroy authored data or hand an
 agent write access to it, so their code must live somewhere `sensitive_paths`
-in `.github/workflows/pr-review.yml` names. **Two of the six still have no path
-in this repo — CHRN-67 (MCP write scopes) and CHRN-65 (the MCP server itself:
-Streamable HTTP behind Access).** Neither has a package, and an `internal/mcp/`
-or `internal/api/mcp/` would match nothing in the pattern — the
-`internal/api/(session|cfaccess|ratelimit|router|storage|upload|transcription)`
-alternation is exhaustive. `sensitive_paths` cannot list a package that does not
-exist, so the entry has to arrive with the code.
+in `.github/workflows/pr-review.yml` names. **One of the six has code still to
+come — CHRN-67 (MCP write scopes).** Its tools will be declared in
+`internal/mcp/`, which the pattern now names, but its scope model will not
+live there: it is a column on `tier2.user_tokens` and a check on the path
+every client authenticates through. `internal/store/`, `migrations/` and
+`internal/api/(session|router|policy)` are covered already; anything else it
+adds is not, and `sensitive_paths` cannot list a package that does not exist,
+so the entry has to arrive with the code.
 
-So: **if this PR implements CHRN-65 or CHRN-67, check that it adds its new
-package to `sensitive_paths` in the same PR.** If it does not, that is a 🔴
-Important finding — every subsequent PR touching Chronicle's MCP surface, the
-Access-facing transport included, would otherwise be reviewed at the cheap tier,
-silently, which is the whole cost of the omission.
+So: **if this PR implements CHRN-67, check that every new package it adds is
+in `sensitive_paths` in the same PR.** If one is not, that is a 🔴 Important
+finding — every subsequent PR touching what an agent may write would otherwise
+be reviewed at the cheap tier, silently, which is the whole cost of the
+omission.
 
-**Three tickets this section names are now covered, and finding them
+And for any PR that touches `internal/mcp/`: **a tool's `Mutates` field is the
+write gate's only input** (`BuildServer` skips a mutating tool unless the
+session is `stdio` on an `agent` account). A tool that changes anything and
+declares `Mutates: false` is offered to hosted sessions, which act as a
+person — a 🔴 on sight. So is `internal/mcp/` or `internal/apiclient/`
+importing `internal/store` or `internal/api`: the `mcp boundary` step fails
+it, and a PR that edits that step is the finding.
+
+**Four tickets this section names are now covered, and finding them
 uncovered is a false 🔴** — check the pattern before raising one:
 
 | ticket | path today | covered by |
 |---|---|---|
 | CHRN-22 (retention pruner) | `internal/retention/` | `internal/(invite\|config\|audio\|watch\|upload\|retention)/` |
 | CHRN-39 (revisions) | `internal/store/` — CHRN-38 put revisions there | `internal/store/` |
+| CHRN-65 (MCP transport) | `internal/mcp/` (both transports, the registry and its write gate), `internal/cfaccess/` (the Access verifier), `internal/apiclient/oapi-codegen.yaml` (the generated client's flags; the generated file itself is in `.github/review-ignore`), and `cmd/chronicle/mcp.go` | `internal/(invite\|config\|audio\|watch\|upload\|retention\|cfaccess\|mcp\|apiclient)/` and `cmd/chronicle/` |
 | CHRN-120 (the phone's own prune) | `mobile/chronicle/lib/queue/{prune,prune_gate,audio_gate_transport,ack,queue_controller,background}.dart`, `mobile/chronicle/lib/capture/capture_record.dart` (the tombstone and the unlink), and their tests | `mobile/chronicle/(lib\|test)/capture/capture_record\|mobile/chronicle/(lib\|test)/queue/(prune\|ack\|audio_gate\|engine_prune\|background\|queue_controller)` |
 
 **CHRN-120's entry is deliberately narrow, and the narrowness is the decision.**

@@ -3,10 +3,13 @@
 //
 // WHAT THIS PACKAGE DOES NOT DO IS THE INTERESTING HALF. It does not stop an
 // agent replying to itself: CHRN-43's ruling 3 put that in the store as CH091,
-// deliberately, because "a rule that lives only in the reply handler is a rule
-// CHRN-67's MCP reply tool does not know about" — and CHRN-67 is the second
-// caller by design. This package HANDLES that refusal; it does not duplicate
-// it. The same is true of CH093 on a resolved thread.
+// deliberately, because a rule that lives only in the reply handler binds only
+// the paths that go through the reply handler. (CHRN-43 argued it from CHRN-67's
+// MCP reply tool being a second caller of this code. CHRN-65 settled that it is
+// not one: an MCP tool is a client of the HTTP route. The rule is in the store
+// all the same, and for the better reason -- it should not depend on which
+// door was used.) This package HANDLES that refusal; it does not duplicate it.
+// The same is true of CH093 on a resolved thread.
 //
 // What it owns is the part a schema cannot express: that the trigger is
 // EXPLICIT, that the rate is bounded, and that every attempt is logged.
@@ -103,7 +106,8 @@ func New(s Store, logger *slog.Logger) *Replier {
 //
 // THE BODY IS THE CALLER'S. Generating what the Scribe says is not this
 // ticket's — the description routes agents through "E10's MCP write tools",
-// and CHRN-67 owns that surface. What this owns is whether the reply is
+// and CHRN-67 owns that surface, which reaches this code through the HTTP
+// route like any other client (CHRN-65). What this owns is whether the reply is
 // allowed to happen at all, and that it is attributed and recorded correctly.
 //
 // THE ORDER OF THE CHECKS IS THE POINT. The trigger is tested first, before the
@@ -224,9 +228,12 @@ func mentionsScribe(body string) bool {
 //
 // NOT internal/api's, deliberately. That one keys on a client IP and carries
 // the trusted-proxy reasoning CHRN-75 fixed; it belongs to the HTTP surface and
-// is unexported there. This keys on a discussion id, has no notion of a
-// request, and is reachable from CHRN-67's MCP tools which never see an IP.
-// Sharing them would mean exporting an HTTP concept to a caller that has none.
+// is unexported there. This keys on a discussion id and has no notion of a
+// request, because what it bounds is replies into a THREAD, whoever asked for
+// them and from wherever. Sharing them would mean exporting an HTTP concept to
+// a package that has none. (It was once justified by CHRN-67's MCP tools
+// calling in with no IP to key on; under CHRN-65 they arrive through the HTTP
+// route and do have one. The discussion id is still the right key.)
 type limiter struct {
 	mu     sync.Mutex
 	window time.Duration
