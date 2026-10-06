@@ -25,7 +25,7 @@ import (
 // on the page and self-correcting on refresh. Holding it is cheap and losing it
 // is expensive.
 //
-// So this takes all three parts of the rule internal/api/cfaccess.go already
+// So this takes all three parts of the rule internal/cfaccess already
 // applies to the JWKS, including the one that matters most:
 //
 //	"A failed fetch leaves the previous key set in place. Replacing a working
