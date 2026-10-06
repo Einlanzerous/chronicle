@@ -1,0 +1,26 @@
+# oapi-codegen configuration for the Go CLIENT of Chronicle's own HTTP API.
+# Run through scripts/gen-apiclient.sh, never by hand — the flags are the
+# artefact.
+#
+# This is what the MCP transports (CHRN-65) call the API through, and it is the
+# only way they reach Chronicle: internal/mcp may import this package and may
+# not import internal/api or internal/store, which verify.sh's `mcp boundary`
+# step enforces. MCP is the third client of openapi.yaml, after the web app and
+# the Android app, and like them it gets its own generated end of the contract
+# rather than a hand-written one that drifts.
+#
+# TYPES AND CLIENT, IN ONE PACKAGE, and deliberately not importing
+# internal/api/wire for the types. That package also holds the server
+# registration; sharing it would put the server's side of the wire in the
+# client's import graph, and the boundary above is drawn so that a reader can
+# see from the imports alone that the MCP process holds no handler and no
+# database. internal/asrclient is the precedent: the same shape for the same
+# reason.
+#
+# No `output:` here, for the reason internal/api/wire/oapi-codegen.yaml gives:
+# the staleness check regenerates to a temporary file passed with -o, and an
+# `output:` in this file silently wins over it.
+package: apiclient
+generate:
+  models: true
+  client: true
