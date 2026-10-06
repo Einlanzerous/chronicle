@@ -10,9 +10,11 @@ import 'api/server_url.dart';
 import 'api/session.dart';
 import 'app.dart';
 import 'capture/capture_controller.dart';
+import 'notify/nudge_surface.dart';
 import 'queue/background.dart';
 import 'queue/prune.dart' show pruneBuildMarker;
 import 'queue/queue_controller.dart';
+import 'router/router.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -86,6 +88,21 @@ Future<void> main() async {
       child: const ChronicleApp(),
     ),
   );
+
+  // CHRN-64: a tap on the evening nudge opens triage. After runApp, because
+  // the cold case navigates a router that has to exist first. A device that
+  // has since lost its credential lands on sign-in by the router's own rule.
+  unawaited(_wireNudgeTaps(container));
+}
+
+/// Two cases and they arrive differently: a tap while the process is alive
+/// comes through the callback; a tap that STARTED the process happened before
+/// anything was listening and has to be asked about.
+Future<void> _wireNudgeTaps(ProviderContainer container) async {
+  void openTriage() => container.read(routerProvider).go(triageRoute);
+  final surface = LocalNudgeSurface();
+  await surface.init(onTap: openTriage);
+  if (await surface.launchedFromNudge()) openTriage();
 }
 
 /// `NetworkType.connected` matches the plan's own choice: no point waking
