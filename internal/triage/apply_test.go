@@ -110,9 +110,9 @@ func TestATwelveItemBatchSurvivesOneFailure(t *testing.T) {
 }
 
 // REPLAYING THE SAME BATCH CHANGES NOTHING. Eleven replay as `applied` with the
-// keys they already have and no second ticket exists; the refused one still
-// refuses, because an identical resend of a refused decision would replay
-// Switchyard's own cached refusal.
+// keys they already have and no second ticket exists. A refused item is not
+// among them: a replay re-attempts one under a fresh key (CHRN-141), and its
+// own tests are further down.
 func TestReplayingABatchCreatesNothing(t *testing.T) {
 	h := newHarness(t)
 
@@ -675,8 +675,8 @@ func TestANonRetryableRefusalMarksTheRowRatherThanDeletingIt(t *testing.T) {
 		t.Fatalf("memo is %q, want it still decidable", got)
 	}
 
-	// AND THE SWEEP SKIPS IT. A refused row is not pending, so nothing retries
-	// a decision that will refuse identically forever.
+	// AND THE SWEEP SKIPS IT. A refused row is not pending; an operator's
+	// accept is what retries it.
 	h.tracker.createErr = nil
 	rep, err := h.svc.Sweep(h.ctx)
 	if err != nil {
@@ -747,27 +747,147 @@ func TestACorrectedDecisionReachesSwitchyardAfterARefusal(t *testing.T) {
 	}
 }
 
-// An IDENTICAL resend of a refused decision is refused again, with the status
-// that refused it — Switchyard has the same answer cached under the same key,
-// and saying so beats replaying it.
-func TestAnIdenticalResendOfARefusedDecisionIsRefusedWithItsStatus(t *testing.T) {
+// AN UNCHANGED DECISION IS ATTEMPTED AGAIN ONCE THE CAUSE IS FIXED (CHRN-141).
+//
+// The 2026-10-03/04 case: Chronicle's token could not create tickets, the
+// accept was refused with 403, the token was fixed — and the same accept was
+// still refused, because the claim re-armed a refused row only for a decision
+// that had changed. Nothing about the decision was wrong.
+func TestAnUnchangedResendOfARefusedDecisionFilesOnceTheCauseIsFixed(t *testing.T) {
 	h := newHarness(t)
 	m := h.ownMemo("a memo")
 	h.propose(m.ID, ticketProposal("CHRN"))
-	h.tracker.createErr = httpError(422, "title is too long")
+	h.tracker.createErr = httpError(403, "requires scope(s): tickets:write")
 
 	first := h.apply(h.owner, h.accept(m.ID))
 	wantStatus(t, first[0], StatusRefused)
-	calls := h.tracker.calls
 
 	h.tracker.createErr = nil
 	again := h.apply(h.owner, h.accept(m.ID))
-	wantStatus(t, again[0], StatusRefused)
-	if !strings.Contains(again[0].Reason, "422") {
-		t.Fatalf("reason = %q, want the status that refused it", again[0].Reason)
+	wantStatus(t, again[0], StatusApplied)
+	if again[0].TicketKey == "" {
+		t.Fatal("the resend produced no ticket")
 	}
-	if h.tracker.calls != calls {
-		t.Fatal("an identical resend went back to the wire")
+	if got := h.tracker.createdCount(); got != 1 {
+		t.Fatalf("%d tickets created, want exactly 1", got)
+	}
+	// A FRESH KEY, or Switchyard would have replayed its cached 403.
+	keys := h.tracker.sentKeys
+	if len(keys) != 2 || keys[0] == keys[1] {
+		t.Fatalf("the tracker saw keys %q, want two different ones", keys)
+	}
+	if l := h.link(m.ID); !l.Confirmed() || l.Refused() {
+		t.Fatalf("link = %+v, want it confirmed with the refusal cleared", l)
+	}
+	if got := h.state(m.ID); got != store.StateTriaged {
+		t.Fatalf("memo is %q, want triaged", got)
+	}
+}
+
+// AND WHEN THE CAUSE IS NOT FIXED, the resend is refused again — by the
+// tracker, with the tracker's new answer, and with nothing created. The cost of
+// not guessing which refusals are permanent is this one request per press.
+func TestAnUnchangedResendThatIsRefusedAgainCarriesTheNewReason(t *testing.T) {
+	h := newHarness(t)
+	m := h.ownMemo("a memo")
+	h.propose(m.ID, ticketProposal("CHRN"))
+	h.tracker.createErr = httpError(403, "requires scope(s): tickets:write")
+
+	first := h.apply(h.owner, h.accept(m.ID))
+	wantStatus(t, first[0], StatusRefused)
+
+	h.tracker.createErr = httpError(404, "project CHRN is archived")
+	again := h.apply(h.owner, h.accept(m.ID))
+	wantStatus(t, again[0], StatusRefused)
+	if !strings.Contains(again[0].Reason, "archived") || strings.Contains(again[0].Reason, "tickets:write") {
+		t.Fatalf("reason = %q, want the second refusal's and not the first's", again[0].Reason)
+	}
+	if h.tracker.calls != 2 {
+		t.Fatalf("%d create attempts, want 2", h.tracker.calls)
+	}
+	if got := h.tracker.createdCount(); got != 0 {
+		t.Fatalf("%d tickets exist, want none", got)
+	}
+	l := h.link(m.ID)
+	switch {
+	case !l.Refused():
+		t.Fatal("the row is not refused")
+	case l.RefusedStatus == nil || *l.RefusedStatus != 404:
+		t.Fatalf("refused_status = %v, want the second refusal's 404", l.RefusedStatus)
+	}
+	if got := h.state(m.ID); got != store.StateTranscribed {
+		t.Fatalf("memo is %q, want it still decidable", got)
+	}
+}
+
+// refuseWithoutStatus leaves a memo with a TICKET link refused by Chronicle
+// itself — no `refused_status` — carrying the decision ticketProposal makes.
+// Set up through the store, which is how such a row comes to exist: the
+// memo-moved arm and the sweep both mark one this way.
+func (h *harness) refuseWithoutStatus(memoID uuid.UUID) {
+	h.t.Helper()
+	p := ticketProposal("CHRN")
+	if _, _, err := h.store.ClaimMemoLink(h.ctx, store.Decision{
+		MemoID: memoID, Destination: store.LinkTicket, ProjectKey: *p.ProjectKey,
+		Type: p.TicketType, Title: p.Title, Description: p.Description,
+		IdempotencyKey: "chronicle-decision-refused-" + memoID.String(),
+	}); err != nil {
+		h.t.Fatalf("ClaimMemoLink: %v", err)
+	}
+	if _, err := h.store.ResolveMemoLink(h.ctx, memoID, store.ClaimInserted,
+		func(context.Context, store.LinkAttempt) (store.LinkResolution, error) {
+			return store.LinkResolution{Action: store.LinkRefuse,
+				RefusedReason: "this memo moved, and nothing was sent"}, nil
+		}); err != nil {
+		h.t.Fatalf("refuse: %v", err)
+	}
+	if l := h.link(memoID); !l.Refused() || l.RefusedStatus != nil {
+		h.t.Fatalf("link = %+v, want a null-status refusal", l)
+	}
+}
+
+// A REFUSAL CHRONICLE MADE ITSELF IS RETRIED THE SAME WAY. The memo is back in
+// `transcribed` — a re-transcription is how one gets there — and the unchanged
+// decision files.
+func TestAnUnchangedResendOfANullStatusRefusalFiles(t *testing.T) {
+	h := newHarness(t)
+	m := h.ownMemo("refused by chronicle, since recovered")
+	h.propose(m.ID, ticketProposal("CHRN"))
+	h.refuseWithoutStatus(m.ID)
+
+	res := h.apply(h.owner, h.accept(m.ID))
+	wantStatus(t, res[0], StatusApplied)
+	if got := h.tracker.createdCount(); got != 1 {
+		t.Fatalf("%d tickets created, want exactly 1", got)
+	}
+	if l := h.link(m.ID); !l.Confirmed() {
+		t.Fatalf("link = %+v, want it confirmed", l)
+	}
+}
+
+// AND WHILE THE MEMO IS STILL NOT `transcribed` THE RETRY SENDS NOTHING. The
+// re-armed row is marked refused again with the memo-moved reason, so a retry
+// that cannot work costs no request and leaves the record standing.
+func TestAnUnchangedResendForAMemoStillHeldIsRefusedAndSendsNothing(t *testing.T) {
+	h := newHarness(t)
+	m := h.ownMemo("refused by chronicle, and still held")
+	h.propose(m.ID, ticketProposal("CHRN"))
+	h.refuseWithoutStatus(m.ID)
+	item := h.accept(m.ID)
+
+	h.hold(m.ID)
+
+	res := h.apply(h.owner, item)
+	wantStatus(t, res[0], StatusRefused)
+	if want := memoMovedReason(store.StateHeld); res[0].Reason != want {
+		t.Fatalf("reason = %q, want %q", res[0].Reason, want)
+	}
+	if h.tracker.calls != 0 {
+		t.Fatal("a held memo reached Switchyard")
+	}
+	l := h.link(m.ID)
+	if !l.Refused() || l.RefusedReason != memoMovedReason(store.StateHeld) {
+		t.Fatalf("link = %+v, want it refused again with the memo-moved reason", l)
 	}
 }
 

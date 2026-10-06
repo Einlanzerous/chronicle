@@ -198,7 +198,7 @@ class TriageController extends Notifier<TriageState> {
   /// override: tapping another lane stages that destination (sent by [fileAll],
   /// not now), tapping the proposal's own lane puts the row back to the Scribe's
   /// pick. Changing a row the server refused is a new decision, so the refusal
-  /// is cleared and FILE takes it again.
+  /// is cleared and FILE counts it as new rather than as a retry.
   ///
   /// What the new destination needs that the proposal did not carry (a note's
   /// page, a ticket's project) is left blank, and the row says it needs input
@@ -216,7 +216,8 @@ class TriageController extends Notifier<TriageState> {
 
   /// A row the person has just changed is no longer the decision the server
   /// refused (or asked for input on). A `failed` one stays failed: that was the
-  /// network's doing, not the decision's, and FILE is still its retry.
+  /// network's doing, not the decision's, and FILE is still its retry. (FILE
+  /// is an unchanged refused row's retry too; changing it only makes it new.)
   TriageRow _changed(TriageRow r) {
     final l = r.local;
     return l is Problem && l.status != ProblemStatus.failed ? r.copyWith(local: const Pending()) : r;
@@ -231,21 +232,20 @@ class TriageController extends Notifier<TriageState> {
   }
 
   /// What FILE would do, for its label: rows it would send, rows whose last
-  /// send failed and it would send again (`retry`), discards, and the rows the
-  /// server refused, which it leaves alone and reports.
+  /// send failed or was refused and it would send again (`retry`), discards,
+  /// and the refused rows it will not send as they stand, which it reports.
   ({int file, int retry, int discard, int refused}) filing() {
     var file = 0, retry = 0, discard = 0, refused = 0;
     for (final r in state.rows) {
       final l = r.local;
-      final again = l is Problem && l.status == ProblemStatus.failed;
-      if (l is Problem && l.status == ProblemStatus.refused) refused++;
+      final again = l is Problem && retriable(l);
       switch (filingOf(r)) {
         case Filing.file:
           again ? retry++ : file++;
         case Filing.discard:
           again ? retry++ : discard++;
         case Filing.none:
-          break;
+          if (l is Problem && l.status == ProblemStatus.refused) refused++;
       }
     }
     return (file: file, retry: retry, discard: discard, refused: refused);

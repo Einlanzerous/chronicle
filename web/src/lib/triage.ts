@@ -90,8 +90,8 @@ export function rowKind(row: TriageRow): RowKind {
   }
   // A decision ALREADY RECORDED outranks the proposal: the memo is not waiting
   // for a person, it is waiting for the sweep. `refused` is the exception --
-  // Switchyard caches the refusal, so the remedy is a changed decision, and
-  // the row is decidable again.
+  // nothing was created, the server takes a new accept as a new attempt
+  // (CHRN-141), and the row is decidable again.
   switch (row.item.link?.state) {
     case 'in_flight':
       return 'link-in-flight'

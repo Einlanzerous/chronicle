@@ -438,20 +438,75 @@ void main() {
       expect(api.requests, hasLength(2));
     });
 
-    testWidgets('a refused row is not filed again until the person changes it', (tester) async {
+    testWidgets('FILE is the retry for a refused row, unchanged, and it files once the cause is fixed', (tester) async {
+      // CHRN-141: the 2026-10-03/04 case. The token could not create tickets;
+      // it was fixed; the same decision must go through without an edit.
+      var fixed = false;
       final api = FakeTriageApi([item('a')])
-        ..answer = (d) => gen.TriageResult(memoId: d.memoId, status: 'refused', reason: 'Project CHRN is archived.');
+        ..answer = (d) => fixed
+            ? applied(d.memoId)
+            : gen.TriageResult(memoId: d.memoId, status: 'refused', reason: 'Project CHRN is archived.');
       await _Harness(api).pump(tester);
 
       await tester.tap(k('file'));
       await settle(tester);
 
       expect(find.text('REFUSED · STILL PENDING'), findsOneWidget);
-      expect(fileText(tester), '1 REFUSED', reason: 'never NOTHING TO FILE while a row is refused');
-      // One lane tap changes the decision, and it is filed again.
+      expect(find.text('FILE TRIES IT AGAIN'), findsOneWidget);
+      expect(fileText(tester), 'RETRY 1', reason: 'the button says what it will send');
+
+      fixed = true;
+      await tester.tap(k('file'));
+      await settle(tester);
+
+      expect(find.text('REFUSED · STILL PENDING'), findsNothing);
+      expect(find.text('FILE TRIES IT AGAIN'), findsNothing);
+      expect(find.text('TICKET CREATED'), findsOneWidget);
+      expect(api.requests, hasLength(2));
+    });
+
+    testWidgets('changing a refused row makes it a new decision, not a retry', (tester) async {
+      final api = FakeTriageApi([item('a')])
+        ..answer = (d) => gen.TriageResult(memoId: d.memoId, status: 'refused', reason: 'Project CHRN is archived.');
+      await _Harness(api).pump(tester);
+
+      await tester.tap(k('file'));
+      await settle(tester);
+      expect(fileText(tester), 'RETRY 1');
+
       await tester.tap(k('lane-a-DISCUSSION'));
       await tester.pump();
       expect(fileText(tester), 'FILE 1');
+      expect(find.text('FILE TRIES IT AGAIN'), findsNothing);
+    });
+
+    testWidgets('a row that arrives refused says REFUSED and its reason, never SWITCHYARD for a refusal Switchyard did not make', (tester) async {
+      gen.LinkState refused({int? status, String? reason}) => gen.LinkState(
+            destination: 'TICKET',
+            state: 'refused',
+            decidedAt: DateTime.utc(2026, 10, 4),
+            refusedStatus: status,
+            refusedReason: reason,
+          );
+      final api = FakeTriageApi([
+        item('sy', link: refused(status: 403, reason: 'requires scope(s): tickets:write')),
+        item('own', link: refused(reason: 'this memo moved, and nothing was sent')),
+        item('bare', link: refused()),
+      ]);
+      await _Harness(api).pump(tester);
+
+      expect(find.text('REFUSED · requires scope(s): tickets:write'), findsOneWidget);
+      expect(find.text('REFUSED · this memo moved, and nothing was sent'), findsOneWidget);
+      expect(find.text('REFUSED · NO REASON RECORDED'), findsOneWidget);
+      expect(find.textContaining('SWITCHYARD REFUSED'), findsNothing);
+      expect(find.textContaining('CHANGE THE DECISION'), findsNothing);
+      expect(find.text('FILE TRIES IT AGAIN'), findsNWidgets(3));
+      expect(fileText(tester), 'FILE 3');
+
+      await tester.tap(k('file'));
+      await settle(tester);
+      expect(api.requests, hasLength(1));
+      expect(find.text('TICKET CREATED'), findsNWidgets(3));
     });
 
     testWidgets('an unreachable server leaves every row pending and says to retry', (tester) async {
@@ -587,8 +642,9 @@ void main() {
       );
       expect(find.textContaining('{"error"'), findsNothing);
       expect(find.textContaining('/v1/tickets'), findsNothing);
-      // The pinned button reports it instead of reading NOTHING TO FILE.
-      expect(fileText(tester), '1 REFUSED');
+      // The pinned button reports it instead of reading NOTHING TO FILE: FILE
+      // is the retry (CHRN-141).
+      expect(fileText(tester), 'RETRY 1');
 
       await tester.tap(k('open-a'));
       await tester.pumpAndSettle();
@@ -608,7 +664,7 @@ void main() {
       await tester.tap(k('file'));
       await settle(tester);
 
-      expect(fileText(tester), 'RETRY 1 · 1 REFUSED');
+      expect(fileText(tester), 'RETRY 2');
     });
   });
 

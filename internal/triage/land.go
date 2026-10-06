@@ -133,8 +133,8 @@ func (s *Service) landed(ctx context.Context, res Result, link store.MemoLink, e
 		return failed(res, "another decision for this memo is in flight; retry shortly")
 
 	case errors.Is(err, store.ErrLinkKeyReused):
-		return refuse(res, "this decision was already refused under its own key; change the decision "+
-			"and it will be attempted afresh")
+		return refuse(res, "this decision was re-sent under the idempotency key it was refused under; "+
+			"send it again and a new key is used")
 
 	case errors.Is(err, store.ErrNoPage):
 		// Stage 2 clears a pathless NOTE into needs_input, so this is

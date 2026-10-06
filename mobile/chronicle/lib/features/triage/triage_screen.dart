@@ -18,7 +18,8 @@
 ///  - A FAILED ITEM STAYS VISIBLY PENDING. Only `applied` takes a row out of
 ///    the batch; every other answer keeps it in place under a plain
 ///    `... · STILL PENDING` label with the server's reason. There is no per-row
-///    RETRY because FILE is the retry: a failed row is still counted in it.
+///    RETRY because FILE is the retry: a failed row is still counted in it,
+///    and so is a refused one, which says `FILE TRIES IT AGAIN` (CHRN-141).
 ///  - AN ACCEPTED TICKET IS ONE TAP FROM OPEN. Board 1a's frame 06 card: a coral
 ///    left rule, the key, the ticket's title, `OPEN ↗`, under `LINKED · NOT
 ///    COPIED`; the upstream's state word and its age ride with it, and an
@@ -350,8 +351,15 @@ class _RowCard extends ConsumerWidget {
           if (kind == RowKind.linkInFlight) _stateLine('DECIDED · WAITING FOR SWITCHYARD'),
           if (kind == RowKind.linkUnresolved) _stateLine('DECIDED · LINK NOT FOUND YET · STILL PENDING'),
           if (kind == RowKind.linkAmbiguous) _stateLine('DECIDED · MORE THAN ONE TICKET MATCHES · STILL PENDING'),
+          // Not `SWITCHYARD REFUSED`: a refusal with no `refused_status` is
+          // Chronicle's own (the memo moved, a landing did not finish).
           if (item.link?.state == 'refused' && local is! Accepted)
-            _stateLine('SWITCHYARD REFUSED · ${item.link?.refusedReason ?? 'CHANGE THE DECISION'}'),
+            _stateLine('REFUSED · ${item.link?.refusedReason ?? 'NO REASON RECORDED'}'),
+          // Said only of a row FILE will actually send, so it is never a promise
+          // the button does not keep.
+          if ((item.link?.state == 'refused' || (local is Problem && local.status == ProblemStatus.refused)) &&
+              filingOf(row) != Filing.none)
+            _stateLine('FILE TRIES IT AGAIN', keyName: 'retry'),
           if (local is Accepted) _acceptedBlock(local),
           if (kind == RowKind.sending) _stateLine('SENDING…'),
         ],
@@ -400,9 +408,9 @@ class _RowCard extends ConsumerWidget {
     return missing == null ? line : '$line\nNEEDS INPUT · $missing TAP THE TITLE TO ADD IT';
   }
 
-  Widget _stateLine(String text) => Padding(
+  Widget _stateLine(String text, {String keyName = 'state'}) => Padding(
         padding: const EdgeInsets.only(top: space1),
-        child: Text(text, key: ValueKey('state-${row.memoId}'), style: microLabel(color: chTextMeta, size: sizeXxs)),
+        child: Text(text, key: ValueKey('$keyName-${row.memoId}'), style: microLabel(color: chTextMeta, size: sizeXxs)),
       );
 
   Widget _textAction(String label, String keyName, VoidCallback onTap) => InkWell(

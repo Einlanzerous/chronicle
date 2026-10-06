@@ -115,7 +115,7 @@ type MemoLink struct {
 	SweptAt       *time.Time
 	CandidateKeys []string
 
-	// Why this decision will never land.
+	// Why the last attempt at this decision was refused.
 	RefusedAt     *time.Time
 	RefusedStatus *int
 	RefusedReason string
@@ -127,7 +127,9 @@ type MemoLink struct {
 // Confirmed reports that the decision landed and the row is now terminal.
 func (l MemoLink) Confirmed() bool { return l.ConfirmedAt != nil }
 
-// Refused reports a decision that will never land, whatever is retried.
+// Refused reports a decision whose last attempt was refused: nothing was
+// created and nothing landed. It stays that way until a new accept re-arms the
+// row under a fresh key (CHRN-141); nothing else retries it.
 func (l MemoLink) Refused() bool { return l.RefusedAt != nil }
 
 // Pending reports a decision that has neither landed nor been refused. A
@@ -216,9 +218,10 @@ const (
 	// for this memo, so abandoning it can leave no trace.
 	ClaimInserted LinkClaim = "inserted"
 
-	// ClaimRearmed — a REFUSED row reclaimed by a DIFFERENT decision, with a
-	// fresh key. This is how an operator corrects a misfile without waiting out
-	// Switchyard's 24-hour idempotency cache. The row carries history.
+	// ClaimRearmed — a REFUSED row reclaimed by a new accept, with a fresh key.
+	// The decision may be a corrected one or the same one again (CHRN-141): a
+	// refusal means nothing was created, and the fresh key is what gets either
+	// past Switchyard's 24-hour idempotency cache. The row carries history.
 	ClaimRearmed LinkClaim = "rearmed"
 
 	// ClaimExisting — somebody else's row, in whatever state. T2 must NEVER
@@ -234,10 +237,12 @@ func (c LinkClaim) Ours() bool { return c == ClaimInserted || c == ClaimRearmed 
 // in the whole path that stops one memo becoming two tickets.
 //
 // The re-arm is an ON CONFLICT DO UPDATE with a WHERE, so it is one statement
-// and one lock rather than a delete racing an insert. An IDENTICAL resend of a
-// refused decision does not match that WHERE, so nothing is written and the
-// caller is told the row is not theirs — which is the honest answer, because
-// re-sending an unchanged decision would be refused again for the same reason.
+// and one lock rather than a delete racing an insert. That WHERE is
+// `refused_at IS NOT NULL` and nothing else: ANY new accept of a refused memo
+// re-arms the row, whether or not the decision changed (CHRN-141, ruling 0).
+// No refusal Chronicle records is permanent — a credential is fixed, a project
+// is restored, a memo is re-transcribed — and it does not try to guess which
+// are. The key it carries must be fresh; CH022 refuses the one that was refused.
 func (s *Store) ClaimMemoLink(ctx context.Context, d Decision) (MemoLink, LinkClaim, error) {
 	// T1 TAKES THE SAME DEADLINE T2'S WAITERS DO, and it needs one for the same
 	// reason one statement earlier.
@@ -282,9 +287,9 @@ func (s *Store) ClaimMemoLink(ctx context.Context, d Decision) (MemoLink, LinkCl
 //
 // What that buys is not tidiness. Committed on its own, the claim leaves a
 // PENDING NOTE ROW between the two commits, and sweepOne answers those before
-// every batch; a process that died in the gap would have its identical replay
-// answered with "already refused under its own key". Inside the landing's
-// transaction, a pending local row cannot exist at all.
+// every batch; a process that died in the gap would have its replay answered
+// with a refusal, for a landing that had no side effect anywhere. Inside the
+// landing's transaction, a pending local row cannot exist at all.
 //
 // THE CALLER OWNS THE LOCK DEADLINE. This runs the same UNIQUE-index-blocking
 // upsert, so a caller that has not set `SET LOCAL lock_timeout` waits without
@@ -311,8 +316,8 @@ func claimMemoLinkTx(ctx context.Context, tx pgx.Tx, d Decision) (MemoLink, Link
 		     sent_title           = EXCLUDED.sent_title,
 		     sent_description     = EXCLUDED.sent_description,
 		     sent_idempotency_key = EXCLUDED.sent_idempotency_key,
-		     -- The refusal is cleared because this is a NEW decision, and the
-		     -- sweep's findings go with it: they were about the decision that
+		     -- The refusal is cleared because this is a NEW ATTEMPT, and the
+		     -- sweep's findings go with it: they were about the attempt that
 		     -- was refused, and reading them against this one would report a
 		     -- candidate for a ticket nobody asked for.
 		     refused_at           = NULL,
@@ -321,11 +326,6 @@ func claimMemoLinkTx(ctx context.Context, tx pgx.Tx, d Decision) (MemoLink, Link
 		     swept_at             = NULL,
 		     candidate_keys       = NULL
 		 WHERE tier2.memo_links.refused_at IS NOT NULL
-		   AND (tier2.memo_links.destination      IS DISTINCT FROM EXCLUDED.destination
-		     OR tier2.memo_links.sent_project_key IS DISTINCT FROM EXCLUDED.sent_project_key
-		     OR tier2.memo_links.sent_type        IS DISTINCT FROM EXCLUDED.sent_type
-		     OR tier2.memo_links.sent_title       IS DISTINCT FROM EXCLUDED.sent_title
-		     OR tier2.memo_links.sent_description IS DISTINCT FROM EXCLUDED.sent_description)
 		 -- INSERT OR RE-ARM? xmax = 0 is true for a tuple this statement
 		 -- inserted and false for one it updated, which is the only way to tell
 		 -- the two apart from inside a single upsert: RETURNING sees the new
@@ -349,9 +349,9 @@ func claimMemoLinkTx(ctx context.Context, tx pgx.Tx, d Decision) (MemoLink, Link
 		return l, ClaimRearmed, nil
 
 	case errors.Is(err, ErrNotFound):
-		// The conflict fired and the WHERE did not match: somebody else's row,
-		// or our own identical resend of a refused one. Read it and report it
-		// as not ours.
+		// The conflict fired and the WHERE did not match: the row is pending
+		// or confirmed, so it is somebody else's. Read it and report it as not
+		// ours.
 		//
 		// Read INSIDE this transaction, so the row cannot change between the
 		// upsert that declined it and the read that describes it.

@@ -734,7 +734,7 @@ onBeforeUnmount(() => {
                   REFUSED{{ row.item.link.refused_status ? ` ${row.item.link.refused_status}` : '' }} · STILL PENDING
                 </div>
                 <div class="ch-tri-explain ch-tri-explain--gap">
-                  {{ row.item.link.refused_reason || 'Switchyard refused this decision.' }} Change it — the same decision is refused the same way.
+                  {{ row.item.link.refused_reason || 'This decision was refused.' }} ACCEPT tries it again.
                 </div>
               </template>
 

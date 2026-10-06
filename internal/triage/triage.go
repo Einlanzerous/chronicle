@@ -64,8 +64,8 @@ const (
 	// generation. Re-show this item; do not decide it blind.
 	StatusStale = "stale"
 
-	// StatusRefused — it will refuse identically on every replay. The reason
-	// names the rule, the ticket or the status. DO NOT RETRY.
+	// StatusRefused — nothing was created or landed for this item, and the
+	// reason says why. Sending the item again is a new attempt under a new key.
 	StatusRefused = "refused"
 
 	// StatusFailed — transient. Retry.
@@ -573,8 +573,8 @@ func (s *Service) applyOne(ctx context.Context, actor store.User, it Item, cat *
 		// has to be the same: from a client's side these are one situation.
 		return failed(res, "another decision for this memo is in flight; retry shortly")
 	case errors.Is(err, store.ErrLinkKeyReused):
-		return refuse(res, "this decision was already refused under its own key; change the decision "+
-			"and it will be attempted afresh")
+		return refuse(res, "this decision was re-sent under the idempotency key it was refused under; "+
+			"send it again and a new key is used")
 	case err != nil:
 		return s.fail(ctx, res, "claim memo link", err)
 	}

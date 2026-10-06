@@ -211,10 +211,11 @@ func (s *Service) sweepOne(ctx context.Context, att store.LinkAttempt) (res stor
 		// Switchyard token is rotated and the running deployment holds the old
 		// one; the search answers 401, which is non-retryable; the row is
 		// marked refused, and `refused_at` is exactly what stops the sweep ever
-		// claiming it again. The operator is then told to change their decision
-		// — which re-arms the row with a fresh key, and T2 (which never
-		// searches) creates SY-502. Two tickets for one memo, manufactured by
-		// the recovery mechanism.
+		// claiming it again. The operator's next accept then re-arms the row
+		// with a fresh key, and T2 (which never searches) creates SY-502. Two
+		// tickets for one memo, manufactured by the recovery mechanism. Since
+		// CHRN-141 that accept need not even change the decision, so this
+		// case matters more than it did.
 		//
 		// There is no status here meaning "this memo can never be searched
 		// for". Every non-retryable code reachable — a rotated token, a lost

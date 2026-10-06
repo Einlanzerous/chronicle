@@ -65,16 +65,21 @@ void main() {
       expect(isPrefilled(TriageRow(item: item('d', pre: false))), isTrue);
     });
 
-    test('a failed row is filed again, a refused one waits for a changed decision', () {
+    test('a failed row and a refused row are both filed again unchanged; needs-input waits for a change', () {
       expect(filingOf(TriageRow(item: item('a'), local: const Problem(ProblemStatus.failed, 'x'))), Filing.file);
-      expect(filingOf(TriageRow(item: item('a'), local: const Problem(ProblemStatus.refused, 'x'))), Filing.none);
-      // The same refused override is not sent again either.
-      final refusedEdit = TriageRow(
-        item: item('a'),
-        local: const Problem(ProblemStatus.refused, 'x'),
-        draft: draftForLane(TriageRow(item: item('a')), 'DISCUSSION'),
+      // CHRN-141: a refusal created nothing, so the same decision is a new attempt.
+      expect(filingOf(TriageRow(item: item('a'), local: const Problem(ProblemStatus.refused, 'x'))), Filing.file);
+      expect(filingOf(TriageRow(item: item('a'), local: const Problem(ProblemStatus.needsInput, 'x'))), Filing.none);
+      expect(filingOf(TriageRow(item: item('a'), local: const Problem(ProblemStatus.stale, 'x'))), Filing.none);
+      // A refused override is sent again too, once it is complete...
+      final staged = draftForLane(TriageRow(item: item('a')), 'DISCUSSION')!;
+      final refusedEdit = TriageRow(item: item('a'), local: const Problem(ProblemStatus.refused, 'x'), draft: staged);
+      expect(filingOf(refusedEdit), validateDraft(staged) == null ? Filing.file : Filing.none);
+      // ...and a row that arrives already refused files as shown.
+      final fromServer = TriageRow(
+        item: item('a', link: gen.LinkState(destination: 'TICKET', state: 'refused', decidedAt: DateTime.utc(2026, 10, 4))),
       );
-      expect(filingOf(refusedEdit), Filing.none);
+      expect(filingOf(fromServer), Filing.file);
     });
   });
 
