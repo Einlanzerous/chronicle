@@ -162,11 +162,31 @@ asr_boundary_check() {
   fi
 }
 
+# internal/apiclient is GENERATED from openapi.yaml as well -- the Go CLIENT the
+# MCP transports call Chronicle's API through (CHRN-65). Same guard as
+# apiwire_check above, on the other end of the same document: regenerated to a
+# TEMPORARY FILE and byte-compared, so the check never rewrites what it checks.
+apiclient_check() {
+  local tmp rc=0
+  tmp="$(mktemp -t apiclient.XXXXXX.go)"
+  # shellcheck disable=SC2064
+  trap "rm -f '$tmp'" RETURN
+  GEN_APICLIENT_OUT="$tmp" scripts/gen-apiclient.sh >/dev/null || return 1
+  if ! diff -q "$tmp" internal/apiclient/client.gen.go >/dev/null; then
+    echo "internal/apiclient/client.gen.go does not match openapi.yaml."
+    diff -u internal/apiclient/client.gen.go "$tmp" | head -40
+    echo "Run scripts/gen-apiclient.sh and commit the result."
+    rc=1
+  fi
+  return "$rc"
+}
+
 step "gofmt"        gofmt_check
 step "go vet"       go vet ./...
 step "build"        go build ./...
 step "asr client"   asrclient_check
 step "api types"    apiwire_check
+step "api client"   apiclient_check
 step "asr boundary" asr_boundary_check
 
 # web/ (CHRN-53, CHRN-54): the app skeleton and its design tokens. Skipped
