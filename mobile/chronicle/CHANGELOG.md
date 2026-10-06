@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.0](https://github.com/Einlanzerous/chronicle/compare/mobile-v0.3.0...mobile-v0.4.0) (2026-10-06)
+
+
+### Features
+
+* **auth:** the Access exchange tells a browser from the hosted MCP endpoint, and admits only people (CHRN-65) ([#157](https://github.com/Einlanzerous/chronicle/issues/157)) ([bce6f14](https://github.com/Einlanzerous/chronicle/commit/bce6f14380b6724af96a1299bee7cd99c617ed53))
+* **mobile:** one evening notification when memos are waiting for triage (CHRN-64) ([#154](https://github.com/Einlanzerous/chronicle/issues/154)) ([f6a0c9e](https://github.com/Einlanzerous/chronicle/commit/f6a0c9e46587a34986a86bbdbe0c3e011368f150))
+
+
+### Bug Fixes
+
+* **triage:** a refused decision is attempted again when accepted unchanged (CHRN-141) ([#155](https://github.com/Einlanzerous/chronicle/issues/155)) ([a106bd8](https://github.com/Einlanzerous/chronicle/commit/a106bd83a6898fc1e1435f57855ff592ffc7ccb2))
+
 ## [0.3.0](https://github.com/Einlanzerous/chronicle/compare/mobile-v0.2.0...mobile-v0.3.0) (2026-10-04)
 
 
