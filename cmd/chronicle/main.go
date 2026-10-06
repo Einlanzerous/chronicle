@@ -25,6 +25,7 @@ import (
 	"github.com/Einlanzerous/chronicle/internal/api"
 	"github.com/Einlanzerous/chronicle/internal/asrclient"
 	"github.com/Einlanzerous/chronicle/internal/audio"
+	"github.com/Einlanzerous/chronicle/internal/cfaccess"
 	"github.com/Einlanzerous/chronicle/internal/config"
 	"github.com/Einlanzerous/chronicle/internal/estatewiki"
 	"github.com/Einlanzerous/chronicle/internal/invite"
@@ -710,7 +711,8 @@ func runServe(args []string) error {
 	deps.LocalReferences = st
 
 	if cfg.SSOEnabled() {
-		deps.CFAccess = api.NewCFAccessVerifier(cfg.CFAccessTeamDomain, cfg.CFAccessAUD...)
+		deps.CFAccess = cfaccess.New(cfg.CFAccessTeamDomain, cfg.AccessAudiences())
+		deps.MCPAudience = cfg.MCPCFAccessAUD
 	}
 	handler := api.NewRouter(deps)
 	srv := &http.Server{

@@ -14,6 +14,7 @@ import (
 
 	"github.com/Einlanzerous/chronicle/internal/api/wire"
 	"github.com/Einlanzerous/chronicle/internal/audio"
+	"github.com/Einlanzerous/chronicle/internal/cfaccess"
 	"github.com/Einlanzerous/chronicle/internal/estatewiki"
 	"github.com/Einlanzerous/chronicle/internal/markdown"
 	"github.com/Einlanzerous/chronicle/internal/resolve"
@@ -41,6 +42,7 @@ type Accounts interface {
 	ListMembers(ctx context.Context) ([]store.Member, error)
 
 	MintToken(ctx context.Context, userID uuid.UUID, kind, label string, expiresAt *time.Time) (string, error)
+	MintHostedSession(ctx context.Context, userID uuid.UUID) (string, time.Time, error)
 	MintInvite(ctx context.Context, userID uuid.UUID, label string) (string, error)
 	ReplaceDeviceInvite(ctx context.Context, userID uuid.UUID) (string, error)
 	UserByToken(ctx context.Context, plaintext string) (store.User, error)
@@ -61,7 +63,14 @@ type Deps struct {
 	// CFAccess verifies Cloudflare Access JWTs. Nil disables SSO, and
 	// POST /auth/sso/cloudflare then answers sso_disabled rather than 404 — a
 	// client can tell "not configured here" from "wrong URL".
-	CFAccess *CFAccessVerifier
+	CFAccess *cfaccess.Verifier
+
+	// MCPAudience is the hosted MCP endpoint's Access audience tag (CHRN-65).
+	// An assertion CFAccess reports as matching it is one MCP conversation,
+	// not a browser, and is minted a different session. Empty means no such
+	// application is configured; CFAccess must then not have been built to
+	// accept one either.
+	MCPAudience string
 
 	// MobileBaseURL is the origin baked into an invite's sign-in link. Empty
 	// omits the link, leaving clients on their own fallback.
@@ -195,7 +204,8 @@ type api struct {
 	version       string
 	commit        string
 	logger        *slog.Logger
-	cfAccess      *CFAccessVerifier
+	cfAccess      *cfaccess.Verifier
+	mcpAudience   string
 	mobileBaseURL string
 	secureCookies bool
 	proxySecret   string
@@ -253,6 +263,7 @@ func NewRouter(d Deps) http.Handler {
 		commit:        d.Commit,
 		logger:        d.Logger,
 		cfAccess:      d.CFAccess,
+		mcpAudience:   d.MCPAudience,
 		mobileBaseURL: d.MobileBaseURL,
 		secureCookies: d.SecureCookies,
 		proxySecret:   d.ProxySecret,

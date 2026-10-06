@@ -437,14 +437,17 @@ func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
 
 // ListMembers returns every account with the metadata the admin list renders:
 // enough to tell an active account from one that was invited and never showed up.
+// Its session figures count live sessions only, as ListSessions does.
 func (s *Store) ListMembers(ctx context.Context) ([]Member, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT u.id, u.email, u.display_name, u.kind, u.is_owner, u.created_at,
-		       max(t.last_used_at) FILTER (WHERE t.kind = 'session'),
+		       max(t.last_used_at) FILTER (WHERE t.kind = 'session'
+		                                     AND (t.expires_at IS NULL OR t.expires_at > now())),
 		       max(t.expires_at)   FILTER (WHERE t.kind = 'invite'
 		                                     AND t.used_at IS NULL
 		                                     AND (t.expires_at IS NULL OR t.expires_at > now())),
-		       count(t.id)         FILTER (WHERE t.kind = 'session')
+		       count(t.id)         FILTER (WHERE t.kind = 'session'
+		                                     AND (t.expires_at IS NULL OR t.expires_at > now()))
 		  FROM tier2.users u
 		  LEFT JOIN tier2.user_tokens t ON t.user_id = u.id
 		 GROUP BY u.id
@@ -485,6 +488,52 @@ func (s *Store) MintToken(ctx context.Context, userID uuid.UUID, kind, label str
 		return "", fmt.Errorf("store: mint token: %w", err)
 	}
 	return plaintext, nil
+}
+
+// HostedSessionLabel marks a session minted for one hosted MCP conversation
+// (CHRN-65). It is what the device list shows, and one of the three things the
+// cleanup in MintHostedSession keys on.
+const HostedSessionLabel = "MCP (hosted)"
+
+// HostedSessionTTL bounds a hosted MCP session's token. The transport revokes
+// the token when the session ends, so this is not the session's working life:
+// it is what bounds a token whose transport died before it could revoke.
+const HostedSessionTTL = 12 * time.Hour
+
+// MintHostedSession issues the session token for one hosted MCP conversation
+// and reports when it stops working.
+//
+// Unlike every other session it EXPIRES, because nothing shows it to a person
+// who could notice it had been left behind: a conversation is not a device.
+//
+// The same statement deletes this account's hosted rows that have already
+// expired, so a transport that died without revoking does not leave them to
+// accumulate. The delete is constrained three ways and needs all three: the
+// label alone is free text a device may choose at sign-in, so it also requires
+// kind = 'session' and an expiry in the past. It therefore cannot reach an
+// invite, a live hosted session, or a durable session that happens to carry the
+// same label -- the last has no expiry at all, and NULL < now() is not true.
+func (s *Store) MintHostedSession(ctx context.Context, userID uuid.UUID) (string, time.Time, error) {
+	plaintext, err := newToken()
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	var expiresAt time.Time
+	if err := s.pool.QueryRow(ctx,
+		`WITH swept AS (
+		     DELETE FROM tier2.user_tokens
+		      WHERE user_id = $1
+		        AND kind = 'session'
+		        AND label = $3
+		        AND expires_at < now()
+		 )
+		 INSERT INTO tier2.user_tokens (user_id, kind, token_hash, label, expires_at)
+		 VALUES ($1, 'session', $2, $3, now() + $4::interval)
+		 RETURNING expires_at`,
+		userID, hashToken(plaintext), HostedSessionLabel, HostedSessionTTL.String()).Scan(&expiresAt); err != nil {
+		return "", time.Time{}, fmt.Errorf("store: mint hosted session: %w", err)
+	}
+	return plaintext, expiresAt, nil
 }
 
 // MintInvite issues a single-use invite carrying the standard TTL.
@@ -613,11 +662,16 @@ func (s *Store) CountTokens(ctx context.Context, userID uuid.UUID, kind string) 
 
 // ListSessions returns an account's signed-in devices, marking whichever one
 // carries the presented token as current.
+//
+// An expired row is not a signed-in anything, so it is left out -- the same
+// predicate UserByToken applies. It had no effect before CHRN-65, when no
+// session carried an expiry; a hosted MCP session does.
 func (s *Store) ListSessions(ctx context.Context, userID uuid.UUID, currentPlaintext string) ([]Session, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, coalesce(label, ''), created_at, last_used_at, token_hash = $2
 		   FROM tier2.user_tokens
 		  WHERE user_id = $1 AND kind = 'session'
+		    AND (expires_at IS NULL OR expires_at > now())
 		  ORDER BY created_at`,
 		userID, hashToken(currentPlaintext))
 	if err != nil {

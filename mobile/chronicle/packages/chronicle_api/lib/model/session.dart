@@ -15,30 +15,47 @@ class Session {
   Session({
     required this.user,
     required this.sessionToken,
+    this.expiresAt,
   });
 
   User user;
 
   String sessionToken;
 
+  /// When `session_token` stops working. **Absent for a session that does not expire**, which is every session a device or a browser holds. Present for the hosted MCP endpoint's exchange, whose sessions are bounded. 
+  ///
+  /// Please note: This property should have been non-nullable! Since the specification file
+  /// does not include a default value (using the "default:" property), however, the generated
+  /// source code must fall back to having a nullable type.
+  /// Consider adding a "default:" property in the specification file to hide this note.
+  ///
+  DateTime? expiresAt;
+
   @override
   bool operator ==(Object other) => identical(this, other) || other is Session &&
     other.user == user &&
-    other.sessionToken == sessionToken;
+    other.sessionToken == sessionToken &&
+    other.expiresAt == expiresAt;
 
   @override
   int get hashCode =>
     // ignore: unnecessary_parenthesis
     (user.hashCode) +
-    (sessionToken.hashCode);
+    (sessionToken.hashCode) +
+    (expiresAt == null ? 0 : expiresAt!.hashCode);
 
   @override
-  String toString() => 'Session[user=$user, sessionToken=$sessionToken]';
+  String toString() => 'Session[user=$user, sessionToken=$sessionToken, expiresAt=$expiresAt]';
 
   Map<String, dynamic> toJson() {
     final json = <String, dynamic>{};
       json[r'user'] = this.user;
       json[r'session_token'] = this.sessionToken;
+    if (this.expiresAt != null) {
+      json[r'expires_at'] = this.expiresAt!.toUtc().toIso8601String();
+    } else {
+      json[r'expires_at'] = null;
+    }
     return json;
   }
 
@@ -63,6 +80,7 @@ class Session {
       return Session(
         user: User.fromJson(json[r'user'])!,
         sessionToken: mapValueOfType<String>(json, r'session_token')!,
+        expiresAt: mapDateTime(json, r'expires_at', r''),
       );
     }
     return null;

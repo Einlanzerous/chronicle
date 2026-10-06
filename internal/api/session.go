@@ -15,16 +15,24 @@ import (
 
 // CHRN-71 — accounts and per-device sessions.
 //
-// No passwords. A one-time invite redeems into a durable per-device session,
-// and two sign-in paths mint the same kind of session: POST /auth/session for
-// the app and MCP on the direct host, POST /auth/sso/cloudflare for a browser
-// that already cleared Access on the tunneled host.
+// No passwords. A one-time invite redeems into a durable per-device session at
+// POST /auth/session -- the Android app, and an agent's stdio MCP process, on
+// the direct host. POST /auth/sso/cloudflare turns a verified Access identity
+// into a session, and which session depends on which Access application the
+// assertion was issued for (CHRN-65): a browser on the tunneled host gets the
+// same durable session an invite does; the hosted MCP endpoint, exchanging on
+// behalf of one conversation, gets a short-lived one it revokes when the
+// conversation ends.
 //
 // The principle, from Lyceum's router comment: Cloudflare Access decides
 // whether the request is served at all, this decides who it is served as. They
 // are complementary, not alternatives — which is why the same account is
-// reachable both ways, and why CHRN-65 can put MCP behind Access or not
-// without changing anything here.
+// reachable both ways.
+//
+// Only a PERSON comes in through Access. An agent account signs in by invite
+// and is refused on the exchange, for either application: a session minted
+// through this door acts as whoever Cloudflare says is at the keyboard, and
+// CH041's person check rests on that being a person.
 //
 // There is no mode in which Chronicle serves an unauthenticated caller
 // anything but a health probe. Lyceum carries a LYCEUM_AUTH flag because it had
@@ -288,8 +296,11 @@ func writeSSOError(w http.ResponseWriter, status int, code, message, email strin
 
 // CreateSessionFromAccess exchanges a verified Cloudflare Access identity for a
 // Chronicle session. The browser calls it on load: the tunnel injects a
-// Cf-Access-Jwt-Assertion header, cfaccess.go verifies it, and a verified email
-// matched to an account mints the same kind of session the invite path does.
+// Cf-Access-Jwt-Assertion header, internal/cfaccess verifies it, and a verified
+// email matched to an account mints the same kind of session the invite path
+// does. The hosted MCP endpoint calls it once per conversation with the
+// assertion it was itself handed, and is minted a different one -- see
+// completeHostedSignIn.
 //
 // It never auto-provisions. An email that cleared the Access gate but has no
 // Chronicle account gets 403, not a new account — Access-group membership is
@@ -297,8 +308,10 @@ func writeSSOError(w http.ResponseWriter, status int, code, message, email strin
 //
 //	401 sso_disabled   — SSO unconfigured, or no header (not through the tunnel)
 //	401 unauthorized   — the JWT failed verification
-//	403 sso_no_account — verified email, no matching account
-//	200                — {"user": {...}, "session_token": "..."} plus the cookie
+//	403 sso_no_account    — verified email, no matching account
+//	403 sso_agent_account — verified email, and the account is an agent's
+//	200                   — {"user": {...}, "session_token": "..."} plus the
+//	                        cookie; for the MCP audience, "expires_at" and no cookie
 func (a *api) CreateSessionFromAccess(w http.ResponseWriter, r *http.Request) {
 	if a.cfAccess == nil {
 		writeSSOError(w, http.StatusUnauthorized, "sso_disabled",
@@ -312,7 +325,8 @@ func (a *api) CreateSessionFromAccess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	email, err := a.cfAccess.Verify(r.Context(), jwt)
+	id, err := a.cfAccess.Verify(r.Context(), jwt)
+	email := id.Email
 	if err != nil {
 		writeSSOError(w, http.StatusUnauthorized, "unauthorized",
 			"invalid Cloudflare Access token", "")
@@ -331,7 +345,43 @@ func (a *api) CreateSessionFromAccess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Checked for both audiences, before either mint. The handler looked no
+	// further than the email until CHRN-65, so an agent account whose address
+	// cleared an Access policy would have been given a session through the
+	// person door.
+	if u.Kind != store.KindPerson {
+		writeSSOError(w, http.StatusForbidden, "sso_agent_account",
+			"signed in to Cloudflare as "+email+", but that Chronicle account is an agent's — "+
+				"an agent signs in with an invite, not through Cloudflare Access", email)
+		return
+	}
+
+	// Which application the assertion was issued for decides the session. The
+	// tag comes from the verifier, which only ever reports one it was
+	// configured with, and config.Load refuses a tag present in both lists --
+	// so this comparison cannot be satisfied by a browser's assertion.
+	if a.mcpAudience != "" && id.Audience == a.mcpAudience {
+		a.completeHostedSignIn(w, r, u)
+		return
+	}
 	a.completeCFAccessSignIn(w, r, u)
+}
+
+// completeHostedSignIn mints the session for one hosted MCP conversation.
+//
+// It differs from the browser's in every way that matters, and each difference
+// is the point: it EXPIRES and says when, because the transport must retire
+// the conversation before its credential dies under it; it sets NO COOKIE,
+// because the caller is a server-side process holding the token in memory; and
+// it never REUSES a presented session, because a conversation's token is
+// revoked when the conversation ends and must not be some other one's.
+func (a *api) completeHostedSignIn(w http.ResponseWriter, r *http.Request, u store.User) {
+	session, expiresAt, err := a.accounts.MintHostedSession(r.Context(), u.ID)
+	if err != nil {
+		a.serverError(w, r, "cf access: mint hosted session", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, wire.Session{User: toUser(u), SessionToken: session, ExpiresAt: &expiresAt})
 }
 
 // completeCFAccessSignIn turns a verified Access identity into a session and

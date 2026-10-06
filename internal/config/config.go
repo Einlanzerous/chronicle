@@ -84,11 +84,27 @@ type Config struct {
 	// because a half-configured verifier fails every browser sign-in with a
 	// message that says the token was invalid rather than that the server was.
 	//
-	// CFAccessAUD is a list: Access AUD tags are per-application, so when
-	// CHRN-65 puts MCP behind its own Access application its tokens carry that
-	// application's tag and not the web app's.
+	// CFAccessAUD is the WEB application's audience tag -- a list only so a
+	// tag can be rotated without an outage. An assertion matching it is a
+	// browser and is owed a durable session with a cookie.
+	//
+	// IT IS NOT WHERE THE MCP APPLICATION'S TAG GOES, though Access tags are
+	// per-application and this list looks like the place. That tag is
+	// MCPCFAccessAUD below, and Load refuses a value present in both: an MCP
+	// assertion that matched HERE would be handed the browser's non-expiring
+	// session, with nothing to tell the operator it had happened (CHRN-65).
 	CFAccessTeamDomain string
 	CFAccessAUD        []string
+
+	// MCPCFAccessAUD is the hosted MCP endpoint's own Access application
+	// (CHRN-65), accepted on the sign-in exchange in addition to the list
+	// above. An assertion matching it is one conversation's MCP session and
+	// is owed a short-lived token and no cookie. Empty means the exchange
+	// refuses that audience like any other it does not know.
+	//
+	// One value, two readers: `chronicle mcp-serve` reads the same variable
+	// to verify each request before it ever calls the exchange.
+	MCPCFAccessAUD string
 
 	// MobileBaseURL is the origin baked into an invite's sign-in link, and the
 	// only origin a phone is told about. Empty omits the link.
@@ -305,6 +321,16 @@ func (c Config) SSOEnabled() bool {
 	return c.CFAccessTeamDomain != "" && len(c.CFAccessAUD) > 0
 }
 
+// AccessAudiences is every audience tag the sign-in exchange accepts: the web
+// application's, then the hosted MCP endpoint's when one is configured.
+func (c Config) AccessAudiences() []string {
+	out := append([]string(nil), c.CFAccessAUD...)
+	if c.MCPCFAccessAUD != "" {
+		out = append(out, c.MCPCFAccessAUD)
+	}
+	return out
+}
+
 // ValidateForServe checks what only a running server needs. It is separate
 // from Load because `migrate` and `mint-invite` genuinely do not need an owner
 // identity — migrate applies SQL, and the owner row is seeded with a
@@ -485,7 +511,7 @@ func Load() (Config, error) {
 	c.OwnerEmail = strings.ToLower(strings.TrimSpace(os.Getenv("CHRONICLE_OWNER_EMAIL")))
 	c.OwnerName = strings.TrimSpace(os.Getenv("CHRONICLE_OWNER_NAME"))
 
-	// Stored as given, minus surrounding space. api.NewCFAccessVerifier reduces
+	// Stored as given, minus surrounding space. cfaccess.New reduces
 	// it to a bare host — a value pasted from the Zero Trust dashboard with its
 	// scheme attached would otherwise yield an issuer of "https://https://…"
 	// that mismatches every token. Normalizing in one place keeps the two from
@@ -494,6 +520,26 @@ func Load() (Config, error) {
 	c.CFAccessAUD = splitList(os.Getenv("CHRONICLE_CF_ACCESS_AUD"))
 	if (c.CFAccessTeamDomain == "") != (len(c.CFAccessAUD) == 0) {
 		return c, fmt.Errorf("config: CHRONICLE_CF_ACCESS_TEAM_DOMAIN and CHRONICLE_CF_ACCESS_AUD must be set together (got one of the two)")
+	}
+
+	c.MCPCFAccessAUD = strings.TrimSpace(os.Getenv("CHRONICLE_MCP_CF_ACCESS_AUD"))
+	if c.MCPCFAccessAUD != "" {
+		// Nothing can verify an MCP assertion without the team domain, and an
+		// MCP-only verifier would be a third configuration nobody runs.
+		if !c.SSOEnabled() {
+			return c, fmt.Errorf("config: CHRONICLE_MCP_CF_ACCESS_AUD is set but Cloudflare Access SSO is not " +
+				"(set CHRONICLE_CF_ACCESS_TEAM_DOMAIN and CHRONICLE_CF_ACCESS_AUD, or unset it)")
+		}
+		// The two must not overlap. A tag in both would match as the WEB
+		// audience, which is checked first, and the MCP endpoint's assertion
+		// would be handed a browser's durable session. Refusing to boot is the
+		// only place this can be caught: every request would otherwise succeed.
+		for _, web := range c.CFAccessAUD {
+			if web == c.MCPCFAccessAUD {
+				return c, fmt.Errorf("config: CHRONICLE_MCP_CF_ACCESS_AUD also appears in CHRONICLE_CF_ACCESS_AUD; " +
+					"the MCP application's tag belongs only in CHRONICLE_MCP_CF_ACCESS_AUD")
+			}
+		}
 	}
 
 	c.SecureCookies = true

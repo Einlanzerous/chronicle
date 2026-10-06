@@ -622,3 +622,131 @@ func redeemFresh(t *testing.T, s *Store, ctx context.Context, userID uuid.UUID, 
 	}
 	return session
 }
+
+// CHRN-65 — a hosted MCP session is the one session that expires, and minting
+// one sweeps that account's dead ones without touching anything else.
+func TestMintHostedSessionIsBoundedAndSweepsOnlyItsOwnDead(t *testing.T) {
+	s, ctx := newTestStore(t)
+	owner, err := s.GetOwner(ctx)
+	if err != nil {
+		t.Fatalf("GetOwner: %v", err)
+	}
+	other, err := s.CreateUser(ctx, "other@example.com", "Other", KindPerson)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	// Everything the sweep must leave alone, and the one row it must take.
+	past := time.Now().Add(-time.Hour)
+	live, _, err := s.MintHostedSession(ctx, owner.ID)
+	if err != nil {
+		t.Fatalf("MintHostedSession(live): %v", err)
+	}
+	dead, err := s.MintToken(ctx, owner.ID, TokenSession, HostedSessionLabel, &past)
+	if err != nil {
+		t.Fatalf("MintToken(dead hosted): %v", err)
+	}
+	// A device may call itself anything, including this.
+	durableSameLabel, err := s.MintToken(ctx, owner.ID, TokenSession, HostedSessionLabel, nil)
+	if err != nil {
+		t.Fatalf("MintToken(durable, same label): %v", err)
+	}
+	// An expired session under another label is not this sweep's to take.
+	deadOtherLabel, err := s.MintToken(ctx, owner.ID, TokenSession, "laptop", &past)
+	if err != nil {
+		t.Fatalf("MintToken(dead, other label): %v", err)
+	}
+	if _, err := s.MintToken(ctx, owner.ID, TokenInvite, HostedSessionLabel, &past); err != nil {
+		t.Fatalf("MintToken(expired invite, same label): %v", err)
+	}
+	if _, err := s.MintToken(ctx, other.ID, TokenSession, HostedSessionLabel, &past); err != nil {
+		t.Fatalf("MintToken(another account's dead hosted): %v", err)
+	}
+
+	count := func(where string, args ...any) int {
+		t.Helper()
+		var n int
+		if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM tier2.user_tokens WHERE `+where, args...).Scan(&n); err != nil {
+			t.Fatalf("count %q: %v", where, err)
+		}
+		return n
+	}
+	before := count("true")
+
+	minted, expiresAt, err := s.MintHostedSession(ctx, owner.ID)
+	if err != nil {
+		t.Fatalf("MintHostedSession: %v", err)
+	}
+
+	if d := time.Until(expiresAt); d < HostedSessionTTL-time.Minute || d > HostedSessionTTL+time.Minute {
+		t.Errorf("expires in %v, want about %v", d, HostedSessionTTL)
+	}
+	var label string
+	var stored time.Time
+	if err := s.pool.QueryRow(ctx,
+		`SELECT label, expires_at FROM tier2.user_tokens WHERE token_hash = $1`, hashToken(minted)).Scan(&label, &stored); err != nil {
+		t.Fatalf("read minted row: %v", err)
+	}
+	if label != HostedSessionLabel || !stored.Equal(expiresAt) {
+		t.Errorf("row = (%q, %v), want (%q, %v)", label, stored, HostedSessionLabel, expiresAt)
+	}
+	if u, err := s.UserByToken(ctx, minted); err != nil || u.ID != owner.ID {
+		t.Errorf("UserByToken(minted) = %v, %v; want the owner", u.ID, err)
+	}
+
+	// One row in, exactly one row out.
+	if after := count("true"); after != before {
+		t.Errorf("token rows went %d -> %d; the mint should add one and the sweep remove exactly one", before, after)
+	}
+	if n := count("token_hash = $1", hashToken(dead)); n != 0 {
+		t.Error("the account's expired hosted row survived the sweep")
+	}
+	for name, tok := range map[string]string{
+		"a live hosted session":                  live,
+		"a durable session with the same label":  durableSameLabel,
+		"an expired session under another label": deadOtherLabel,
+	} {
+		if n := count("token_hash = $1", hashToken(tok)); n != 1 {
+			t.Errorf("the sweep took %s", name)
+		}
+	}
+	if n := count("kind = 'invite' AND label = $1", HostedSessionLabel); n != 1 {
+		t.Error("the sweep took an invite")
+	}
+	if n := count("user_id = $1", other.ID); n != 1 {
+		t.Error("the sweep reached another account's rows")
+	}
+}
+
+// An expired session is not a signed-in device, in either place one is listed.
+func TestExpiredSessionsAreNotListedOrCounted(t *testing.T) {
+	s, ctx := newTestStore(t)
+	owner, err := s.GetOwner(ctx)
+	if err != nil {
+		t.Fatalf("GetOwner: %v", err)
+	}
+	current := redeemFresh(t, s, ctx, owner.ID, "laptop")
+	if _, _, err := s.MintHostedSession(ctx, owner.ID); err != nil {
+		t.Fatalf("MintHostedSession: %v", err)
+	}
+	past := time.Now().Add(-time.Hour)
+	if _, err := s.MintToken(ctx, owner.ID, TokenSession, HostedSessionLabel, &past); err != nil {
+		t.Fatalf("MintToken(expired): %v", err)
+	}
+
+	sessions, err := s.ListSessions(ctx, owner.ID, current)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Errorf("ListSessions = %d rows, want the laptop and the live hosted session only", len(sessions))
+	}
+
+	members, err := s.ListMembers(ctx)
+	if err != nil {
+		t.Fatalf("ListMembers: %v", err)
+	}
+	if members[0].SessionCount != 2 {
+		t.Errorf("owner SessionCount = %d, want 2; an expired row was counted", members[0].SessionCount)
+	}
+}
