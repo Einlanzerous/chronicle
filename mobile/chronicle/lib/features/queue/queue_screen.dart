@@ -14,10 +14,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../capture/capture_controller.dart';
 import '../../capture/capture_record.dart';
 import '../../capture/retention_choice.dart';
+import '../../power/battery_exemption.dart';
 import '../../queue/device_block.dart';
 import '../../queue/queue_controller.dart';
 import '../../queue/queue_label.dart';
-import '../../power/battery_exemption.dart';
 import '../../queue/queue_record.dart';
 import '../../router/router.dart';
 import '../../theme/theme.dart';
@@ -69,7 +69,20 @@ class QueueScreen extends ConsumerWidget {
             if (restricted) ...[
               const SizedBox(height: space2),
               _BatteryNotice(
-                onAllow: () => ref.read(batteryExemptionProvider.notifier).request(),
+                onAllow: () async {
+                  final messenger = ScaffoldMessenger.of(context);
+                  final opened = await ref.read(batteryExemptionProvider.notifier).request();
+                  // A phone with no screen to open: say so rather than leave a
+                  // dead button. Nothing else changes.
+                  if (!opened) {
+                    messenger.showSnackBar(const SnackBar(
+                      content: Text(
+                        'This phone has no screen the app can open for this. '
+                        'Set Chronicle to Unrestricted under Settings, Apps, Battery.',
+                      ),
+                    ));
+                  }
+                },
               ),
             ],
             const SizedBox(height: space2),
@@ -158,7 +171,7 @@ class QueueScreen extends ConsumerWidget {
 class _BatteryNotice extends StatelessWidget {
   const _BatteryNotice({required this.onAllow});
 
-  final VoidCallback onAllow;
+  final Future<void> Function() onAllow;
 
   @override
   Widget build(BuildContext context) {
