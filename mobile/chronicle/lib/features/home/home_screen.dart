@@ -68,6 +68,20 @@ class HomeScreen extends ConsumerWidget {
               ),
 
               const SizedBox(height: space4),
+              Text('QUEUE', style: microLabel()),
+              const SizedBox(height: space2),
+              // Pushed, not `go`ed: `go` replaces the stack, which would leave
+              // the queue as the only page and make the system back gesture
+              // leave the app. Pushed over Home, back is the way home. The
+              // queue is also reachable without a credential (router.dart).
+              OutlinedButton(
+                key: const ValueKey('home-queue'),
+                onPressed: () => context.push(queueRoute),
+                style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(minTapTarget)),
+                child: const Text('Captures and queue'),
+              ),
+
+              const SizedBox(height: space4),
               Text('TRIAGE', style: microLabel()),
               const SizedBox(height: space2),
               OutlinedButton(
