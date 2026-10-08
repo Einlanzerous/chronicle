@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- CHRN-117: the glyph of mark 2a, "the interrupted rule", in ink.
+     Geometry is Placard's chronicle-mark-light.svg verbatim (512 plate, glyph
+     100..412 x 104..408), so the paths below are in that plate's units and the
+     group maps them into the 108dp adaptive canvas.
+
+     Scale 0.15 dp/unit, glyph centred on the canvas: 46.8 x 45.6 dp, corners
+     32.7 dp from centre. Only a 66dp-diameter circle (33dp radius) is
+     guaranteed visible under every launcher mask, so the ends of the long
+     rules fit inside it. (Filling the canvas, 0.346 dp/unit, would put them
+     ~75dp out and the masks would crop the rules.)
+
+     Changing the geometry means changing chronicle-mark-light.svg first. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:scaleX="0.15"
+        android:scaleY="0.15"
+        android:translateX="15.6"
+        android:translateY="15.6">
+        <path
+            android:fillColor="#14151A"
+            android:pathData="M100,104h312v16H100z
+M100,160h274.56v16H100z
+M168,240h16v32h-16z
+M200,222h16v68h-16z
+M232,234h16v44h-16z
+M264,216h16v80h-16z
+M296,232h16v48h-16z
+M328,244h16v24h-16z
+M100,336h224.64v16H100z
+M100,392h293.28v16H100z"/>
+    </group>
+</vector>
