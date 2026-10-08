@@ -30,6 +30,14 @@
          declares this for too. -->
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
 
+    <!-- CHRN-146: lets the app ask the system to exempt it from battery
+         optimisation (Adaptive Battery holds the background WorkManager wake,
+         the process-dead upload retry and the evening nudge, otherwise).
+         Google Play restricts this permission, but this app is sideloaded via
+         Obtainium and never ships through Play, so that policy does not apply.
+         Nobody should remove it for that reason. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
+
     <application
         android:label="${appLabel}"
         android:name="${applicationName}"

@@ -188,6 +188,26 @@ thing that has ever cleared a dead token here.
   find a file gone mid-attempt, and the engine now reads that as "the file
   changed" rather than throwing (`test/queue/engine_prune_race_test.dart`).
 
+### The background wake needs the battery exemption (CHRN-146)
+
+On a phone with Adaptive Battery, the saver forces every non-exempt app into
+standby, and the WorkManager job above is then **held** (its
+`BACKGROUND_NOT_RESTRICTED` constraint is unsatisfied; CHRN-143 saw it not
+runnable in 81 of 81 unplugged samples). Without the exemption the
+process-dead retry and the evening nudge effectively run only on the charger.
+So the app asks, in one place: the queue screen shows a `BATTERY LIMITED`
+notice with an `ALLOW` action while `PowerManager.isIgnoringBatteryOptimizations`
+is false, and the action opens the system's own request
+(`ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, channel
+`dev.dodson.chronicle/battery`, `lib/power/battery_exemption.dart`). Never at
+launch, never a dialog of ours, never blocking: capture, the queue and triage
+work the same either way. A refusal is respected -- the notice stays and
+nothing re-asks. The state is re-read when the app resumes, so accepting
+clears the notice. The home screen's status card deliberately does not carry
+it: that card answers "is the server reachable", and the notice belongs beside
+the queue states it qualifies. The permission is declared knowing Play
+restricts it; the app is sideloaded via Obtainium.
+
 ### Verification status
 
 `flutter analyze`, `flutter test` (434 tests, including a faithful in-Dart
@@ -435,6 +455,13 @@ lands some minutes after 18:00 rather than at it, and later still on a phone
 left untouched on a desk — picking it up ends Doze and the wake follows. And
 **a force-stopped app gets nothing**, WorkManager included, until it is next
 opened. That is Android's rule, the same one R2 recorded for FCM.
+
+### It needs the battery exemption on Adaptive Battery phones
+
+The poll rides the WorkManager wake, and that wake is held while the app is
+battery-optimised on a phone with Adaptive Battery -- so the nudge only fires
+on the charger until the exemption is granted. The queue screen offers it; see
+*The background wake needs the battery exemption (CHRN-146)* above.
 
 ### The rule (`lib/notify/nudge.dart`)
 
@@ -927,6 +954,7 @@ lib/
     queue_controller.dart  the in-app triggers
     queue_label.dart   the screen label, as a pure function of persisted state
     background.dart    the WorkManager headless entrypoint
+  power/               CHRN-146: the battery-optimisation exemption, read and asked for
   notify/              CHRN-64: the evening nudge -- see its section above
     nudge.dart         the rule: when one notification is owed, and for what
     nudge_surface.dart the platform: post, withdraw, hear the tap
