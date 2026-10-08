@@ -303,4 +303,48 @@ void main() {
       'QUEUED',
     );
   });
+
+  group('CHRN-127 -- an attempted capture is not held for a choice it cannot be offered', () {
+    final fresh = now.subtract(const Duration(minutes: 1));
+
+    test('a fresh undecided capture is still AWAITING RETENTION', () {
+      expect(
+        label(
+          record: QueueRecord(status: QueueStatus.pending, enqueuedAt: fresh),
+          enqueuedAt: fresh,
+        ),
+        'AWAITING RETENTION',
+      );
+    });
+
+    test('pending with attemptCount > 0 is not held', () {
+      expect(
+        label(
+          record: QueueRecord(status: QueueStatus.pending, enqueuedAt: fresh, attemptCount: 1),
+          enqueuedAt: fresh,
+        ),
+        isNot('AWAITING RETENTION'),
+      );
+    });
+
+    test('pending with lastAttemptAt set is not held', () {
+      expect(
+        label(
+          record: QueueRecord(status: QueueStatus.pending, enqueuedAt: fresh, lastAttemptAt: fresh),
+          enqueuedAt: fresh,
+        ),
+        isNot('AWAITING RETENTION'),
+      );
+    });
+
+    test('a non-pending status is not held', () {
+      expect(
+        label(
+          record: QueueRecord(status: QueueStatus.blockedLocalFileChanged, enqueuedAt: fresh),
+          enqueuedAt: fresh,
+        ),
+        isNot('AWAITING RETENTION'),
+      );
+    });
+  });
 }

@@ -75,6 +75,21 @@ enum RejectReason {
   serverRefused,
 }
 
+/// Whether [record] shows that sending this capture has already been tried:
+/// it has left `pending`, or carries an attempt count or an attempt time.
+///
+/// CHRN-127: the one rule behind both halves of the retention hold. Once an
+/// attempt has been made the memo may already exist on the server with the
+/// default retention, so the person can no longer be offered a choice
+/// (`retentionChoosable`) and the retention gate must not hold the capture
+/// waiting for one (`retentionGateOpen`'s `attempted`). Sharing the predicate
+/// keeps the two from disagreeing.
+bool queueShowsAttempt(QueueRecord? record) =>
+    record != null &&
+    (record.status != QueueStatus.pending ||
+        record.attemptCount > 0 ||
+        record.lastAttemptAt != null);
+
 /// The class the most recent attempt's outcome fell into. Drives
 /// `failureStreak` and whether a capture is retried or parked; not a
 /// judgement on its own -- see `failure.dart`.

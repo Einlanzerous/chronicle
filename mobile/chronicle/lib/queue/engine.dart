@@ -139,6 +139,7 @@ class QueueEngine {
         skipped: qc.capture.retentionSkippedAt != null,
         enqueuedAt: qc.queueRecord.enqueuedAt,
         now: now,
+        attempted: queueShowsAttempt(qc.queueRecord),
       )) {
         continue;
       }

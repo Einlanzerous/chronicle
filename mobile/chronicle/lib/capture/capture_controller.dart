@@ -442,12 +442,7 @@ bool retentionChoosable(CaptureRecord record, QueueRecord? queued, DateTime now)
   if (record.state != CaptureState.ready && record.state != CaptureState.salvaged) {
     return false;
   }
-  if (queued != null &&
-      (queued.status != QueueStatus.pending ||
-          queued.attemptCount > 0 ||
-          queued.lastAttemptAt != null)) {
-    return false;
-  }
+  if (queueShowsAttempt(queued)) return false;
   return retentionChoiceOpen(
     retention: record.retention,
     skipped: record.retentionSkippedAt != null,

@@ -272,6 +272,11 @@ selected.
 | taps **SKIP** | `retention_skipped_at` set, `retention` null | declares at once with no opinion, which is the server's 30-day default |
 | does neither (leaves the card, or never saw it) | both null | holds for **24 hours** from first sight, then declares with no opinion |
 
+A capture whose queue record already shows a send attempt (`queueShowsAttempt`:
+status other than `pending`, an attempt count, or an attempt time) is never held,
+because no choice can be offered for it any more (`retentionChoosable` uses the
+same predicate); it sends at the default.
+
 That third row is the "skipped versus not yet seen" distinction CHRN-61's plan
 (ruling 3) left for this ticket. `retentionGrace` in `lib/queue/retention_gate.dart`
 went from zero to 24 hours in the same change that added the card, and
