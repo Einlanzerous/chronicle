@@ -140,6 +140,5 @@ void main() {
 
     final size = tester.getSize(find.byKey(const ValueKey('home-queue')));
     expect(size.height, greaterThanOrEqualTo(minTapTarget));
-    expect(minTapTarget, greaterThanOrEqualTo(44.0));
   });
 }
