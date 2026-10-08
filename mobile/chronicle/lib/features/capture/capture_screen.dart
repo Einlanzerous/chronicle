@@ -341,9 +341,17 @@ class _Waveform extends StatefulWidget {
 class _WaveformState extends State<_Waveform> with SingleTickerProviderStateMixin {
   late final Ticker _ticker = createTicker((elapsed) {
     _sinceSample = elapsed;
+    // The slide is done and nothing is moving: stop asking for frames until the
+    // next sample, rather than rebuilding at 60 Hz for a still picture.
+    if (elapsed >= _gap) _ticker.stop();
     setState(() {});
   });
   Duration _sinceSample = Duration.zero;
+
+  /// Where the slide starts, in bars. 0 for the first sample; for a sample that
+  /// arrives early it is negative, so the bars carry on from where they were
+  /// drawn instead of jumping right by the part of the slide not yet run.
+  double _from = 0;
   Duration _gap = _nominalSampleGap;
   double _scale = _waveScaleFloor;
 
@@ -361,17 +369,30 @@ class _WaveformState extends State<_Waveform> with SingleTickerProviderStateMixi
       _gap = _nominalSampleGap;
       _ticker.stop();
       _sinceSample = Duration.zero;
+      _from = 0;
     } else if (widget.arrivals != old.arrivals) {
       // The time the last slide ran is the best measure of the cadence; blended
       // so one late tick does not retime the slide.
+      final wasSliding = _ticker.isActive;
+      // Where the bars are drawn right now, in bars, so the new slide starts
+      // there. Read before the gap estimate below changes what progress means.
+      _from = wasSliding ? _progress() - 1 : 0;
       if (_sinceSample > Duration.zero) {
-        final ms = (_gap.inMicroseconds * 0.7 + _sinceSample.inMicroseconds * 0.3)
-            .clamp(50000, 400000)
-            .round();
+        // A slide cut short is a truthful reading of the gap; one that ran out
+        // and waited means the sample was late, so the gap only grows a little.
+        final reading = wasSliding ? _sinceSample.inMicroseconds : _gap.inMicroseconds * 1.1;
+        final ms = (_gap.inMicroseconds * 0.7 + reading * 0.3).clamp(50000, 400000).round();
         _gap = Duration(microseconds: ms);
       }
       _absorb();
     }
+  }
+
+  /// How far the row has slid, in bars: [_from] at the sample, 1 when the next
+  /// is due, held there if it is late rather than sliding on into empty space.
+  double _progress() {
+    final t = (_sinceSample.inMicroseconds / _gap.inMicroseconds).clamp(0.0, 1.0);
+    return _from + (1 - _from) * t;
   }
 
   /// Folds the newest sample into the scale and restarts the slide.
@@ -397,10 +418,7 @@ class _WaveformState extends State<_Waveform> with SingleTickerProviderStateMixi
     if (samples.isEmpty) {
       return Center(child: Text('—', style: monoMeta()));
     }
-    // 0 just after a sample, 1 when the next is due; held at 1 if it is late
-    // rather than sliding on into empty space.
-    final progress =
-        (_sinceSample.inMicroseconds / _gap.inMicroseconds).clamp(0.0, 1.0);
+    final progress = _progress();
     return LayoutBuilder(
       builder: (context, box) {
         final slot = box.maxWidth / _waveSamples;

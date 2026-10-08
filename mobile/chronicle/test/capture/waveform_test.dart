@@ -25,15 +25,15 @@ class _Feed extends NoRecorderPlatform {
 }
 
 RecorderSnapshot _snap(int amplitude, int elapsedMs) => RecorderSnapshot(
-      captureId: 'w',
-      state: RecorderState.recording,
-      elapsedMs: elapsedMs,
-      byteSize: 1024,
-      silenced: false,
-      micOpen: true,
-      hasConfig: true,
-      amplitude: amplitude,
-    );
+  captureId: 'w',
+  state: RecorderState.recording,
+  elapsedMs: elapsedMs,
+  byteSize: 1024,
+  silenced: false,
+  micOpen: true,
+  hasConfig: true,
+  amplitude: amplitude,
+);
 
 void main() {
   late _Feed feed;
@@ -42,22 +42,30 @@ void main() {
   Future<void> boot(WidgetTester tester) async {
     feed = _Feed(Directory.systemTemp);
     elapsed = 0;
-    final container = ProviderContainer(overrides: [
-      capturePlatformProvider.overrideWithValue(feed),
-      captureOwnerProvider.overrideWithValue(NoOwner()),
-    ]);
+    final container = ProviderContainer(
+      overrides: [
+        capturePlatformProvider.overrideWithValue(feed),
+        captureOwnerProvider.overrideWithValue(NoOwner()),
+      ],
+    );
     addTearDown(container.dispose);
     addTearDown(feed.controller.close);
     // Reading the notifier builds it, which subscribes to watch().
     container.read(captureControllerProvider);
-    await tester.pumpWidget(UncontrolledProviderScope(
-      container: container,
-      child: const MaterialApp(home: CaptureScreen()),
-    ));
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const MaterialApp(home: CaptureScreen()),
+      ),
+    );
   }
 
   /// One sample, then the 100 ms the service would wait before the next.
-  Future<void> sample(WidgetTester tester, int amplitude, {int wait = 100}) async {
+  Future<void> sample(
+    WidgetTester tester,
+    int amplitude, {
+    int wait = 100,
+  }) async {
     elapsed += 100;
     feed.controller.add(_snap(amplitude, elapsed));
     await tester.pump();
@@ -66,15 +74,22 @@ void main() {
 
   Finder bar(int k) => find.byKey(ValueKey('wave-bar-$k'));
   double left(WidgetTester tester, int k) => tester.getTopLeft(bar(k)).dx;
-  double height(WidgetTester tester, int k) =>
-      tester.getSize(find.descendant(of: bar(k), matching: find.byType(ColoredBox)).first).height;
+  double height(WidgetTester tester, int k) => tester
+      .getSize(
+        find.descendant(of: bar(k), matching: find.byType(ColoredBox)).first,
+      )
+      .height;
   Color color(WidgetTester tester, int k) => tester
-      .widget<ColoredBox>(find.descendant(of: bar(k), matching: find.byType(ColoredBox)).first)
+      .widget<ColoredBox>(
+        find.descendant(of: bar(k), matching: find.byType(ColoredBox)).first,
+      )
       .color;
 
-  testWidgets('the row slides between samples instead of stepping at them', (tester) async {
+  testWidgets('the row slides between samples instead of stepping at them', (
+    tester,
+  ) async {
     await boot(tester);
-    await sample(tester, 4000, wait: 0);
+    await sample(tester, 4000);
     await sample(tester, 4000, wait: 0);
     final atArrival = left(tester, 1);
 
@@ -84,12 +99,26 @@ void main() {
     final full = left(tester, 1);
 
     final slot = tester.getSize(find.byType(ClipRect).first).width / 48;
-    expect(atArrival - half, closeTo(slot / 2, slot * 0.1), reason: 'half a tick, half a bar');
-    expect(atArrival - full, closeTo(slot, slot * 0.1), reason: 'a whole tick, a whole bar');
-    expect((atArrival - half) % slot, isNot(0), reason: 'the offset is fractional');
+    expect(
+      atArrival - half,
+      closeTo(slot / 2, slot * 0.1),
+      reason: 'half a tick, half a bar',
+    );
+    expect(
+      atArrival - full,
+      closeTo(slot, slot * 0.1),
+      reason: 'a whole tick, a whole bar',
+    );
+    expect(
+      (atArrival - half) % slot,
+      isNot(0),
+      reason: 'the offset is fractional',
+    );
   });
 
-  testWidgets('no jump at the seam: a new sample lands where the slide ended', (tester) async {
+  testWidgets('no jump at the seam: a new sample lands where the slide ended', (
+    tester,
+  ) async {
     await boot(tester);
     await sample(tester, 4000);
     final before = left(tester, 0); // the newest bar, at the end of its slide
@@ -99,27 +128,69 @@ void main() {
     expect(left(tester, 1), closeTo(before, 0.5));
   });
 
-  testWidgets('the scale does not jump when the loudest bar leaves the window', (tester) async {
+  testWidgets('a sample arriving early does not jump the row', (tester) async {
     await boot(tester);
-    await sample(tester, 20000);
-    for (var i = 0; i < 46; i++) {
-      await sample(tester, 3000);
-    }
-    final loud = height(tester, 46); // still in the window
-    expect(loud, greaterThan(height(tester, 0)));
-    final quietBefore = height(tester, 0);
-
-    // Two more samples push the 20000 bar out of the 48-bar window.
-    await sample(tester, 3000);
-    await sample(tester, 3000);
-    final quietAfter = height(tester, 0);
-    // Under the old per-window maximum this ratio was ~6.7x; now it is the
-    // decay of a couple of samples.
-    expect(quietAfter / quietBefore, lessThan(1.15));
-    expect(quietAfter / quietBefore, greaterThanOrEqualTo(1.0));
+    await sample(tester, 4000);
+    await sample(tester, 4000, wait: 70);
+    final before = left(tester, 0);
+    feed.controller.add(_snap(4000, elapsed += 70));
+    await tester.pump();
+    expect(
+      left(tester, 1),
+      closeTo(before, 0.5),
+      reason: 'no step at an early seam',
+    );
+    // And the slide still ends at rest, having
+    // covered the slot it owed plus the part carried over from the early seam.
+    await tester.pump(const Duration(milliseconds: 100));
+    final width = tester.getSize(find.byType(ClipRect).first).width;
+    final slot = width / 48;
+    expect(left(tester, 1), lessThan(before - slot));
+    expect(left(tester, 1), greaterThan(before - 2 * slot));
+    expect(
+      left(tester, 0),
+      closeTo(
+        tester.getTopLeft(find.byType(ClipRect).first).dx + width - 2 * slot,
+        0.01,
+      ),
+      reason: 'slide ends at rest',
+    );
   });
 
-  testWidgets('a run of zeros is still a fault, at the same threshold', (tester) async {
+  testWidgets('no frames are requested once the slide is done', (tester) async {
+    await boot(tester);
+    await sample(tester, 4000, wait: 0);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump(const Duration(milliseconds: 16));
+    expect(tester.binding.hasScheduledFrame, isFalse);
+  });
+
+  testWidgets(
+    'the scale does not jump when the loudest bar leaves the window',
+    (tester) async {
+      await boot(tester);
+      await sample(tester, 20000);
+      for (var i = 0; i < 46; i++) {
+        await sample(tester, 3000);
+      }
+      final loud = height(tester, 46); // still in the window
+      expect(loud, greaterThan(height(tester, 0)));
+      final quietBefore = height(tester, 0);
+
+      // Two more samples push the 20000 bar out of the 48-bar window.
+      await sample(tester, 3000);
+      await sample(tester, 3000);
+      final quietAfter = height(tester, 0);
+      // Under the old per-window maximum this ratio was ~6.7x; now it is the
+      // decay of a couple of samples.
+      expect(quietAfter / quietBefore, lessThan(1.15));
+      expect(quietAfter / quietBefore, greaterThanOrEqualTo(1.0));
+    },
+  );
+
+  testWidgets('a run of zeros is still a fault, at the same threshold', (
+    tester,
+  ) async {
     await boot(tester);
     await sample(tester, 5000);
     final live = color(tester, 0);
