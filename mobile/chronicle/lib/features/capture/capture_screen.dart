@@ -20,6 +20,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../capture/capture_channel.dart';
@@ -48,6 +49,7 @@ class CaptureScreen extends ConsumerStatefulWidget {
 
 class _CaptureScreenState extends ConsumerState<CaptureScreen> {
   final List<int> _wave = [];
+  int _arrivals = 0;
   int _silentMs = 0;
   int _lastElapsedMs = 0;
 
@@ -63,6 +65,7 @@ class _CaptureScreenState extends ConsumerState<CaptureScreen> {
         setState(() {
           _lastElapsedMs = next.recorder.elapsedMs;
           _wave.add(next.recorder.amplitude);
+          _arrivals++;
           if (_wave.length > _waveSamples) _wave.removeAt(0);
           _silentMs = next.recorder.amplitude == 0 ? _silentMs + delta : 0;
         });
@@ -210,7 +213,8 @@ class _CaptureScreenState extends ConsumerState<CaptureScreen> {
           ),
         ),
         const SizedBox(height: space4),
-        SizedBox(height: 64, child: _Waveform(samples: _wave, fault: silentFault)),
+        SizedBox(height: 64, child: _Waveform(
+            samples: _wave, arrivals: _arrivals, fault: silentFault)),
         if (silentFault) ...[
           const SizedBox(height: space2),
           Text(
@@ -289,34 +293,154 @@ class _CaptureScreenState extends ConsumerState<CaptureScreen> {
       : '${(b / (1024 * 1024)).toStringAsFixed(1)} MB';
 }
 
-class _Waveform extends StatelessWidget {
-  const _Waveform({required this.samples, required this.fault});
+/// The scale the waveform is drawn against never falls below this, so a
+/// room's noise floor is not stretched to full height. `getMaxAmplitude()` runs
+/// 0..32767 and ordinary speech peaks well under half of it.
+const _waveScaleFloor = 6000.0;
+
+/// How much of the scale reference survives each new sample. About 0.98 per
+/// 100 ms is a half-life near three and a half seconds: a loud bar leaving the
+/// window lets the scale relax gradually, never in one frame.
+const _waveScaleDecay = 0.98;
+
+/// The nominal gap between samples, until the real one has been measured.
+const _nominalSampleGap = Duration(milliseconds: 100);
+
+/// The waveform: a row of bars that *scrolls* rather than lurches.
+///
+/// CHRN-113. Two things made it read as jittery, and each has its own fix:
+///
+/// * **The row moved a whole bar per sample.** Now a [Ticker] slides the row
+///   left between samples -- the shift is driven by time since the last sample,
+///   not by the sample arriving -- and a new sample lands exactly where the
+///   slide ends, so there is no step at the seam.
+/// * **Bars were normalised against the visible window's own maximum**, so the
+///   whole display rescaled when a loud bar scrolled off. Now the scale is a
+///   decaying maximum updated once per arriving sample, with a floor.
+///
+/// **Only motion and scale are smoothed. The signal is not.** A sample of
+/// exactly zero still draws the minimum bar and, once [fault] is set by the
+/// screen's own `_silenceFaultMs` rule (untouched by this widget), grey. There
+/// is deliberately no envelope follower: one with a slow decay would turn a
+/// silenced microphone into something that looks like quiet audio, and that is
+/// the failure this screen exists to show.
+class _Waveform extends StatefulWidget {
+  const _Waveform({required this.samples, required this.arrivals, required this.fault});
 
   final List<int> samples;
+
+  /// Counts every sample ever appended, so a new arrival is noticed even once
+  /// the window is full and its length no longer changes.
+  final int arrivals;
   final bool fault;
 
   @override
+  State<_Waveform> createState() => _WaveformState();
+}
+
+class _WaveformState extends State<_Waveform> with SingleTickerProviderStateMixin {
+  late final Ticker _ticker = createTicker((elapsed) {
+    _sinceSample = elapsed;
+    setState(() {});
+  });
+  Duration _sinceSample = Duration.zero;
+  Duration _gap = _nominalSampleGap;
+  double _scale = _waveScaleFloor;
+
+  @override
+  void initState() {
+    super.initState();
+    _absorb();
+  }
+
+  @override
+  void didUpdateWidget(_Waveform old) {
+    super.didUpdateWidget(old);
+    if (widget.samples.isEmpty) {
+      _scale = _waveScaleFloor;
+      _gap = _nominalSampleGap;
+      _ticker.stop();
+      _sinceSample = Duration.zero;
+    } else if (widget.arrivals != old.arrivals) {
+      // The time the last slide ran is the best measure of the cadence; blended
+      // so one late tick does not retime the slide.
+      if (_sinceSample > Duration.zero) {
+        final ms = (_gap.inMicroseconds * 0.7 + _sinceSample.inMicroseconds * 0.3)
+            .clamp(50000, 400000)
+            .round();
+        _gap = Duration(microseconds: ms);
+      }
+      _absorb();
+    }
+  }
+
+  /// Folds the newest sample into the scale and restarts the slide.
+  void _absorb() {
+    if (widget.samples.isEmpty) return;
+    final newest = widget.samples.last.toDouble();
+    _scale = (_scale * _waveScaleDecay).clamp(_waveScaleFloor, double.infinity);
+    if (newest > _scale) _scale = newest;
+    _sinceSample = Duration.zero;
+    if (_ticker.isActive) _ticker.stop();
+    _ticker.start();
+  }
+
+  @override
+  void dispose() {
+    _ticker.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final samples = widget.samples;
     if (samples.isEmpty) {
       return Center(child: Text('—', style: monoMeta()));
     }
-    final peak = samples.fold<int>(1, (a, b) => b > a ? b : a);
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        for (final s in samples)
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 1),
-              child: Container(
-                height: (s / peak * 60).clamp(2.0, 60.0),
-                color: fault ? chTextMeta : chSignal,
-              ),
-            ),
+    // 0 just after a sample, 1 when the next is due; held at 1 if it is late
+    // rather than sliding on into empty space.
+    final progress =
+        (_sinceSample.inMicroseconds / _gap.inMicroseconds).clamp(0.0, 1.0);
+    return LayoutBuilder(
+      builder: (context, box) {
+        final slot = box.maxWidth / _waveSamples;
+        final n = samples.length;
+        return ClipRect(
+          child: Stack(
+            children: [
+              for (var k = 0; k < n; k++)
+                Positioned(
+                  key: ValueKey('wave-bar-$k'),
+                  // k = 0 is the newest sample, resting at the right edge.
+                  left: box.maxWidth - (k + 1) * slot - progress * slot,
+                  width: slot,
+                  top: 0,
+                  bottom: 0,
+                  child: Center(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 1),
+                      child: SizedBox.expand(
+                        child: FractionallySizedBox(
+                          heightFactor: _heightFor(samples[n - 1 - k]),
+                          child: ColoredBox(
+                            color: widget.fault ? chTextMeta : chSignal,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
           ),
-      ],
+        );
+      },
     );
   }
+
+  /// Bar height as a fraction of the 64px row. Zero is the 2px minimum, exactly
+  /// as before; a peak past the reference is clipped, not rescaled.
+  double _heightFor(int sample) =>
+      (sample / _scale * 60).clamp(2.0, 60.0) / 64;
 }
 
 class _Action extends StatelessWidget {
