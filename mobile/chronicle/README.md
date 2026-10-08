@@ -965,7 +965,7 @@ lib/
   features/
     triage/            board 1b B2 (the lanes, FILE), board 1a 06 (the ticket card)
     signin/            scan, or paste the link
-    home/               account, address, connection state
+    home/               account, address, connection state; entries to Record, Queue (CHRN-142) and Evening triage
     capture/           board 1a screens 01/02 -- idle, recording; CHRN-62's retention card
     queue/              board 1a screen 03's CHRN-61 slice
     shared/            the CAPTURE / QUEUE tab bar
