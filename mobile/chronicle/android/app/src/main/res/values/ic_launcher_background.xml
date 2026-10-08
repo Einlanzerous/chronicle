@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- CHRN-117: vellum, which is chSignal in lib/theme/tokens.dart. A native
+     resource cannot import a Dart const, so this is the second literal;
+     test/launcher_icon_test.dart reads this file and fails if they part. -->
+<resources>
+    <color name="ic_launcher_background">#E0D5BE</color>
+</resources>
