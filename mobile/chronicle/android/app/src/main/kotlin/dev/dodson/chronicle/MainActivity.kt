@@ -1,6 +1,7 @@
 package dev.dodson.chronicle
 
 import dev.dodson.chronicle.capture.CaptureChannel
+import dev.dodson.chronicle.power.BatteryChannel
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 
@@ -16,6 +17,8 @@ class MainActivity : FlutterActivity() {
         capture = CaptureChannel(this).also {
             it.attach(flutterEngine.dartExecutor.binaryMessenger)
         }
+        // CHRN-146: the battery-optimisation exemption the background wake needs.
+        BatteryChannel(this).attach(flutterEngine.dartExecutor.binaryMessenger)
     }
 
     override fun onRequestPermissionsResult(

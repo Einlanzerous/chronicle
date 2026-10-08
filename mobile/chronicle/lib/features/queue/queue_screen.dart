@@ -14,6 +14,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../capture/capture_controller.dart';
 import '../../capture/capture_record.dart';
 import '../../capture/retention_choice.dart';
+import '../../power/battery_exemption.dart';
 import '../../queue/device_block.dart';
 import '../../queue/queue_controller.dart';
 import '../../queue/queue_label.dart';
@@ -31,6 +32,8 @@ class QueueScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final captures = ref.watch(captureControllerProvider.select((s) => s.recent));
     final queue = ref.watch(queueControllerProvider);
+    // CHRN-146: `false` only -- unknown (first frame, not Android) shows nothing.
+    final restricted = ref.watch(batteryExemptionProvider) == false;
 
     // Sendable material -- a live recording is not queue material
     // (`engine.dart`'s own precondition) and never appears here. `empty` is
@@ -63,6 +66,25 @@ class QueueScreen extends ConsumerWidget {
               heldBytes: heldBytes,
               onRetry: () => ref.read(queueControllerProvider.notifier).wake(),
             ),
+            if (restricted) ...[
+              const SizedBox(height: space2),
+              _BatteryNotice(
+                onAllow: () async {
+                  final messenger = ScaffoldMessenger.of(context);
+                  final opened = await ref.read(batteryExemptionProvider.notifier).request();
+                  // A phone with no screen to open: say so rather than leave a
+                  // dead button. Nothing else changes.
+                  if (!opened) {
+                    messenger.showSnackBar(const SnackBar(
+                      content: Text(
+                        'This phone has no screen the app can open for this. '
+                        'Set Chronicle to Unrestricted under Settings, Apps, Battery.',
+                      ),
+                    ));
+                  }
+                },
+              ),
+            ],
             const SizedBox(height: space2),
             Expanded(
               child: sendable.isEmpty && empty.isEmpty
@@ -141,6 +163,54 @@ class QueueScreen extends ConsumerWidget {
           ),
         ),
       );
+}
+
+/// CHRN-146: says why the background wake may not run, and offers the
+/// system's request. Shown while the app is not exempt, nothing more: no
+/// dialog, no re-ask after a refusal, and nothing here gates capture or sends.
+class _BatteryNotice extends StatelessWidget {
+  const _BatteryNotice({required this.onAllow});
+
+  final Future<void> Function() onAllow;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: space4),
+      child: Container(
+        padding: const EdgeInsets.all(space3),
+        decoration: BoxDecoration(
+          color: chRaised,
+          border: Border.all(color: chLine),
+          borderRadius: BorderRadius.circular(space1),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('BATTERY LIMITED', style: microLabel()),
+                  const SizedBox(height: space1),
+                  const Text(
+                    'Android may hold background sending and the evening reminder '
+                    'while the phone is on battery. Capture is unaffected.',
+                    style: TextStyle(fontSize: sizeBody, color: chText),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: space2),
+            TextButton(
+              style: TextButton.styleFrom(minimumSize: const Size(minTapTarget, minTapTarget)),
+              onPressed: onAllow,
+              child: const Text('ALLOW'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _Banner extends StatelessWidget {
