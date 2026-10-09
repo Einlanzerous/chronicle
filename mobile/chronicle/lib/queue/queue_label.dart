@@ -55,6 +55,7 @@ String queueLabel({
     skipped: retentionSkipped,
     enqueuedAt: enqueuedAt,
     now: now,
+    attempted: queueShowsAttempt(record),
   )) {
     return 'AWAITING RETENTION';
   }

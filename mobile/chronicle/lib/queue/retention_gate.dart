@@ -17,6 +17,12 @@
 ///   opinion, so the deployment default applies.
 /// * **not yet decided** -- neither. Held until [retentionGrace] has passed
 ///   since the queue first saw it, then declared with no opinion.
+///
+/// A capture whose queue record already shows a send attempt
+/// (`queueShowsAttempt`) is never held (CHRN-127): it predates the confirm,
+/// or has already been offered to the server, so the person can never be
+/// offered a choice and holding it would only delay it. It sends at the
+/// default.
 library;
 
 /// How long a capture nobody has decided on is held before it is declared
@@ -45,6 +51,9 @@ DateTime retentionGraceEndsAt(DateTime enqueuedAt, {Duration grace = retentionGr
 
 /// Whether a capture may be declared to the server right now.
 ///
+/// [attempted] is `queueShowsAttempt` for the capture's queue record; an
+/// attempted capture is never held.
+///
 /// [retention] is `meta.json`'s value: null means "no opinion yet". [skipped]
 /// is whether `meta.json` carries CHRN-62's skip marker. [now] minus
 /// [enqueuedAt] is measured against [grace], which defaults to the module
@@ -57,9 +66,10 @@ bool retentionGateOpen({
   required bool skipped,
   required DateTime enqueuedAt,
   required DateTime now,
+  bool attempted = false,
   Duration grace = retentionGrace,
 }) {
-  if (retention != null || skipped) return true;
+  if (retention != null || skipped || attempted) return true;
   return !now.isBefore(retentionGraceEndsAt(enqueuedAt, grace: grace));
 }
 

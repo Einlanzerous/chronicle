@@ -1,3 +1,6 @@
+import 'package:chronicle/capture/capture_controller.dart';
+import 'package:chronicle/capture/capture_record.dart';
+import 'package:chronicle/queue/queue_record.dart';
 import 'package:chronicle/queue/retention_gate.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -145,6 +148,88 @@ void main() {
         final gate =
             retentionGateOpen(retention: null, skipped: false, enqueuedAt: enqueuedAt, now: now);
         expect(choice && gate, isFalse, reason: 'overlap at +${m}m');
+      }
+    });
+  });
+
+  group('CHRN-127 -- attempted captures', () {
+    test('an attempted undecided capture opens the gate at once', () {
+      expect(
+        retentionGateOpen(
+          retention: null,
+          skipped: false,
+          enqueuedAt: enqueuedAt,
+          now: enqueuedAt,
+          attempted: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('queueShowsAttempt reads status, attemptCount and lastAttemptAt', () {
+      QueueRecord r({QueueStatus s = QueueStatus.pending, int n = 0, DateTime? at}) =>
+          QueueRecord(status: s, enqueuedAt: enqueuedAt, attemptCount: n, lastAttemptAt: at);
+      expect(queueShowsAttempt(null), isFalse);
+      expect(queueShowsAttempt(r()), isFalse);
+      expect(queueShowsAttempt(r(n: 1)), isTrue);
+      expect(queueShowsAttempt(r(at: enqueuedAt)), isTrue);
+      expect(queueShowsAttempt(r(s: QueueStatus.rejected)), isTrue);
+    });
+
+    test('held implies choosable, for every combination', () {
+      final statuses = QueueStatus.values;
+      final states = [CaptureState.ready, CaptureState.salvaged];
+      for (final queuedPresent in [false, true]) {
+        for (final status in statuses) {
+          for (final n in [0, 1]) {
+            for (final at in [null, enqueuedAt]) {
+              for (final retention in [null, 'days_30']) {
+                for (final skipped in [false, true]) {
+                  for (final state in states) {
+                    for (final m in [0, 60, 23 * 60 + 56, 24 * 60, 25 * 60]) {
+                      final now = enqueuedAt.add(Duration(minutes: m));
+                      final queued = queuedPresent
+                          ? QueueRecord(
+                              status: status,
+                              enqueuedAt: enqueuedAt,
+                              attemptCount: n,
+                              lastAttemptAt: at,
+                            )
+                          : null;
+                      final record = CaptureRecord(
+                        captureId: 'a',
+                        idempotencyKey: 'k',
+                        startedAt: enqueuedAt,
+                        state: state,
+                        retention: retention,
+                        retentionSkippedAt: skipped ? enqueuedAt : null,
+                      );
+                      // Only a pending record is held by the label/engine.
+                      final held =
+                          (queued == null || queued.status == QueueStatus.pending) &&
+                          !retentionGateOpen(
+                            retention: retention,
+                            skipped: skipped,
+                            enqueuedAt: enqueuedAt,
+                            now: now,
+                            attempted: queueShowsAttempt(queued),
+                          );
+                      if (!held) continue;
+                      // Held but not in its last minutes: must be choosable.
+                      final closes = enqueuedAt.add(retentionGrace).subtract(retentionChoiceCloses);
+                      if (!now.isBefore(closes)) continue;
+                      expect(
+                        retentionChoosable(record, queued, now),
+                        isTrue,
+                        reason: 'held but not choosable: $queued $retention $skipped $state +${m}m',
+                      );
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     });
   });
