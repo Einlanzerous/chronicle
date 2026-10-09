@@ -7,7 +7,7 @@ description: "Chronicle — voice-note capture and the evening triage pass (Andr
 # APK carries comes from its tag (mobile-release.yml), and this line is kept in
 # step so a local build says the same thing.
 publish_to: "none"
-version: 0.4.0 # x-release-please-version
+version: 0.5.0 # x-release-please-version
 
 # Pinned toolchain, matching the estate: Flutter 3.44.2 (stable) / Dart 3.12.2,
 # installed user-local under ~/dev-tools. `source ~/dev-tools/env.sh` and the
