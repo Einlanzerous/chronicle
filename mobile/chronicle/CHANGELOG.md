@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.0](https://github.com/Einlanzerous/chronicle/compare/mobile-v0.4.0...mobile-v0.5.0) (2026-10-09)
+
+
+### Features
+
+* **mobile:** Home gets a Queue entry beside Record and Evening triage (CHRN-142) ([#162](https://github.com/Einlanzerous/chronicle/issues/162)) ([5cf4636](https://github.com/Einlanzerous/chronicle/commit/5cf4636e7a7a24ef1b25069f41ba70a467e01552))
+* **mobile:** launcher icon is mark 2a as an adaptive icon with a themed layer (CHRN-117) ([#161](https://github.com/Einlanzerous/chronicle/issues/161)) ([84aaa2f](https://github.com/Einlanzerous/chronicle/commit/84aaa2fd8a1d6aaf13510a39b441951b168edd55))
+* **mobile:** the app asks for the battery-optimisation exemption its background wake needs (CHRN-146) ([#160](https://github.com/Einlanzerous/chronicle/issues/160)) ([5ca5495](https://github.com/Einlanzerous/chronicle/commit/5ca5495d73faf1830eee00bd8f01b418fe57fe9e))
+
+
+### Bug Fixes
+
+* **mobile:** a capture already attempted is not held for a retention choice (CHRN-127) ([#164](https://github.com/Einlanzerous/chronicle/issues/164)) ([6fd45af](https://github.com/Einlanzerous/chronicle/commit/6fd45af00ec41684c217334a89f501ebfd2e244b))
+* **mobile:** the recording waveform flows instead of stepping (CHRN-113) ([#159](https://github.com/Einlanzerous/chronicle/issues/159)) ([ea118c6](https://github.com/Einlanzerous/chronicle/commit/ea118c6951e4126d2ac156d2a5dfecd3bdba7edc))
+
 ## [0.4.0](https://github.com/Einlanzerous/chronicle/compare/mobile-v0.3.0...mobile-v0.4.0) (2026-10-06)
 
 
