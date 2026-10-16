@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.29.1](https://github.com/Einlanzerous/chronicle/compare/v1.29.0...v1.29.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **web:** a discussion reloads by the live route after a mutation, not the thread it started on (CHRN-111) ([#166](https://github.com/Einlanzerous/chronicle/issues/166)) ([bb23427](https://github.com/Einlanzerous/chronicle/commit/bb234276a9e2aea2ddabd2afdc08451b2dbbdbe8))
+
+
+### Maintenance
+
+* **asr:** the Idempotency-Key doc no longer calls Chronicle's ingest key a header (CHRN-122) ([#167](https://github.com/Einlanzerous/chronicle/issues/167)) ([edff9be](https://github.com/Einlanzerous/chronicle/commit/edff9be715c694ceb01baf550a830335e8763eff))
+* **main:** release mobile 0.5.0 ([#163](https://github.com/Einlanzerous/chronicle/issues/163)) ([8c2fde2](https://github.com/Einlanzerous/chronicle/commit/8c2fde2b6a39fa229d59719759f8ae5016891b26))
+* **review:** REVIEW.md §5 sends a reviewer to policy.go for a route's guard (CHRN-129) ([#168](https://github.com/Einlanzerous/chronicle/issues/168)) ([3f0d8d4](https://github.com/Einlanzerous/chronicle/commit/3f0d8d4836a26a832babb7b2acdc697936d8aab2))
+
 ## [1.29.0](https://github.com/Einlanzerous/chronicle/compare/v1.28.0...v1.29.0) (2026-10-06)
 
 
