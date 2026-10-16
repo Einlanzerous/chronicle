@@ -289,8 +289,8 @@ type SubmitJobMultipartBody struct {
 type SubmitJobParams struct {
 	// IdempotencyKey Minted per transcription attempt and persisted before the request is
 	// sent. Stable across HTTP retries of one attempt; fresh for a deliberate
-	// re-transcription. A header here, and only here: Chronicle's own ingest
-	// key shares the name's meaning and the 16–200 bounds, but it travels as
+	// re-transcription. A header here, unlike Chronicle's own ingest key,
+	// which shares the name's meaning and the 16–200 bounds but travels as
 	// the JSON body field `idempotency_key`, not as a header (CHRN-18, as
 	// corrected by CHRN-118).
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
