@@ -50,6 +50,15 @@ async function load(ref_: string): Promise<void> {
 
 watch(discussionRef, load, { immediate: true })
 
+// Every mutation handler below reloads by `discussionRef.value` -- the LIVE
+// route ref -- and never by `thread.value.discussion.ref`, the thread that
+// was on screen when the handler started (CHRN-111). If the operator moves
+// to another discussion while a write is in flight, reloading the captured
+// ref would take a newer `loadSeq` than the new route's own load, so the
+// guard above would drop the right answer and keep the wrong one.
+// NoteView.vue's `saveEdit` / `restoreRevision` read `noteRef.value` for
+// the same reason.
+
 const headerCounts = computed(() => (thread.value ? threadCountsLabel(thread.value.turns, thread.value.participants) : ''))
 
 // ── Reply ────────────────────────────────────────────────────────────────
@@ -68,7 +77,7 @@ async function submitReply(): Promise<void> {
   replying.value = false
   if (res.data) {
     replyBody.value = ''
-    await load(thread.value.discussion.ref)
+    await load(discussionRef.value)
     return
   }
   // Shown verbatim -- the ticket is explicit that a refusal (409
@@ -97,7 +106,7 @@ async function removeParticipant(userId: string): Promise<void> {
   })
   participantBusyId.value = null
   if (!res.error) {
-    await load(thread.value.discussion.ref)
+    await load(discussionRef.value)
     return
   }
   participantError.value = res.error.message ?? 'Could not remove that participant.'
@@ -113,7 +122,7 @@ async function readdParticipant(userId: string): Promise<void> {
   })
   participantBusyId.value = null
   if (!res.error) {
-    await load(thread.value.discussion.ref)
+    await load(discussionRef.value)
     return
   }
   participantError.value = res.error.message ?? 'Could not add that participant back.'
@@ -160,7 +169,7 @@ async function submitResolve(): Promise<void> {
     }
     // `into: "nothing"` -- no note produced, nowhere to navigate. Reload in
     // place so the footer picks up the RESOLVED marker.
-    await load(thread.value.discussion.ref)
+    await load(discussionRef.value)
     return
   }
   resolveError.value = res.error?.message ?? 'Could not resolve this thread.'
