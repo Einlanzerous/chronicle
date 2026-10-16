@@ -323,22 +323,49 @@ session. `internal/store/user.go` stores only `token_hash`; the plaintext is
   This replaced `TrustedProxies`, which could not express the question — on
   `construct_net` no CIDR distinguishes Traefik from a neighbour.
 
-### 5. Guards are applied in the route table
+### 5. Guards are applied in the policy table
 
-Routes are wired in `internal/api/router.go`, and the wrapper is applied *at the
-call site* — `mux.HandleFunc("POST /auth/session", a.limitSignIn(a.handleAuthSession))`.
-So a handler is not guarded by having a guard-shaped name; it is guarded by the
-line that registers it. A new route added without its wrapper compiles, passes
-its handler test, and is open. Read the route table, not the handler.
+A route's guard is its row in `routePolicy`, in `internal/api/policy.go` —
+open that file, not the handler and not `internal/api/router.go`. Since CHRN-97
+nobody writes the API's registrations: `wire.HandlerWithOptions` registers every
+operation in `openapi.yaml` through a `policyRouter`, whose `HandleFunc` looks
+the pattern (`"METHOD /path"`) up in `routePolicy` and wraps the handler before
+registering it. So a handler is still not guarded by having a guard-shaped
+name; it is guarded by the row that names its pattern. Read the table, not the
+handler.
 
-There are three wrappers and the difference between them is who, not whether:
-`a.limitSignIn` (throttle, no identity — the two credential endpoints),
-`a.requireUser` (a valid session), `a.requireOwner` (`requireUser` plus the
-owner check — the `/admin/` surface). A `/admin/` route on `requireUser` is a
-privilege widening that nothing else catches.
+There are four policies and the difference between them is who, not whether:
+`policyPublic` (no credential — exactly the two probes), `policySignIn`
+(`a.limitSignIn`: throttle, no identity — the two credential endpoints),
+`policyMember` (`a.requireUser`: a valid session) and `policyOwner`
+(`a.requireOwner`: `requireUser` plus the owner check, never an agent — the
+`/admin/` surface). Each operation also declares the same name as
+`x-chronicle-policy` in `openapi.yaml`, and `TestPolicyTableMatchesTheDocument`
+(`internal/api/contract_test.go`) fails if the two disagree in either direction.
 
-Two routes are deliberately unauthenticated because they are how a client gets a
-credential: `POST /auth/session` and `POST /auth/sso/cloudflare`. A third one
+What that means in a diff:
+
+- **A new route with no row** cannot ship open: `policyRouter.HandleFunc`
+  panics at construction, so the binary does not start and every router test
+  fails. That is a red CI run, not a finding to hunt for.
+- **A row that widens** is what to look for: a new or changed row on
+  `policyPublic` or `policySignIn`, or an `/admin/` route (or anything spanning
+  every author's corpus) on `policyMember`. It compiles, passes the contract
+  test as long as `openapi.yaml`'s `x-chronicle-policy` says the same, and is
+  served to whoever the wider policy admits.
+  `TestAMemberIsRefusedTheOwnerRoutes` lists the owner routes by hand, so a new
+  `/admin/` route on `policyMember` passes it too unless the PR adds the route
+  to that list. Read the row and the document's extension together; a
+  widening is a diff in both, and that is the point.
+- **A route registered on `mux` in `router.go`** goes around the table. There
+  are exactly two, and each carries its reason there: the SPA mount (`GET /{$}`
+  and `/app/`, static files, no credential, no API payload) and `GET /metrics`,
+  which is wrapped by hand with `routed.guarded(a.requireOwner, …)`. A third one
+  needs an argument in the diff.
+
+Two operations are deliberately unauthenticated because they are how a client
+gets a credential: `POST /auth/session` and `POST /auth/sso/cloudflare`, both
+`policySignIn`. `GET /healthz` and `GET /readyz` are `policyPublic`. A fifth
 needs an argument in the diff.
 
 Cloudflare Access and Chronicle's own auth are **complementary, not
