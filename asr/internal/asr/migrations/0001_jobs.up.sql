@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS jobs (
 
     -- The client's handle for one transcription ATTEMPT, minted and persisted
     -- before the request was sent. Bounds match Chronicle's own ingest key
-    -- (CHRN-18/CHRN-20) because it is the same header with the same meaning.
+    -- (CHRN-18/CHRN-20) because it has the same meaning, though that one is
+    -- the JSON body field `idempotency_key` and this one is a header (CHRN-122).
     idempotency_key     TEXT NOT NULL CHECK (length(idempotency_key) BETWEEN 16 AND 200),
 
     -- What the client says the audio hashes to, carried in the spec so the
