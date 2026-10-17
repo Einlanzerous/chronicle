@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/Einlanzerous/chronicle/compare/asr-v0.1.2...asr-v0.1.3) (2026-10-17)
+
+
+### Maintenance
+
+* **asr:** the Idempotency-Key doc no longer calls Chronicle's ingest key a header (CHRN-122) ([#167](https://github.com/Einlanzerous/chronicle/issues/167)) ([edff9be](https://github.com/Einlanzerous/chronicle/commit/edff9be715c694ceb01baf550a830335e8763eff))
+
 ## [0.1.2](https://github.com/Einlanzerous/chronicle/compare/asr-v0.1.1...asr-v0.1.2) (2026-09-19)
 
 
