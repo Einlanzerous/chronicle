@@ -265,12 +265,15 @@ type PruneMetrics struct {
 	// DELIBERATELY THE ONLY RULE. Two more were written -- pruned while
 	// retention is `forever`, and pruned before the window under `days_30` --
 	// and removed on review, because they read retention NOW and not as it was
-	// at the prune. IngestMemo's ratchet can still raise retention on an
-	// already-pruned memo (a re-delivery carrying a higher one: no
-	// audio_pruned_at condition in its ON CONFLICT), after which a correct
-	// prune would read as a violation forever and train the operator to ignore
-	// the alarm. A transcript, by contrast, is never deleted and never
-	// rewritten once complete, so its absence now means its absence then.
+	// at the prune. At the time IngestMemo's ratchet could still raise
+	// retention on an already-pruned memo (a re-delivery carrying a higher
+	// one), after which a correct prune would read as a violation forever and
+	// train the operator to ignore the alarm. CHRN-136 closed that: the
+	// ratchet now stops at audio_pruned_at like RaiseRetention, so retention
+	// on a pruned row is the retention at the prune, and the two rules can
+	// come back (their follow-up ticket is linked from CHRN-136). A
+	// transcript, by contrast, is never deleted and never rewritten once
+	// complete, so its absence now means its absence then.
 	WithoutTranscript int64
 
 	// ViolatingMemos names up to ten of them, newest prune first, so the line

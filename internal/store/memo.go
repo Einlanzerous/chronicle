@@ -288,6 +288,16 @@ func (s *Store) IngestMemo(ctx context.Context, in Arrival) (IngestResult, error
 	// deliberately: EXCLUDED carries the COALESCE'd value, so a no-opinion
 	// arrival would present itself as days_30 and ratchet a discard_now up.
 	//
+	// The ratchet also stops at the prune (CHRN-136). Once audio_pruned_at is
+	// set there is no recording left to keep, so an arrival carrying a higher
+	// opinion — the phone re-opening a capture it has held as FOREVER while
+	// the watcher's no-opinion copy was pruned at 30 days — writes nothing:
+	// a `forever` on a row with no audio is not a late pin, it is a claim
+	// about a recording that does not exist, and it is what kept CHRN-69's
+	// prune alarms out. RaiseRetention has refused the same thing since
+	// CHRN-22; the two write paths now agree. The caller still gets the
+	// duplicate answer with audio_pruned set (CHRN-22 §5).
+	//
 	// When the conflict resolves to no update, RETURNING is empty — which is
 	// the common re-delivery case and exactly what is wanted: no write, no
 	// trigger, no updated_at bump.
@@ -303,6 +313,7 @@ func (s *Store) IngestMemo(ctx context.Context, in Arrival) (IngestResult, error
 		ON CONFLICT (author_id, content_hash) DO UPDATE
 		   SET retention = $4
 		 WHERE $4 IS NOT NULL
+		   AND tier2.memos.audio_pruned_at IS NULL
 		   AND tier2.memos.state <> 'discarded'
 		   AND tier2.retention_rank($4) > tier2.retention_rank(tier2.memos.retention)
 		RETURNING id`,

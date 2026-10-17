@@ -375,6 +375,13 @@ func (s *Service) Open(ctx context.Context, in OpenRequest) (Result, error) {
 	// Resurrecting instead cannot work: captured_at is immutable, so a memo
 	// past its window would be re-pruned by the next sweep and the upload would
 	// have bought nothing. See CHRN-22 §5.
+	//
+	// The client's retention opinion is ignored here too (CHRN-136): the
+	// commit below hands it to IngestMemo's ratchet, which stops at
+	// audio_pruned_at, so a `forever` on pruned bytes writes nothing. The
+	// answer says so through the memo's audio_pruned fields; the phone never
+	// reads retention back (its ack verifier compares id, hash and size), so
+	// nothing on the wire changes for it.
 	if pruned, err := s.ingest.AudioPrunedFor(ctx, in.AuthorID, in.ContentHash); err != nil {
 		return Result{}, err
 	} else if pruned {

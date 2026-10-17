@@ -576,6 +576,55 @@ func TestRetentionRatchet(t *testing.T) {
 			t.Errorf("state = %s, want discarded", after.Memo.State)
 		}
 	})
+
+	// CHRN-136: the ratchet stops at the prune, as RaiseRetention always has.
+	// Both directions on one memo, because no other test exercises a raise
+	// that SUCCEEDS: a clause mistake that stopped every raise would pass the
+	// three cases above. So first the positive control, then the prune.
+	t.Run("a higher arrival raises an unpruned memo and not a pruned one", func(t *testing.T) {
+		hash := hashOf("kept, then pruned")
+		base := Arrival{AuthorID: author, ContentHash: hash, ByteSize: 1,
+			Source: SourceUpload, IdempotencyKey: "k-8888888888888888",
+			Retention: RetentionDiscardNow}
+		if _, err := s.IngestMemo(ctx, base); err != nil {
+			t.Fatalf("ingest: %v", err)
+		}
+
+		raise := base
+		raise.Retention, raise.IdempotencyKey = RetentionDays30, "k-9999999999999999"
+		raised, err := s.IngestMemo(ctx, raise)
+		if err != nil {
+			t.Fatalf("raise: %v", err)
+		}
+		if raised.Memo.Retention != RetentionDays30 {
+			t.Fatalf("retention = %s, want days_30: the positive control failed, the ratchet raises nothing",
+				raised.Memo.Retention)
+		}
+
+		// Pruned by SQL, the pattern the metrics tests use: audio_pruned_at is
+		// the whole fact, and the pruner's own package is CHRN-22's.
+		if _, err := s.pool.Exec(ctx,
+			`UPDATE tier2.memos SET audio_pruned_at = now() WHERE id = $1`, raised.Memo.ID); err != nil {
+			t.Fatal(err)
+		}
+
+		late := base
+		late.Retention, late.IdempotencyKey = RetentionForever, "k-aaaaaaaaaaaaaaaa"
+		after, err := s.IngestMemo(ctx, late)
+		if err != nil {
+			t.Fatalf("late forever: %v", err)
+		}
+		if after.Memo.Retention != RetentionDays30 {
+			t.Errorf("retention = %s, want days_30: a forever arrival ratcheted a pruned memo",
+				after.Memo.Retention)
+		}
+		if !after.Collapsed {
+			t.Error("a re-delivery of pruned bytes did not collapse")
+		}
+		if !after.Memo.AudioPruned() {
+			t.Error("the memo no longer reads as pruned")
+		}
+	})
 }
 
 // Done when #10: identity is author-scoped. Forwarding somebody's recording
