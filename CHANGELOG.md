@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.29.2](https://github.com/Einlanzerous/chronicle/compare/v1.29.1...v1.29.2) (2026-10-17)
+
+
+### Bug Fixes
+
+* **store:** the ingest ratchet stops at the prune, like RaiseRetention (CHRN-136) ([#170](https://github.com/Einlanzerous/chronicle/issues/170)) ([8b70932](https://github.com/Einlanzerous/chronicle/commit/8b70932aef3d584f0ad5b816550ef151a8eb3fdf))
+
+
+### Maintenance
+
+* **main:** release asr 0.1.3 ([#169](https://github.com/Einlanzerous/chronicle/issues/169)) ([d713269](https://github.com/Einlanzerous/chronicle/commit/d71326952ee43dfa875e2fee22a0e8a2340b3c72))
+
 ## [1.29.1](https://github.com/Einlanzerous/chronicle/compare/v1.29.0...v1.29.1) (2026-10-16)
 
 
