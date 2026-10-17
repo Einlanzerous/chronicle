@@ -280,12 +280,14 @@ func TestPruneMetricsSeesAnIncorrectDeletion(t *testing.T) {
 
 // A CORRECT PRUNE STAYS CORRECT WHATEVER HAPPENS TO THE ROW AFTERWARDS.
 //
-// The review of this ticket found that IngestMemo's ratchet can raise
+// The review of this ticket found that IngestMemo's ratchet could raise
 // retention on an already-pruned memo (a re-delivery carrying `forever`), and
 // that a check reading retention NOW would then report a correct prune as a
-// violation permanently. The metric therefore rests on the transcript alone,
-// and this pins that: a DISCARD NOW prune inside the window, then a retention
-// raise of the kind the ratchet allows, must both read clean.
+// violation permanently. CHRN-136 has since stopped the ratchet at the prune,
+// so only direct SQL can move a pruned row's retention now; the metric still
+// rests on the transcript alone, and this pins that: a DISCARD NOW prune
+// inside the window, then a retention change made directly, must both read
+// clean.
 func TestPruneMetricsIgnoresRetentionAfterThePrune(t *testing.T) {
 	s, ctx := newTestStore(t)
 	m := newTranscribableMemo(t, s, ctx, "pm-discard@example.test")

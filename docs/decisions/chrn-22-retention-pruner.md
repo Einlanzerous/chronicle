@@ -341,7 +341,10 @@ never re-enters the pump either.
 the original file, wants the audio back, and re-uploads it carrying `forever`.
 Under "refuse", the retention ratchets to `forever` on audio that is already gone
 — honest, just late — and recovery is SQL plus a file copy, the same posture as
-un-discard. The compromise ("refuse unless the arrival carries `forever`") is
+un-discard. **[see CHRN-136]** The "honest, just late" reading was withdrawn
+there: the ingest ratchet now stops at `audio_pruned_at`, as `RaiseRetention`
+always did, because a `forever` on a row with no audio describes a recording that
+does not exist and kept CHRN-69's prune alarms out. The compromise ("refuse unless the arrival carries `forever`") is
 recorded here and **not recommended**: a special case on the one path whose
 failure mode is deleting authored bytes buys back a case a human can already fix.
 
