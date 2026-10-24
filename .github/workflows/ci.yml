@@ -227,6 +227,13 @@ jobs:
         with:
           version: v2.12.2
 
+      # docs/architecture.archify.json is the system map the estate wiki and the
+      # public portfolio both render. This checks that it parses and that every
+      # source it cites still exists at its line range; a pin that has fallen
+      # behind main only warns, while a missing path or out-of-range line fails.
+      - name: Architecture map is renderable, and say if it has gone stale (SERV-159)
+        run: scripts/architecture-map-check.sh
+
   # The web app (CHRN-53, CHRN-54). Mirrors Lyceum's web.yml: bun is PINNED
   # (the CHRN-53 decision comment, and LYCM-71's reason for pinning it there
   # too) rather than floating, and kept in sync with web/package.json's
