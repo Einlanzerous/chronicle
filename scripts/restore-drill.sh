@@ -75,6 +75,9 @@ now()  { awk '{print $1}' /proc/uptime; }   # seconds since boot: monotonic
 mark() { printf '%s %s\n' "$1" "$(now)" >>"$WORK/marks"; }
 fail() { printf '%s\t%s\n' "$1" "${2:-}" >>"$FAILS"; log "  FAIL  $1${2:+ — $2}"; }
 pass() { log "  ok    $1${2:+ — $2}"; printf '%s\t%s\n' "$1" "${2:-}" >>"$RESULTS"; }
+# notrun: a check that could not run says so, in the record, by name. It is
+# never skipped silently and it is never counted as a pass.
+notrun() { log "  NOT RUN  $1 — $2"; printf '%s\t%s\n' "$1" "$2" >>"$WORK/notrun"; }
 
 need() { command -v "$1" >/dev/null 2>&1 || die "$1 is not installed"; }
 
@@ -83,7 +86,7 @@ init_work() {
   # Plaintext dumps must never land on a disk that outlives the drill.
   [[ "$(stat -f -c %T "$WORK")" == tmpfs ]] \
     || die "$WORK is not on tmpfs (set DRILL_WORK to a directory on tmpfs): the dumps are plaintext"
-  : >>"$FAILS"; : >>"$RESULTS"; : >>"$WORK/marks"
+  : >>"$FAILS"; : >>"$RESULTS"; : >>"$WORK/marks"; : >>"$WORK/notrun"
 }
 
 # sp: psql on the SCRATCH server, as its superuser, over the container's local
@@ -117,6 +120,24 @@ sq() {
 }
 
 # --- guards: the script cannot be pointed at anything real -------------------
+# guard_names: every name this script is ever allowed to REMOVE is a
+# chronicle-drill* name and is not the live server or app it reads from. It is
+# the first thing main does, before any subcommand and before any trap exists,
+# and it is repeated at each destructive call so that none of them relies on
+# its callers: an EXIT trap runs cmd_teardown after every refusal, and a
+# teardown that trusted its names would remove the thing just refused.
+guard_names() {
+  local n
+  for n in "$DRILL_PG" "$DRILL_APP" "$DRILL_NET"; do
+    case "$n" in
+      chronicle-drill*) ;;
+      *) die "'$n' is not a chronicle-drill* name; this script never removes anything else" ;;
+    esac
+  done
+  [[ "$DRILL_PG" != "$LIVE_PG" && "$DRILL_APP" != "$LIVE_APP" ]] \
+    || die "a drill name is the same as the live server or app it reads from"
+}
+
 guard_target() {
   local c="$DRILL_PG" nets n ports
   case "$c" in
@@ -198,16 +219,22 @@ restic_hub() {
       -c 'export RESTIC_PASSWORD="$RESTIC_PASSWORD_HUB" RESTIC_REPOSITORY=/hub; exec restic --no-lock --no-cache "$@"' sh "$@"
 }
 
-guard_hub_window() {
+# hub_window_reason prints why the hub must not be read now, or nothing.
+hub_window_reason() {
   local hm
   hm="$(TZ=America/Chicago date +%H%M)"
   if ((10#$hm >= 225 && 10#$hm <= 320)); then
-    die "the nightly backup runs 02:25-03:20 CDT; the drill does not read the hub then"
-  fi
-  if systemctl is-active --quiet construct-backup.service 2>/dev/null; then
-    die "construct-backup.service is active; the drill does not read the hub meanwhile"
+    echo "the nightly backup runs 02:25-03:20 CDT; the drill does not read the hub then"
+  elif systemctl is-active --quiet construct-backup.service 2>/dev/null; then
+    echo "construct-backup.service is active; the drill does not read the hub meanwhile"
   fi
 }
+guard_hub_window() {
+  local why; why="$(hub_window_reason)"
+  [[ -z "$why" ]] || die "$why"
+}
+
+hub_ids() { restic_hub snapshots --json | jq -r '.[].id' | sort; }
 
 pick_snapshot() { # <runner...>: newest 'shared' snapshot that contains chronicle.dump
   local id ids
@@ -229,6 +256,7 @@ extract_hub() {
   local sid f
   sid="$(pick_snapshot restic_hub)" || { log "no hub snapshot holds chronicle.dump"; return 2; }
   echo "$sid" >"$WORK/snapshot.hub"
+  hub_ids >"$WORK/hub.ids.before" || { log "cannot list the hub's snapshots"; return 2; }
   mark extract-start
   for f in chronicle.dump asr.dump; do
     restic_hub dump "$sid" "$STAGE_DIR/$f" >"$WORK/$f" || { log "restic dump $f failed"; return 2; }
@@ -239,12 +267,13 @@ extract_hub() {
   wait
   record_sums hub
   mark files-on-disk
+  hub_ids >"$WORK/hub.ids.after"
 }
 
 extract_desk() {
   need jq; need signet
   [[ -t 0 ]] || die "stage 2 asks for the desktop repository's password and needs a terminal"
-  local pw sid f out="$WORK/desk-out"
+  local pw sid f orig out="$WORK/desk-out"
   printf 'desk repository password (not echoed): ' >&2
   read -rs pw; echo >&2
   [[ -n "$pw" ]] || die "no password given"
@@ -260,6 +289,9 @@ extract_desk() {
   }
   sid="$(pick_snapshot restic_desk)" || { log "no desk snapshot holds chronicle.dump"; unset DRILL_DESK_RESTIC_PASSWORD; return 2; }
   echo "$sid" >"$WORK/snapshot.desk"
+  # restic copy gives a copied snapshot its own id and keeps the hub's in
+  # `original`; that, not the desk id, is what names the same snapshot.
+  orig="$(restic_desk snapshots --tag shared --json | jq -r --arg id "$sid" '.[] | select(.id == $id) | .original // ""')"
   mark extract-start
   restic_desk restore "$sid" --target /out \
     --include "$STAGE_DIR/chronicle.dump" --include "$STAGE_DIR/asr.dump" --include "$STAGE_DIR/globals.sql" \
@@ -271,12 +303,33 @@ extract_desk() {
   rm -rf "$out"
   record_sums desk
   mark files-on-disk
-  if [[ -f "$WORK/sums.hub.txt" && "$(cat "$WORK/snapshot.hub" 2>/dev/null)" == "$sid" ]]; then
-    if cmp -s "$WORK/sums.hub.txt" "$WORK/sums.desk.txt"; then
-      pass desk-matches-hub "same snapshot, identical SHA-256"
-    else
-      fail desk-matches-hub "same snapshot id, different bytes"
-    fi
+  compare_desk_with_hub "$orig"
+}
+
+# compare_desk_with_hub <original>: where the hub still holds the snapshot the
+# desk copy came from, the three files' SHA-256 must be equal. The hub side is
+# a fresh `restic dump | sha256sum`; nothing here relies on a stage 1 that has
+# since been torn down. If it cannot run it says why, by name, in the record.
+compare_desk_with_hub() {
+  local orig="$1" f got why
+  if [[ -z "$orig" ]]; then
+    notrun desk-matches-hub "the desk snapshot has no 'original': it was not copied from the hub"; return 0
+  fi
+  why="$(hub_window_reason)"
+  if [[ -n "$why" ]]; then notrun desk-matches-hub "$why"; return 0; fi
+  if ! hub_ids 2>/dev/null | grep -qx "$orig"; then
+    notrun desk-matches-hub "the hub no longer holds ${orig:0:8} (forgotten by its retention)"; return 0
+  fi
+  : >"$WORK/sums.hubfresh.txt"
+  for f in chronicle.dump asr.dump globals.sql; do
+    got="$(restic_hub dump "$orig" "$STAGE_DIR/$f" | sha256sum | cut -d' ' -f1)" \
+      && [[ -n "$got" ]] || { notrun desk-matches-hub "restic dump of $f from the hub failed"; return 0; }
+    printf '%s  %s\n' "$got" "$f" >>"$WORK/sums.hubfresh.txt"
+  done
+  if cmp -s "$WORK/sums.hubfresh.txt" "$WORK/sums.desk.txt"; then
+    pass desk-matches-hub "hub snapshot ${orig:0:8} and its desk copy: three files, identical SHA-256"
+  else
+    fail desk-matches-hub "hub snapshot ${orig:0:8} and its desk copy differ: $(diff "$WORK/sums.hubfresh.txt" "$WORK/sums.desk.txt" | grep -c '^[<>]') line(s)"
   fi
 }
 
@@ -311,13 +364,15 @@ cmd_extract() {
 rand() { openssl rand -hex 16; }
 
 cmd_scratch_up() {
+  guard_names
   init_work
   case "$DRILL_PG" in chronicle-drill*) ;; *) die "'$DRILL_PG' is not a chronicle-drill* container" ;; esac
   case "$DRILL_NET" in chronicle-drill*) ;; *) die "'$DRILL_NET' is not a chronicle-drill* network" ;; esac
   docker inspect "$LIVE_PG" >/dev/null 2>&1 || die "no server named '$LIVE_PG' to take the image from"
   local image
   image="$(docker inspect -f '{{.Image}}' "$LIVE_PG")"
-  docker rm -f "$DRILL_PG" >/dev/null 2>&1
+  guard_names
+  docker rm -fv "$DRILL_PG" >/dev/null 2>&1
   if docker network inspect "$DRILL_NET" >/dev/null 2>&1; then
     [[ "$(docker network inspect -f '{{.Internal}}' "$DRILL_NET")" == "true" ]] \
       || die "network $DRILL_NET exists and is not --internal"
@@ -543,6 +598,7 @@ api() {
 }
 
 cmd_boot() {
+  guard_names
   init_work
   guard_target
   write_app_env || return 1
@@ -552,9 +608,10 @@ cmd_boot() {
   [[ -n "$src" && -d "$src" ]] || { fail boot "no live audio directory to copy (set DRILL_AUDIO_SRC)"; return 1; }
   # Order is fixed: inventory, copy the tree, read the live manifest (done by
   # the content check), then boot.
-  find "$src" -path "$src/.uploads" -prune -o -type f -print | sort >"$WORK/audio.before"
+  find "$src" -path "$src/.uploads" -prune -o -type f -printf '%P\t%s\n' | sort >"$WORK/audio.before"
   ( cd "$src" && tar --exclude=./.uploads -cf - . ) | ( cd "$WORK/audio" && tar -xf - )
-  docker rm -f "$DRILL_APP" >/dev/null 2>&1
+  guard_names
+  docker rm -fv "$DRILL_APP" >/dev/null 2>&1
   app_run -d --name "$DRILL_APP" -- serve >/dev/null || { fail boot "the container did not start"; return 1; }
   local i
   for i in $(seq 1 60); do
@@ -573,7 +630,13 @@ cmd_boot() {
   migs_before="$(<"$WORK/shape.restored.chronicle" grep -c '^mig|' || true)"
   migs_after="$(sp -d chronicle -At -c 'SELECT count(*) FROM public.schema_migrations')"
   [[ "$migs_before" == "$migs_after" ]] || { fail boot "boot applied migrations ($migs_before -> $migs_after): the snapshot predates the binary"; return 1; }
-  pass boot "production image on the drill network, /healthz and /readyz 200, schema_migrations unchanged"
+  local ran
+  if [[ -n "${DRILL_CHRONICLE_BIN:-}" ]]; then
+    ran="a TREE-BUILT binary (not a release image) in $(docker inspect -f '{{.Config.Image}}' "$LIVE_PG" | cut -c1-24)"
+  else
+    ran="the production image $(docker inspect -f '{{.Image}}' "$DRILL_APP" | cut -c1-19) read from container $LIVE_APP"
+  fi
+  pass boot "$ran, on the drill network; /healthz and /readyz 200; schema_migrations unchanged"
 }
 
 app_session() {
@@ -597,9 +660,9 @@ check_serve() {
     if [[ "$API_STATUS" != 200 ]]; then bad=$((bad + 1)); log "    transcript $id: HTTP $API_STATUS"; continue; fi
     got="$(jq -j .text "$API_BODY" | md5sum | cut -d' ' -f1)"
     [[ "$got" == "$want" ]] || { bad=$((bad + 1)); log "    transcript $id: text digest differs"; }
-  done < <(sp -d chronicle -At -F $'\t' -c "SELECT memo_id, md5(text) FROM tier2.transcripts WHERE NOT partial ORDER BY memo_id")
+  done < <(sp -d chronicle -At -F $'\t' -c "SELECT memo_id, md5(text) FROM tier2.transcripts ORDER BY memo_id")
   [[ $bad -eq 0 ]] || { fail serve-text "$bad of $n transcript(s) did not serve their stored text"; return 1; }
-  pass serve-text "$n transcript(s) served, each text digest equal to the restored row"
+  pass serve-text "$n transcript(s), complete and partial, each served with the text digest of the restored row"
 }
 
 check_audio() {
@@ -737,19 +800,29 @@ cmd_serve_checks() {
 # running throughout and is allowed to do that on purpose.
 check_live_tree() {
   [[ -s "$WORK/audio.before" && -n "$LIVE_AUDIO_DIR" && -d "$LIVE_AUDIO_DIR" ]] || return 0
-  local f h gone=0 bad=0
-  find "$LIVE_AUDIO_DIR" -path "$LIVE_AUDIO_DIR/.uploads" -prune -o -type f -print | sort >"$WORK/audio.after"
-  while IFS= read -r f; do
-    gone=$((gone + 1))
-    h="${f##*/}"
-    awk -F'\t' -v h="$h" '$3 == h && $4 == "true" {x=1} END{exit !x}' "$WORK/audio.live" 2>/dev/null || bad=$((bad + 1))
-  done < <(comm -23 "$WORK/audio.before" "$WORK/audio.after")
-  if [[ $bad -gt 0 ]]; then fail live-audio-tree "$bad recording(s) left the live tree and live does not say they were pruned"; return 1; fi
-  pass live-audio-tree "$(wc -l <"$WORK/audio.before") before, $(wc -l <"$WORK/audio.after") after; $gone left, all pruned by production"
+  local p sz h gone=0 bad=0 changed=0
+  local -A after=()
+  find "$LIVE_AUDIO_DIR" -path "$LIVE_AUDIO_DIR/.uploads" -prune -o -type f -printf '%P\t%s\n' | sort >"$WORK/audio.after"
+  while IFS=$'\t' read -r p sz; do after["$p"]="$sz"; done <"$WORK/audio.after"
+  while IFS=$'\t' read -r p sz; do
+    if [[ -z "${after[$p]+x}" ]]; then
+      gone=$((gone + 1))
+      h="${p##*/}"
+      awk -F'\t' -v h="$h" '$3 == h && $4 == "true" {x=1} END{exit !x}' "$WORK/audio.live" 2>/dev/null || bad=$((bad + 1))
+    elif [[ "${after[$p]}" != "$sz" ]]; then
+      changed=$((changed + 1))
+    fi
+  done <"$WORK/audio.before"
+  if [[ $bad -gt 0 || $changed -gt 0 ]]; then
+    fail live-audio-tree "$bad recording(s) left the live tree and live does not say they were pruned; $changed changed size"
+    return 1
+  fi
+  pass live-audio-tree "$(wc -l <"$WORK/audio.before") files before, $(wc -l <"$WORK/audio.after") after; $gone left, all pruned by production; none changed size"
 }
 
 cmd_teardown() {
-  docker rm -f "$DRILL_APP" "$DRILL_PG" >/dev/null 2>&1
+  guard_names
+  docker rm -fv "$DRILL_APP" "$DRILL_PG" >/dev/null 2>&1
   docker network rm "$DRILL_NET" >/dev/null 2>&1
   rm -rf "$WORK"
   log "torn down: containers, network and $WORK removed"
@@ -760,7 +833,7 @@ phase() { # <from> <to>
 }
 
 record() {
-  local first_mark last_mark
+  local n r
   echo
   echo "== restore drill record =="
   echo "source:        ${DRILL_SOURCE:-?}   snapshot: $(cat "$WORK"/snapshot.* 2>/dev/null | head -1)"
@@ -774,15 +847,48 @@ record() {
   echo "api checks:    $(phase readyz-200 last-api-check)"
   echo "TOTAL extraction start -> /readyz 200: $(phase extract-start readyz-200)"
   if [[ -s "$WORK/loss.txt" ]]; then
-    echo "measured loss (live-only rows after the dump):"
-    awk -F'\t' '{printf "  %-24s %s\n", $3, $4}' "$WORK/loss.txt"
+    echo "measured loss (live-only rows after the dump; table, rows, oldest created_at):"
+    awk -F'\t' '{printf "  %-24s %-6s %s\n", $3, $4, $5}' "$WORK/loss.txt"
   else
     echo "measured loss: no live-only rows after the dump"
+  fi
+  if [[ -s "$WORK/content.compare" ]] && grep -q '^LIST' "$WORK/content.compare"; then
+    n="$(grep -c '^LIST' "$WORK/content.compare")"
+    echo "listed for a person, by key ($n):"
+    grep '^LIST' "$WORK/content.compare" | head -100 | awk -F'\t' '{printf "  %-44s %-24s %s\n", $2, $3, $4}'
+    [[ "$n" -le 100 ]] || echo "  ... and $((n - 100)) more"
+  else
+    echo "listed for a person: none"
+  fi
+  if [[ -s "$WORK/shape.restored.chronicle" ]]; then
+    n="$(grep -c '^trg|' "$WORK/shape.restored.chronicle")"
+    r="$(grep -c '^trg|.*|enabled=O|' "$WORK/shape.restored.chronicle")"
+    echo "triggers:      $n in the restored chronicle database; enabled: $r$([[ "$n" == "$r" ]] && echo ' (all enabled)' || echo ' (NOT ALL ENABLED)')"
+  fi
+  if [[ -s "$WORK/hub.ids.before" ]]; then
+    echo "hub snapshots: $(wc -l <"$WORK/hub.ids.before") before extraction, $(wc -l <"$WORK/hub.ids.after" 2>/dev/null || echo ?) after; $(cmp -s "$WORK/hub.ids.before" "$WORK/hub.ids.after" && echo 'identical lists' || echo 'LISTS DIFFER')"
+    echo "               $(cut -c1-8 "$WORK/hub.ids.before" | tr '\n' ' ')"
+  fi
+  if docker inspect "$DRILL_PG" >/dev/null 2>&1; then
+    echo "scratch server:"
+    for n in $(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$DRILL_PG"); do
+      echo "  network $n internal=$(docker network inspect -f '{{.Internal}}' "$n")"
+    done
+    echo "  published ports: $(docker inspect -f '{{len .HostConfig.PortBindings}}' "$DRILL_PG"); data on tmpfs: $(docker inspect -f '{{if .HostConfig.Tmpfs}}yes{{else}}NO{{end}}' "$DRILL_PG")"
+  fi
+  if docker inspect "$DRILL_APP" >/dev/null 2>&1; then
+    echo "restored instance:"
+    echo "  image: $(docker inspect -f '{{.Config.Image}}' "$DRILL_APP" | cut -c1-30)$([[ -n "${DRILL_CHRONICLE_BIN:-}" ]] && echo ' (tree-built binary mounted)')"
+    echo "  mounts:"
+    docker inspect -f '{{range .Mounts}}    {{.Source}} -> {{.Destination}} {{if .RW}}rw{{else}}ro{{end}}{{"\n"}}{{end}}' "$DRILL_APP"
+    echo "  CHRONICLE_* variables present (names only): $(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$DRILL_APP" | sed 's/=.*//' | grep -c '^CHRONICLE_') : $(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$DRILL_APP" | sed 's/=.*//' | grep '^CHRONICLE_' | sort | tr '\n' ' ')"
+    echo "  outward variables present: $(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$DRILL_APP" | grep -cE '^CHRONICLE_(INBOX_DIR|ASR_URL|ASR_TOKEN|SCRIBE_OLLAMA_URL|SWITCHYARD_URL|AMBER_URL|CF_ACCESS_TEAM_DOMAIN)=') (must be 0)"
   fi
   echo "not in this figure: rebuilding the host, recovering secrets (SERV-211), the other databases (SERV-217), DNS and the edge"
   echo "NOT BACKED UP (the volume gap): nothing under /data/chronicle is in any backup; the eval reference files are not covered by this drill"
   echo "checks:"
   sed 's/^/  ok    /' "$RESULTS"
+  [[ ! -s "$WORK/notrun" ]] || sed 's/^/  NOT RUN  /' "$WORK/notrun"
   [[ ! -s "$FAILS" ]] || sed 's/^/  FAIL  /' "$FAILS"
 }
 
@@ -815,7 +921,7 @@ cmd_run() {
 ST_PREFIX="chronicle-drill-selftest"
 st_cleanup() {
   [[ "${DRILL_SELFTEST_KEEP:-}" == 1 ]] && return 0
-  docker rm -f "${ST_PREFIX}-live" "${ST_PREFIX}-pg" "${ST_PREFIX}-app" "${ST_PREFIX}-forbidden-c" >/dev/null 2>&1
+  docker rm -fv "${ST_PREFIX}-live" "${ST_PREFIX}-pg" "${ST_PREFIX}-app" "${ST_PREFIX}-forbidden-c" >/dev/null 2>&1
   docker network rm "${ST_PREFIX}-net" "${ST_PREFIX}-forbidden" >/dev/null 2>&1
   [[ -z "${ST_DIR:-}" ]] || rm -rf "$ST_DIR"
   rm -rf "$WORK"
@@ -842,6 +948,31 @@ st_expect_refusal() { # <label> <command...>
   fi
 }
 
+# st_stub_refusal <label> <env assignments...> -- <script args...>: run the
+# script as a child with a `docker` that only logs its arguments, so what a
+# refusal does on its way out can be read without any risk to a real container.
+# The child must exit 2 with REFUSED, and the log must hold no `rm` and no
+# `network rm`: a refusal that then tears down what it refused is the failure
+# this is here to catch (the EXIT trap of `run`, and teardown/boot called
+# directly). Goes through the real main, so the real trap is installed.
+ST_STUB_LOG=""
+st_stub_refusal() {
+  local label="$1"; shift
+  local -a envs=()
+  while [[ "$1" != "--" ]]; do envs+=("$1"); shift; done
+  shift
+  local out rc
+  : >"$ST_STUB_LOG"
+  out="$(env "${envs[@]}" PATH="$ST_DIR/stub:$PATH" STUB_LOG="$ST_STUB_LOG" DRILL_WORK="$ST_DIR/stubwork" \
+    bash "${BASH_SOURCE[0]}" "$@" 2>&1)"; rc=$?
+  if [[ $rc -eq 2 && "$out" == *REFUSED* ]] && ! grep -qE '(^| )(rm|network rm) ' "$ST_STUB_LOG"; then
+    log "  REFUSED, nothing removed: $label ($(wc -l <"$ST_STUB_LOG") docker call(s) logged, none a removal)"
+  else
+    log "  NOT SAFE: $label (exit $rc; removals logged: $(grep -cE '(^| )(rm|network rm) ' "$ST_STUB_LOG"))"
+    ST_BAD=$((ST_BAD + 1))
+  fi
+}
+
 st_fresh_restore() { # restore into a clean scratch server from the extracted files
   : >"$FAILS"; : >"$RESULTS"
   cmd_scratch_up >/dev/null || return 1
@@ -859,6 +990,7 @@ cmd_selftest() {
   ST_DIR="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/${ST_PREFIX}-src.XXXXXX")"
   LIVE_AUDIO_DIR="$ST_DIR/audio"
   REFERENCE_DIR="$ST_DIR/reference"
+  guard_names
   trap st_cleanup EXIT
   st_cleanup; mkdir -p "$ST_DIR"; init_work
 
@@ -925,6 +1057,47 @@ cmd_selftest() {
     DRILL_SELFTEST_EXTRA_ENV="$v" st_expect_refusal "the restored instance with ${v%%=*} set" app_run --rm -- version
   done
 
+  log "== refusals through the whole script: the EXIT trap and teardown must not remove what was refused"
+  mkdir -p "$ST_DIR/stub" "$ST_DIR/stubwork"
+  ST_STUB_LOG="$ST_DIR/stub/docker.log"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$STUB_LOG"\nexit 0\n' >"$ST_DIR/stub/docker"
+  chmod +x "$ST_DIR/stub/docker"
+  # Positive control, so the assertions below are not vacuous: with
+  # chronicle-drill* names a teardown DOES remove, and the stub sees it.
+  : >"$ST_STUB_LOG"
+  env PATH="$ST_DIR/stub:$PATH" STUB_LOG="$ST_STUB_LOG" DRILL_WORK="$ST_DIR/stubwork" \
+    DRILL_PG=chronicle-drill-ctl-pg DRILL_APP=chronicle-drill-ctl-app DRILL_NET=chronicle-drill-ctl-net \
+    bash "${BASH_SOURCE[0]}" teardown >/dev/null 2>&1
+  if grep -q 'rm -fv chronicle-drill-ctl-app chronicle-drill-ctl-pg' "$ST_STUB_LOG" && grep -q 'network rm chronicle-drill-ctl-net' "$ST_STUB_LOG"; then
+    log "  control: a teardown of chronicle-drill* names does remove them, and the stub sees it"
+  else
+    log "  CONTROL FAILED: the stub did not see a legitimate teardown"; ST_BAD=$((ST_BAD + 1))
+  fi
+  st_stub_refusal "run with DRILL_PG=postgres"        DRILL_PG=postgres      -- run dir "$ST_DIR"
+  st_stub_refusal "run with DRILL_PG=postgres-dev"    DRILL_PG=postgres-dev  -- run dir "$ST_DIR"
+  st_stub_refusal "run with DRILL_APP=chronicle"      DRILL_APP=chronicle    -- run dir "$ST_DIR"
+  st_stub_refusal "run with DRILL_NET=construct_net"  DRILL_NET=construct_net -- run dir "$ST_DIR"
+  st_stub_refusal "boot with DRILL_APP=chronicle"     DRILL_APP=chronicle    -- boot
+  st_stub_refusal "teardown with DRILL_APP=chronicle" DRILL_APP=chronicle    -- teardown
+  st_stub_refusal "teardown with DRILL_PG=postgres"   DRILL_PG=postgres      -- teardown
+  st_stub_refusal "teardown with DRILL_NET=construct_net" DRILL_NET=construct_net -- teardown
+  st_stub_refusal "scratch-up with DRILL_PG=postgres" DRILL_PG=postgres      -- scratch-up
+  # And each destructive call guards itself, without main in front of it:
+  # called directly, in-process, with the stub first on PATH.
+  local d
+  for d in "DRILL_APP=chronicle cmd_teardown" "DRILL_PG=postgres cmd_teardown" "DRILL_NET=construct_net cmd_teardown" \
+           "DRILL_APP=chronicle cmd_boot" "DRILL_PG=postgres cmd_scratch_up"; do
+    : >"$ST_STUB_LOG"
+    # shellcheck disable=SC2086
+    if ( eval "export PATH=\"$ST_DIR/stub:\$PATH\" STUB_LOG=\"$ST_STUB_LOG\"; ${d%% *}; ${d#* }" ) >/dev/null 2>&1; then
+      log "  NOT REFUSED in-process: ${d#* } with ${d%% *}"; ST_BAD=$((ST_BAD + 1))
+    elif grep -qE '(^| )(rm|network rm) ' "$ST_STUB_LOG"; then
+      log "  NOT SAFE in-process: ${d#* } with ${d%% *} removed something"; ST_BAD=$((ST_BAD + 1))
+    else
+      log "  REFUSED, nothing removed, called directly: ${d#* } with ${d%% *}"
+    fi
+  done
+
   log "== clean run: every check must pass"
   st_fresh_restore || { log "  clean restore failed"; ST_BAD=$((ST_BAD + 1)); }
   cmd_check || { log "  CLEAN RUN FAILED a check"; ST_BAD=$((ST_BAD + 1)); }
@@ -933,7 +1106,14 @@ cmd_selftest() {
   [[ -s "$WORK/loss.txt" ]] && { log "  measured loss reported: $(awk -F'\t' '{printf "%s=%s ", $3, $4}' "$WORK/loss.txt")"; } \
     || { log "  NO LOSS REPORTED for the rows written after the dump"; ST_BAD=$((ST_BAD + 1)); }
   [[ -s "$FAILS" ]] && { log "  clean run recorded failures:"; sed 's/^/    /' "$FAILS" >&2; }
-  docker rm -f "$DRILL_APP" >/dev/null 2>&1
+  check_live_tree || { log "  CLEAN live-tree check failed"; ST_BAD=$((ST_BAD + 1)); }
+  log "== the record this run would leave behind (printed before teardown)"
+  DRILL_SOURCE=dir; record 2>&1 | sed 's/^/    /' >&2
+  local one; one="$(find "$LIVE_AUDIO_DIR" -type f | head -1)"
+  printf x >>"$one"
+  : >"$FAILS"; check_live_tree >/dev/null 2>&1
+  st_expect_red "a live recording changing size during the drill" live-audio-tree
+  docker rm -fv "$DRILL_APP" >/dev/null 2>&1
 
   log "== damage 1 of 6: drop one guard trigger"
   st_fresh_restore && sp -d chronicle -c 'DROP TRIGGER memos_guard ON tier2.memos' && cmd_check shape content tier1 >/dev/null 2>&1
@@ -1029,6 +1209,7 @@ st_seed_after_dump() {
 
 # --- dispatch ----------------------------------------------------------------
 main() {
+  guard_names
   need docker
   case "${1:-}" in
     run)           shift; cmd_run "$@" ;;
@@ -1046,4 +1227,4 @@ main() {
       ;;
   esac
 }
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi
