@@ -4,8 +4,8 @@
 #
 # This is what the MCP transports (CHRN-65) call the API through, and it is the
 # only way they reach Chronicle: internal/mcp may import this package and may
-# not import internal/api or internal/store, which verify.sh's `mcp boundary`
-# step enforces. MCP is the third client of openapi.yaml, after the web app and
+# not import internal/api or internal/store, which the `mcp boundary` step
+# shipped with the transports will enforce in verify.sh. MCP is the third client of openapi.yaml, after the web app and
 # the Android app, and like them it gets its own generated end of the contract
 # rather than a hand-written one that drifts.
 #
