@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.30.0](https://github.com/Einlanzerous/chronicle/compare/v1.29.2...v1.30.0) (2026-10-25)
+
+
+### Features
+
+* **ops:** scripts/restore-drill.sh, the timed restore drill and its self-test (CHRN-132) ([#172](https://github.com/Einlanzerous/chronicle/issues/172)) ([9bf2eba](https://github.com/Einlanzerous/chronicle/commit/9bf2ebaedab5b55bd232a64b3f04ab0b1b5c2435))
+
 ## [1.29.2](https://github.com/Einlanzerous/chronicle/compare/v1.29.1...v1.29.2) (2026-10-17)
 
 
