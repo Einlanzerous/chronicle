@@ -1,0 +1,452 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Chronicle — system map",
+    "quality_profile": "showcase",
+    "locale": "en",
+    "viewBox": [
+      1260,
+      870
+    ],
+    "repository": {
+      "url": "https://github.com/Einlanzerous/chronicle",
+      "revision": "9bf2ebaedab5b55bd232a64b3f04ab0b1b5c2435"
+    },
+    "views": [
+      {
+        "id": "capture-path",
+        "label": "A memo, end to end",
+        "focus": [
+          "phone",
+          "api",
+          "audio",
+          "asr",
+          "gemma",
+          "postgres"
+        ],
+        "note": "Phone uploads audio; the API stores it, has the shared ASR transcribe it, then asks a local model where it belongs."
+      },
+      {
+        "id": "sign-in",
+        "label": "Who is let in",
+        "focus": [
+          "web",
+          "agents",
+          "cfaccess",
+          "api"
+        ],
+        "note": "Access decides whether a request is served; Chronicle verifies the assertion itself and decides who it is served as."
+      },
+      {
+        "id": "linked-not-copied",
+        "label": "Linked, never copied",
+        "focus": [
+          "api",
+          "switchyard",
+          "amber"
+        ],
+        "note": "Tickets and archive items resolve at render time and are never written into Chronicle's tables."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "web",
+      "type": "frontend",
+      "label": "Web app",
+      "sublabel": "Vue 3 · Vite",
+      "tag": "embedded in the binary",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        150,
+        64
+      ],
+      "sources": [
+        {
+          "path": "web/src/router.ts",
+          "line": 23,
+          "label": "client routes"
+        },
+        {
+          "path": "web/embed.go",
+          "line": 27,
+          "label": "bundle embedded"
+        }
+      ]
+    },
+    {
+      "id": "agents",
+      "type": "external",
+      "label": "Hosted MCP agents",
+      "sublabel": "per-conversation sessions",
+      "pos": [
+        40,
+        160
+      ],
+      "size": [
+        150,
+        60
+      ]
+    },
+    {
+      "id": "phone",
+      "type": "frontend",
+      "label": "Android capture",
+      "sublabel": "Flutter · offline queue",
+      "tag": "records, then uploads",
+      "pos": [
+        40,
+        420
+      ],
+      "size": [
+        150,
+        64
+      ],
+      "sources": [
+        {
+          "path": "mobile/chronicle/lib/capture/capture_controller.dart",
+          "line": 94,
+          "label": "recording"
+        },
+        {
+          "path": "mobile/chronicle/lib/queue/engine.dart",
+          "line": 58,
+          "label": "upload queue"
+        }
+      ]
+    },
+    {
+      "id": "cfaccess",
+      "type": "security",
+      "label": "Cloudflare Access",
+      "sublabel": "JWT verified in the API",
+      "tag": "web and MCP audiences",
+      "pos": [
+        330,
+        130
+      ],
+      "size": [
+        160,
+        64
+      ],
+      "sources": [
+        {
+          "path": "internal/cfaccess/cfaccess.go",
+          "label": "JWT verifier"
+        },
+        {
+          "path": "internal/api/session.go",
+          "line": 315,
+          "label": "assertion → session"
+        },
+        {
+          "path": "internal/config/config.go",
+          "line": 107,
+          "label": "MCP audience"
+        }
+      ]
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "chronicle",
+      "sublabel": "Go API · Scribe · workers",
+      "tag": "one static binary",
+      "pos": [
+        640,
+        240
+      ],
+      "size": [
+        170,
+        280
+      ],
+      "sources": [
+        {
+          "path": "cmd/chronicle/main.go",
+          "line": 718,
+          "label": "HTTP server"
+        },
+        {
+          "path": "internal/resolve/resolve.go",
+          "line": 154,
+          "label": "reference resolver"
+        },
+        {
+          "path": "internal/scribe/router/router.go",
+          "line": 269,
+          "label": "model call"
+        }
+      ]
+    },
+    {
+      "id": "postgres",
+      "type": "database",
+      "label": "Postgres",
+      "sublabel": "tier 2 authored · tier 1 derived",
+      "tag": "two roles, one boundary",
+      "pos": [
+        640,
+        60
+      ],
+      "size": [
+        170,
+        70
+      ],
+      "sources": [
+        {
+          "path": "migrations/0001_init.up.sql",
+          "line": 9,
+          "end_line": 10,
+          "label": "two schemas"
+        },
+        {
+          "path": "deploy/tier1-role.sql",
+          "label": "tier-1 role"
+        },
+        {
+          "path": "cmd/chronicle/main.go",
+          "line": 209,
+          "label": "boot audit"
+        }
+      ]
+    },
+    {
+      "id": "audio",
+      "type": "database",
+      "label": "Audio corpus",
+      "sublabel": "files on local disk",
+      "tag": "pruned only after a transcript",
+      "pos": [
+        1040,
+        240
+      ],
+      "size": [
+        160,
+        64
+      ],
+      "sources": [
+        {
+          "path": "internal/audio/layout.go",
+          "line": 54,
+          "label": "store layout"
+        },
+        {
+          "path": "internal/retention/pruner.go",
+          "label": "retention pruner"
+        }
+      ]
+    },
+    {
+      "id": "asr",
+      "type": "backend",
+      "label": "Shared ASR service",
+      "sublabel": "asrd · whisper.cpp · job API",
+      "tag": "estate-shared, bearer per client",
+      "pos": [
+        640,
+        610
+      ],
+      "size": [
+        170,
+        70
+      ],
+      "sources": [
+        {
+          "path": "asr/cmd/asrd/main.go",
+          "line": 179,
+          "label": "HTTP server"
+        },
+        {
+          "path": "asr/internal/asr/resident.go",
+          "line": 288,
+          "label": "resident whisper-server"
+        },
+        {
+          "path": ".github/workflows/publish-asr.yml",
+          "label": "own release train"
+        }
+      ]
+    },
+    {
+      "id": "asrdb",
+      "type": "database",
+      "label": "ASR job store",
+      "sublabel": "own database and role",
+      "tag": "holds the GPU lock",
+      "pos": [
+        640,
+        760
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "asr/internal/asr/migrations/0001_jobs.up.sql",
+          "line": 28,
+          "label": "job table"
+        },
+        {
+          "path": "asr/internal/asr/device.go",
+          "label": "GPU lock"
+        }
+      ]
+    },
+    {
+      "id": "gemma",
+      "type": "external",
+      "label": "Local model host",
+      "sublabel": "Gemma via Ollama",
+      "pos": [
+        1040,
+        330
+      ],
+      "size": [
+        160,
+        60
+      ]
+    },
+    {
+      "id": "switchyard",
+      "type": "external",
+      "label": "Switchyard",
+      "sublabel": "tickets",
+      "pos": [
+        1040,
+        420
+      ],
+      "size": [
+        150,
+        60
+      ]
+    },
+    {
+      "id": "amber",
+      "type": "external",
+      "label": "Amber",
+      "sublabel": "durable archive",
+      "pos": [
+        1040,
+        510
+      ],
+      "size": [
+        150,
+        60
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "web-to-access",
+      "from": "web",
+      "to": "cfaccess",
+      "label": "browser · Access JWT",
+      "variant": "emphasis"
+    },
+    {
+      "id": "agents-to-access",
+      "from": "agents",
+      "to": "cfaccess",
+      "label": "MCP · Access JWT",
+      "variant": "dashed"
+    },
+    {
+      "id": "access-to-api",
+      "from": "cfaccess",
+      "to": "api",
+      "label": "verified assertion → session",
+      "variant": "security"
+    },
+    {
+      "id": "phone-to-api",
+      "from": "phone",
+      "to": "api",
+      "label": "uploads audio · invite session",
+      "variant": "emphasis"
+    },
+    {
+      "id": "api-to-postgres",
+      "from": "api",
+      "to": "postgres",
+      "label": "pgx · tier 2 / tier 1"
+    },
+    {
+      "id": "api-to-audio",
+      "from": "api",
+      "to": "audio",
+      "label": "audio files",
+      "labelAt": [
+        985,
+        262
+      ]
+    },
+    {
+      "id": "api-to-asr",
+      "from": "api",
+      "to": "asr",
+      "label": "submit and poll jobs · bearer",
+      "variant": "emphasis",
+      "labelAt": [
+        810,
+        565
+      ]
+    },
+    {
+      "id": "asr-to-asrdb",
+      "from": "asr",
+      "to": "asrdb",
+      "label": "job table",
+      "labelAt": [
+        780,
+        722
+      ]
+    },
+    {
+      "id": "api-to-gemma",
+      "from": "api",
+      "to": "gemma",
+      "label": "Scribe routing",
+      "labelAt": [
+        985,
+        350
+      ]
+    },
+    {
+      "id": "api-to-switchyard",
+      "from": "api",
+      "to": "switchyard",
+      "label": "resolve tickets",
+      "variant": "dashed",
+      "labelAt": [
+        985,
+        440
+      ]
+    },
+    {
+      "id": "api-to-amber",
+      "from": "api",
+      "to": "amber",
+      "label": "resolve items",
+      "variant": "dashed",
+      "labelAt": [
+        985,
+        530
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Estate-shared ASR · own release train",
+      "wraps": [
+        "asr",
+        "asrdb"
+      ]
+    }
+  ]
+}
