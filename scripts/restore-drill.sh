@@ -607,8 +607,8 @@ verify_audio_copy() {
   find "$dir" -path "$dir/.uploads" -prune -o -type f -printf '%P\t%s\n' | sort >"$after"
   n_b="$(wc -l <"$before")"; n_a="$(wc -l <"$after")"
   s_b="$(awk -F'\t' '{s += $2} END{print s + 0}' "$before")"; s_a="$(awk -F'\t' '{s += $2} END{print s + 0}' "$after")"
-  if [[ "$n_b" != "$n_a" || "$s_b" != "$s_a" ]]; then
-    fail audio-copy "the copy holds $n_a file(s), $s_a bytes; the live tree listed $n_b, $s_b bytes (deficit $((n_b - n_a)) file(s), $((s_b - s_a)) bytes); first differences: $(diff "$before" "$after" | grep '^[<>]' | head -3 | cut -f1 | tr '\n' ' ')"
+  if ! cmp -s "$before" "$after"; then
+    fail audio-copy "the copy differs from the inventory: it holds $n_a file(s), $s_a bytes; the live tree listed $n_b, $s_b bytes (deficit $((n_b - n_a)) file(s), $((s_b - s_a)) bytes); first differences: $(diff "$before" "$after" | grep '^[<>]' | head -3 | cut -f1 | tr '\n' ' ')"
     rm -f "$after"; return 1
   fi
   rm -f "$after"
@@ -627,7 +627,7 @@ copy_audio_tree() {
   image="$(docker inspect -f '{{.Image}}' "$LIVE_PG")" || { fail audio-copy "no '$LIVE_PG' to take the helper image from"; return 1; }
   docker run --rm --network none -v "$src:/src:ro" -v "$WORK/audio:/dst" --entrypoint sh "$image" -c \
     'cd /src && find . -path ./.uploads -prune -o -type f -exec stat -c "%n$2%s" {} + >/dst/.inventory \
-       && tar --exclude=./.uploads -cf - . | tar -xf - -C /dst && chown -R "$0:$1" /dst' "$(id -u)" "$(id -g)" "$tab" \
+       && tar --exclude=./.uploads -cf - . | tar -xf - -C /dst; rc=$?; chown -R "$0:$1" /dst; exit $rc' "$(id -u)" "$(id -g)" "$tab" \
     || { fail audio-copy "the copy helper exited non-zero (a partial copy is not used)"; return 1; }
   sed 's|^\./||' "$WORK/audio/.inventory" | sort >"$WORK/audio.before"; rm -f "$WORK/audio/.inventory"
   verify_audio_copy "$WORK/audio.before" "$WORK/audio"
@@ -859,8 +859,12 @@ cmd_teardown() {
   guard_names
   docker rm -fv "$DRILL_APP" "$DRILL_PG" >/dev/null 2>&1
   docker network rm "$DRILL_NET" >/dev/null 2>&1
-  rm -rf "$WORK"
-  log "torn down: containers, network and $WORK removed"
+  if rm -rf "$WORK" 2>/dev/null && [[ ! -e "$WORK" ]]; then
+    log "torn down: containers, network and $WORK removed"
+  else
+    log "TEARDOWN INCOMPLETE: $WORK could not be removed (plaintext may remain); remove it by hand"
+    return 1
+  fi
 }
 
 phase() { # <from> <to>
@@ -1176,6 +1180,12 @@ cmd_selftest() {
   printf 'hello' >"$WORK/audio/f2"; printf 'wor' >"$WORK/audio/u1/ab/f1"
   verify_audio_copy "$WORK/audio.before" "$WORK/audio" >/dev/null 2>&1
   st_expect_red "a copy with a truncated file" audio-copy
+  : >"$FAILS"; : >"$RESULTS"
+  rm -rf "$WORK/audio"; mkdir -p "$WORK/audio"; copy_audio_tree "$rsrc" >/dev/null 2>&1
+  : >"$FAILS"
+  mv "$WORK/audio/f2" "$WORK/audio/f9"
+  verify_audio_copy "$WORK/audio.before" "$WORK/audio" >/dev/null 2>&1
+  st_expect_red "a copy with a different file of the same size (same count, same bytes)" audio-copy
   : >"$FAILS"; : >"$RESULTS"
   docker run --rm -v "$rsrc:/r" --entrypoint sh "$rimg" -c 'rm -rf /r/* /r/.uploads' >/dev/null 2>&1
 

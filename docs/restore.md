@@ -70,7 +70,7 @@ CH040 CH090 CH092` each refused with their own SQLSTATE on rows made through the
 scratch API; the 20 eval reference files each join a restored memo; and the live
 audio tree unchanged. All 12 guard triggers were present and enabled.
 
-The hub's snapshot list was identical before and after (32 and 32). The restored
+A rerun on the final script (after review fixes to the copy helper) passed the same twelve checks in 17.8 s; the spread is the figure's noise at this size. The hub's snapshot list was identical before and after (32 and 32). The restored
 instance had no outward variable set and `/data/chronicle` was not mounted into
 it; it was torn down within the 30-minute bound.
 
