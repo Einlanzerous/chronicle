@@ -250,3 +250,5 @@ alternatives** — in Lyceum's words, *"this one decides whether the request is
 served at all, Lyceum's decides who it is served as."* The same account is
 reachable through Access on the tunneled host and through a redeemed invite on
 the direct one.
+
+Backups are construct-server's (`construct-server/docs/backups.md`); `docs/restore.md` is Chronicle's restore record and runbook.
