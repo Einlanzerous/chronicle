@@ -316,7 +316,6 @@
       "type": "external",
       "label": "Switchyard",
       "sublabel": "tickets",
-      "tag": "coral",
       "pos": [
         1040,
         420
@@ -331,7 +330,6 @@
       "type": "external",
       "label": "Amber",
       "sublabel": "durable archive",
-      "tag": "gold",
       "pos": [
         1040,
         510
