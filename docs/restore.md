@@ -100,7 +100,7 @@ password; the script reads it once with `read -rs`.
    service failed every night at preflight (`argosy-db-1: pg_isready failing`,
    seven failures recorded), so the schedule is not a guarantee, and nothing
    alarms on it until SERV-224 and SERV-218 exist.
-3. **Measured.** Live-only rows after the dump: none. The drill ran 8 hours after
+3. **Measured.** Live-only rows after the dump: none. The drill ran about 13 hours after
    the dump; the figure grows with the snapshot's age.
 
 ## The volume gap
