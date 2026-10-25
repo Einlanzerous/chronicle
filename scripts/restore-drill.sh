@@ -597,6 +597,42 @@ api() {
   API_STATUS="$(awk '/^ *HTTP\//{c=$2} END{print c}' "$hdr")"
 }
 
+# verify_audio_copy <inventory> <copy-dir>: the copy must hold exactly the
+# files and bytes the inventory listed. A short copy would make the storage
+# check report recordings as missing for a reason that is the drill's own, so
+# it is refused here, by name, instead of surfacing later as a restore finding.
+verify_audio_copy() {
+  local before="$1" dir="$2" after n_b n_a s_b s_a
+  after="$(mktemp "$WORK/audio.copy.XXXXXX")"
+  find "$dir" -path "$dir/.uploads" -prune -o -type f -printf '%P\t%s\n' | sort >"$after"
+  n_b="$(wc -l <"$before")"; n_a="$(wc -l <"$after")"
+  s_b="$(awk -F'\t' '{s += $2} END{print s + 0}' "$before")"; s_a="$(awk -F'\t' '{s += $2} END{print s + 0}' "$after")"
+  if [[ "$n_b" != "$n_a" || "$s_b" != "$s_a" ]]; then
+    fail audio-copy "the copy holds $n_a file(s), $s_a bytes; the live tree listed $n_b, $s_b bytes (deficit $((n_b - n_a)) file(s), $((s_b - s_a)) bytes); first differences: $(diff "$before" "$after" | grep '^[<>]' | head -3 | cut -f1 | tr '\n' ' ')"
+    rm -f "$after"; return 1
+  fi
+  rm -f "$after"
+  pass audio-copy "$n_a file(s), $s_a bytes copied, equal to the inventory"
+}
+
+# copy_audio_tree <src>: the audio files are root:root 0600, so the inventory
+# and the copy are made by a throwaway root container that sees the live tree
+# READ-ONLY and has no network; /data/chronicle is mounted into this helper
+# and never into the restored instance. Ownership is handed back so teardown
+# can remove the copy. Inventory first (written to $WORK/audio.before), then
+# the copy, then the copy is held to the inventory.
+copy_audio_tree() {
+  local src="$1" image tab
+  tab="$(printf '\t')"
+  image="$(docker inspect -f '{{.Image}}' "$LIVE_PG")" || { fail audio-copy "no '$LIVE_PG' to take the helper image from"; return 1; }
+  docker run --rm --network none -v "$src:/src:ro" -v "$WORK/audio:/dst" --entrypoint sh "$image" -c \
+    'cd /src && find . -path ./.uploads -prune -o -type f -exec stat -c "%n$2%s" {} + >/dst/.inventory \
+       && tar --exclude=./.uploads -cf - . | tar -xf - -C /dst && chown -R "$0:$1" /dst' "$(id -u)" "$(id -g)" "$tab" \
+    || { fail audio-copy "the copy helper exited non-zero (a partial copy is not used)"; return 1; }
+  sed 's|^\./||' "$WORK/audio/.inventory" | sort >"$WORK/audio.before"; rm -f "$WORK/audio/.inventory"
+  verify_audio_copy "$WORK/audio.before" "$WORK/audio"
+}
+
 cmd_boot() {
   guard_names
   init_work
@@ -608,8 +644,7 @@ cmd_boot() {
   [[ -n "$src" && -d "$src" ]] || { fail boot "no live audio directory to copy (set DRILL_AUDIO_SRC)"; return 1; }
   # Order is fixed: inventory, copy the tree, read the live manifest (done by
   # the content check), then boot.
-  find "$src" -path "$src/.uploads" -prune -o -type f -printf '%P\t%s\n' | sort >"$WORK/audio.before"
-  ( cd "$src" && tar --exclude=./.uploads -cf - . ) | ( cd "$WORK/audio" && tar -xf - )
+  copy_audio_tree "$src" || return 1
   guard_names
   docker rm -fv "$DRILL_APP" >/dev/null 2>&1
   app_run -d --name "$DRILL_APP" -- serve >/dev/null || { fail boot "the container did not start"; return 1; }
@@ -1114,6 +1149,35 @@ cmd_selftest() {
   : >"$FAILS"; check_live_tree >/dev/null 2>&1
   st_expect_red "a live recording changing size during the drill" live-audio-tree
   docker rm -fv "$DRILL_APP" >/dev/null 2>&1
+
+  log "== the audio copy: root-owned files are copied whole, and a short copy is refused"
+  local rimg rsrc="$ST_DIR/rootsrc"
+  rimg="$(docker inspect -f '{{.Image}}' "$LIVE_PG")"
+  mkdir -p "$rsrc"
+  docker run --rm -v "$rsrc:/r" --entrypoint sh "$rimg" -c \
+    'mkdir -p /r/u1/ab /r/.uploads && echo hello >/r/u1/ab/f1 && echo world >/r/f2 && echo tmp >/r/.uploads/x && chmod 600 /r/u1/ab/f1 /r/f2 && chmod 700 /r/u1 && chown -R 0:0 /r' >/dev/null
+  if ( ls "$rsrc/u1/ab/f1" ) >/dev/null 2>&1; then
+    log "  CONTROL FAILED: the test tree is readable by this user, so it proves nothing"; ST_BAD=$((ST_BAD + 1))
+  else
+    log "  control: the test tree is root:root, not readable by $(id -un)"
+  fi
+  : >"$FAILS"; : >"$RESULTS"
+  rm -rf "$WORK/audio"; mkdir -p "$WORK/audio"
+  if copy_audio_tree "$rsrc" >/dev/null 2>&1 && [[ "$(wc -l <"$WORK/audio.before")" == 2 && -f "$WORK/audio/u1/ab/f1" && ! -e "$WORK/audio/.uploads" ]]; then
+    log "  copied as root: 2 root-owned files, .uploads excluded, copy removable by $(id -un)"
+  else
+    log "  NOT COPIED: a root-owned 0600 tree was not copied whole"; ST_BAD=$((ST_BAD + 1))
+  fi
+  : >"$FAILS"
+  rm -f "$WORK/audio/f2"
+  verify_audio_copy "$WORK/audio.before" "$WORK/audio" >/dev/null 2>&1
+  st_expect_red "a copy missing one file" audio-copy
+  : >"$FAILS"
+  printf 'hello' >"$WORK/audio/f2"; printf 'wor' >"$WORK/audio/u1/ab/f1"
+  verify_audio_copy "$WORK/audio.before" "$WORK/audio" >/dev/null 2>&1
+  st_expect_red "a copy with a truncated file" audio-copy
+  : >"$FAILS"; : >"$RESULTS"
+  docker run --rm -v "$rsrc:/r" --entrypoint sh "$rimg" -c 'rm -rf /r/* /r/.uploads' >/dev/null 2>&1
 
   log "== damage 1 of 6: drop one guard trigger"
   st_fresh_restore && sp -d chronicle -c 'DROP TRIGGER memos_guard ON tier2.memos' && cmd_check shape content tier1 >/dev/null 2>&1
