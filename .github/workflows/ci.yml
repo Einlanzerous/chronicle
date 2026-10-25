@@ -168,6 +168,21 @@ jobs:
           fi
           echo "internal/api/wire matches the contract."
 
+      # internal/apiclient is the Go CLIENT generated from the same document
+      # (CHRN-65) -- what the MCP transports call the API through. The other end
+      # of the guard above: a client drifted from openapi.yaml is an MCP server
+      # sending payloads the API no longer accepts. Mirrors verify.sh's step.
+      - name: API client staleness guard
+        run: |
+          tmp="$(mktemp -t apiclient.XXXXXX.go)"
+          GEN_APICLIENT_OUT="$tmp" scripts/gen-apiclient.sh
+          if ! diff -u internal/apiclient/client.gen.go "$tmp"; then
+            echo "::error file=internal/apiclient/client.gen.go::the generated client does not match openapi.yaml."
+            echo "Run scripts/gen-apiclient.sh and commit the result."
+            exit 1
+          fi
+          echo "internal/apiclient matches the contract."
+
       # asr/ is a subtree with a sealed boundary (CHRN-82 section 2): nothing
       # under it imports anything else in this module, and nothing outside it
       # imports it except through asr/asrtest. asr/Dockerfile enforces the
