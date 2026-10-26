@@ -78,30 +78,77 @@ What this figure excludes: rebuilding the host, recovering secrets (SERV-211),
 the other databases (SERV-217), DNS and the edge. It is a figure for 48 memos and
 says the path works and is fast when small; it is not a recovery-time promise.
 
-## Stage 2 — from `desk`: NOT RUN
+## Stage 2 — from `desk`
 
-It waits on, in order: the desktop receiver serving snapshot listings (an
-authenticated `GET /construct/snapshots/` hung from 2026-10-02), one clean
-timer-fired run whose copy to `desk` is confirmed by readback, and SERV-216 (the
-desktop repository's password), ideally in SERV-217's session. A person types that
-password; the script reads it once with `read -rs`.
+Run by a person at a terminal on 2026-10-25 (evening CDT; after #176 merged at
+15:38 CDT and before this record was written at about 22:20 CDT: the script's
+record carries no wall-clock start). `scripts/restore-drill.sh run desk`, on
+`main` at `7660804`. The desktop receiver was serving listings again (a snapshot
+listing answered `200` in 0.09 s just before).
+
+Source: the newest `shared` snapshot at `desk` that holds `chronicle.dump`,
+`a3dca7f2`, which is the copy of hub snapshot `609748f5`, the same night's
+snapshot stage 1 restored. Dump time (archive header): `2026-10-25T07:30:55Z`.
+Corpus: the same 441,251-byte `chronicle.dump`; 48 memos, 48 transcripts; 37
+recordings, 15,883,869 bytes.
+
+**What this stage shows, and what it does not.** It shows that the off-box copy
+is byte-identical to the hub's (the three files' SHA-256 are equal) and restores
+to the same result. It is not a different point in time: both stages read the
+same night. The hub still held the snapshot the desk copy came from, so
+`desk-matches-hub` ran rather than reporting NOT RUN.
+
+| Phase | Elapsed |
+|---|---|
+| Extraction (`desk`, read-only) | 0.7 s |
+| Scratch server accepting connections | 4.0 s |
+| Restore (`pg_restore --create`, both databases) | 0.5 s |
+| Manifests | 1.7 s |
+| Boot to `/readyz` 200 | 0.7 s |
+| API checks | 4.0 s |
+| **Extraction start to `/readyz` 200** | **7.6 s** |
+
+The time spent waiting for the repository password is not in the record and is
+not stated here; the script did not report it.
+
+All thirteen checks passed: `desk-matches-hub` (hub `609748f5` and its desk copy:
+three files, identical SHA-256) and the twelve of stage 1: restore (no warnings);
+shape (448 `chronicle` lines and 51 `asr` lines identical); content (208 restored
+rows, each equal to live or legitimately changed; none listed for a person;
+measured loss rows 0); tier-1 audit (clean; a deliberate widening is exactly one
+finding; refused with `42501` on `notes` and on insert); audio copy (37 files,
+equal to the inventory); boot of the production image digest, disarmed, with
+`schema_migrations` unchanged; 48/48 transcripts served with the stored text
+digest; one recording served with SHA-256 equal to its `content_hash`; storage
+(`missing=0 orphans=0 mismatched=0`); the guards `CH002 CH005 CH003 CH040 CH090
+CH092` each refused with their own SQLSTATE; the 20 eval reference files each
+join a restored memo; and the live audio tree unchanged (37 before, 37 after). All
+12 triggers were present and enabled. The restored instance had no outward
+variable set, `/data/chronicle` was not mounted into it, and everything was torn
+down.
+
+The same exclusions apply as for stage 1. The desktop repository's password was
+retrievable and typed once at the prompt.
 
 ## The loss window, three ways
 
 1. **By design.** `construct-backup.timer` is `OnCalendar=*-*-* 02:30:00` with
    `RandomizedDelaySec=5min`: one run a day. A hub restore loses at most about 24
    hours 5 minutes; a night on which the hub half itself fails doubles that.
-2. **Off-box, as observed.** At stage 1 the newest copy at `desk` is the
-   2026-10-25 02:31 CDT run (`state.json`: `last_success=2026-10-25T07:31:20Z`,
+2. **Off-box, as observed.** The newest copy at `desk` is the 2026-10-25
+   02:31 CDT run (`state.json`: `last_success=2026-10-25T07:31:20Z`,
    `consecutive_misses=0`; the journal logs `snapshot a3dca7f2 saved` at `desk`),
-   about 13 hours old at drill time. The 2026-10-24 run also logged a save at
-   `desk`. This is `state.json` and the journal, not a listing read from `desk`;
-   stage 2 reads the destination itself. Between 2026-10-17 and 2026-10-23 the
-   service failed every night at preflight (`argosy-db-1: pg_isready failing`,
-   seven failures recorded), so the schedule is not a guarantee, and nothing
-   alarms on it until SERV-224 and SERV-218 exist.
-3. **Measured.** Live-only rows after the dump: none. The drill ran about 13 hours after
-   the dump; the figure grows with the snapshot's age.
+   and stage 2 read it from `desk` itself. Its dump is `2026-10-25T07:30:55Z`
+   (02:30:55 CDT). Clock used: the stage-2 record has no wall-clock start, so the
+   age is bounded: stage 2 ran after 15:38 CDT (#176 merged) and before about
+   22:20 CDT (this record), so the copy was between about 13 and 20 hours old at
+   drill time. The 2026-10-24 run also logged a save at `desk`. Between
+   2026-10-17 and 2026-10-23 the service failed every night at preflight
+   (`argosy-db-1: pg_isready failing`, seven failures recorded), so the schedule
+   is not a guarantee, and nothing alarms on it until SERV-224 and SERV-218 exist.
+3. **Measured.** Live-only rows after the dump: none, at both stages. Stage 1 ran
+   about 13 hours after the dump; stage 2 ran between about 13 and 20 hours after
+   it. The figure grows with the snapshot's age.
 
 ## The volume gap
 
