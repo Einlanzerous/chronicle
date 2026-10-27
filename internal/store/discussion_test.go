@@ -289,8 +289,9 @@ func TestADiscussionTurnIsInsertOnly(t *testing.T) {
 // ============================================================================
 
 // Criterion 6 — IN THE STORE AND NOT IN GO. Inserted by raw SQL, bypassing
-// every Go code path, because CHRN-67's MCP reply tool is a second caller by
-// design and a rule living in one handler is one it does not inherit.
+// every Go code path, because a rule living in one handler binds only what goes
+// through that handler. (CHRN-67's MCP reply tool, once cited here as a second
+// caller, is a client of the HTTP route under CHRN-65; the test stands.)
 func TestAgentAfterAgentIsRefusedBySQL(t *testing.T) {
 	s, ctx := newTestStore(t)
 	person := discPerson(t, s, ctx, "six-p@example.com")

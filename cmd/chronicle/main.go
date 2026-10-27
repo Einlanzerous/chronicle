@@ -98,6 +98,10 @@ func run(args []string) error {
 		return runEval(args[1:])
 	case "tier1-audit":
 		return runTier1Audit(args[1:])
+	case "mcp":
+		return runMCP(args[1:])
+	case "mcp-serve":
+		return runMCPServe(args[1:])
 	case "-h", "--help", "help":
 		usage()
 		return nil
@@ -118,6 +122,8 @@ usage:
   chronicle prune [--dry-run]          delete audio past its retention window
   chronicle eval [--dry-run]           score the router against the labelled set
   chronicle tier1-audit                prove chronicle_tier1 holds only what the tier boundary allows
+  chronicle mcp                        serve MCP on stdio as the account CHRONICLE_TOKEN names
+  chronicle mcp-serve                  serve MCP over HTTP for hosted clients, behind Cloudflare Access
   chronicle version                    print the build version
 
 migrate defaults to "up". "down" without -n rolls everything back.
@@ -142,6 +148,17 @@ privilege chronicle_tier1 holds outside the allow-list (CHRN-52), one per line
 with the REVOKE that clears it. Exit 1 on any. Read-only. serve runs the same
 audit at boot and refuses to start on a finding; run this after a provisioning
 change and before promoting, so the refusal is never the first anyone hears.
+
+mcp and mcp-serve are Chronicle's MCP server (CHRN-65). Both are clients of the
+HTTP API and neither reads CHRONICLE_DATABASE_URL. mcp speaks on stdin/stdout as
+ONE account: set CHRONICLE_URL (for an agent outside the network, the direct
+host) and CHRONICLE_TOKEN (that account's session token, from a redeemed
+invite). It asks the API whose token it holds before it starts, and exits if it
+cannot find out. mcp-serve takes NO token: each request's Cloudflare Access
+assertion is verified against CHRONICLE_MCP_CF_ACCESS_AUD and exchanged once per
+session for that person's own short-lived session. It needs
+CHRONICLE_MCP_API_URL, CHRONICLE_MCP_PUBLIC_URL and
+CHRONICLE_CF_ACCESS_TEAM_DOMAIN as well; CHRONICLE_MCP_PORT defaults to 4080.
 `)
 }
 
