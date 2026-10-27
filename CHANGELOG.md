@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.31.0](https://github.com/Einlanzerous/chronicle/compare/v1.30.0...v1.31.0) (2026-10-27)
+
+
+### Features
+
+* **api:** a generated Go client for openapi.yaml, with its staleness guard (CHRN-65) ([#175](https://github.com/Einlanzerous/chronicle/issues/175)) ([7660804](https://github.com/Einlanzerous/chronicle/commit/7660804935b9af1093c6b4b0cfe997c62b0f6f5a))
+* **mcp:** the MCP server — stdio as one account, hosted HTTP behind Access, both clients of the API (CHRN-65) ([#179](https://github.com/Einlanzerous/chronicle/issues/179)) ([85a622e](https://github.com/Einlanzerous/chronicle/commit/85a622e0303781161cb43646c3986cf299b79405))
+
+
+### Bug Fixes
+
+* **ops:** the restore drill copies the audio tree as root and fails on an incomplete copy (CHRN-133) ([#176](https://github.com/Einlanzerous/chronicle/issues/176)) ([ccb4a3a](https://github.com/Einlanzerous/chronicle/commit/ccb4a3a16c9edf5ab52225b6fa7a25f111900996))
+
 ## [1.30.0](https://github.com/Einlanzerous/chronicle/compare/v1.29.2...v1.30.0) (2026-10-25)
 
 
