@@ -517,6 +517,37 @@ func TestAnInitializeRefusedAfterTheExchangeLeavesNoToken(t *testing.T) {
 	}
 }
 
+// The SDK can refuse an initialize AFTER answering it: params it cannot decode
+// come back 200, with a session header and a JSON-RPC error, and it closes its
+// own session. The token minted for it must be revoked then too, not left to
+// the idle sweep.
+func TestAnInitializeTheProtocolRefusesInBandLeavesNoToken(t *testing.T) {
+	for name, params := range map[string]string{
+		"params of the wrong type":             `"nope"`,
+		"a protocol version of the wrong type": `{"protocolVersion":5}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := newWorld(t)
+			h, endpoint := w.hosted(t)
+
+			raw(t, http.MethodPost, endpoint,
+				`{"jsonrpc":"2.0","id":1,"method":"initialize","params":`+params+`}`,
+				map[string]string{"Cf-Access-Jwt-Assertion": w.assertion(t, w.owner.Email, mcpAUD)})
+
+			if ex, _ := w.counts(); ex != 1 {
+				t.Fatalf("exchanges = %d; this test is only about a refusal AFTER an exchange", ex)
+			}
+			waitFor(t, "the orphaned token to be revoked", func() bool { return w.liveHosted(t) == 0 })
+			if _, revokes := w.counts(); revokes != 1 {
+				t.Errorf("revokes = %d, want exactly one", revokes)
+			}
+			if h.SessionCount() != 0 {
+				t.Errorf("SessionCount = %d for a session the protocol layer refused", h.SessionCount())
+			}
+		})
+	}
+}
+
 // A request that could not open a session must not mint a token on the way to
 // being refused.
 func TestOnlyAnInitializeMayOpenAHostedSession(t *testing.T) {

@@ -343,12 +343,27 @@ func (h *Hosted) openSession(w http.ResponseWriter, r *http.Request, assertion, 
 	// a wrong Accept, a wrong Content-Type, an unsupported version. Then no
 	// session opened, and nothing else will ever find the token just minted
 	// for it. Nobody can revoke it but us, here.
-	if rec.status >= 300 || rec.Header().Get(mcpSessionHeader) != s.id {
+	//
+	// The same holds for a refusal the protocol layer makes AFTER it has
+	// answered: an initialize whose params cannot be decoded comes back 200
+	// with the session header and a JSON-RPC error, and the SDK then closes
+	// its own session. So the SDK holding no session for this server is a
+	// refusal too, whatever status and header said.
+	if rec.status >= 300 || rec.Header().Get(mcpSessionHeader) != s.id || !sdkHoldsSession(s) {
 		h.drop(s)
 		go h.retire(s)
 		return
 	}
 	h.cfg.Logger.Info("mcp: session opened", "session", s.id, "kind", ident.Kind)
+}
+
+// sdkHoldsSession reports whether the SDK still has a session open on this
+// session's server.
+func sdkHoldsSession(s *hostedSession) bool {
+	for range s.server.Sessions() {
+		return true
+	}
+	return false
 }
 
 // exchange trades a verified assertion for that person's session token. On
