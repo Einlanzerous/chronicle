@@ -132,6 +132,34 @@ func TestAPruneViolationIsAnErrorAndNamesTheMemo(t *testing.T) {
 	}
 }
 
+// Each retention rule alone is enough to raise the alert, and each has its own
+// series, so the line that fires says which rule did (CHRN-156).
+func TestEachRetentionPruneRuleRaisesTheAlertOnItsOwn(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		p    store.PruneMetrics
+		want string
+	}{
+		{"forever", store.PruneMetrics{PrunedWhileForever: 1}, `chronicle_prune_violations{rule="pruned_while_forever"} 1`},
+		{"window", store.PruneMetrics{PrunedInsideWindow: 2}, `chronicle_prune_violations{rule="pruned_inside_window"} 2`},
+	} {
+		id := uuid.New()
+		tc.p.ViolatingMemos = []uuid.UUID{id}
+		s := collect(fakeSource{prune: tc.p})
+		a := s.Alerts()
+		if names(a) != "prune_violation" || a[0].Level != slog.LevelError {
+			t.Errorf("%s: alerts: %s", tc.name, names(a))
+			continue
+		}
+		if !strings.Contains(a[0].Text, id.String()) {
+			t.Errorf("%s: the alert does not name the memo: %s", tc.name, a[0].Text)
+		}
+		if !strings.Contains(s.Prometheus(), tc.want) {
+			t.Errorf("%s: the exposition lacks %q:\n%s", tc.name, tc.want, s.Prometheus())
+		}
+	}
+}
+
 // A section that cannot be read is absent, never zero.
 func TestAnUnreadableSectionIsAbsentNotZero(t *testing.T) {
 	s := collect(fakeSource{pruneEr: errors.New("connection refused")})
@@ -166,6 +194,8 @@ func TestPrometheusCarriesAllFourNumbers(t *testing.T) {
 		`chronicle_routing_agreement_ratio{window="7d"} 0.75`,
 		`chronicle_prune_bytes_24h 4096`,
 		`chronicle_prune_violations{rule="no_durable_transcript"} 0`,
+		`chronicle_prune_violations{rule="pruned_while_forever"} 0`,
+		`chronicle_prune_violations{rule="pruned_inside_window"} 0`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)

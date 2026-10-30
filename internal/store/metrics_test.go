@@ -278,17 +278,121 @@ func TestPruneMetricsSeesAnIncorrectDeletion(t *testing.T) {
 	}
 }
 
-// A CORRECT PRUNE STAYS CORRECT WHATEVER HAPPENS TO THE ROW AFTERWARDS.
+// THE TWO RETENTION RULES, EACH WITH ITS OWN WRONG PRUNE (CHRN-156).
 //
-// The review of this ticket found that IngestMemo's ratchet could raise
-// retention on an already-pruned memo (a re-delivery carrying `forever`), and
-// that a check reading retention NOW would then report a correct prune as a
-// violation permanently. CHRN-136 has since stopped the ratchet at the prune,
-// so only direct SQL can move a pruned row's retention now; the metric still
-// rests on the transcript alone, and this pins that: a DISCARD NOW prune
-// inside the window, then a retention change made directly, must both read
-// clean.
-func TestPruneMetricsIgnoresRetentionAfterThePrune(t *testing.T) {
+// CHRN-69 wrote these and removed them on review, because IngestMemo's ratchet
+// could raise retention on a pruned memo and a rule reading retention now would
+// then call a correct prune a violation forever. CHRN-136 stopped the ratchet at
+// the prune, so retention on a pruned row is the retention at the prune. Each
+// wrong prune here is created directly, and so is the correct one that must
+// read clean beside them: a days_30 memo pruned after its window with a durable
+// transcript, and a DISCARD NOW memo pruned early, which is its whole meaning.
+func TestPruneMetricsNamesAForeverPruneAndAPruneInsideTheWindow(t *testing.T) {
+	s, ctx := newTestStore(t)
+	window := 30 * 24 * time.Hour
+
+	mark := func(id uuid.UUID) {
+		t.Helper()
+		if _, err := s.pool.Exec(ctx,
+			`UPDATE tier2.memos SET audio_pruned_at = now() WHERE id = $1`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The control: days_30, pruned after its window, with a durable transcript.
+	ok := newTranscribableMemo(t, s, ctx, "pm-rule-ok@example.test")
+	durable(t, s, ctx, ok.ID, "whisper.cpp/small.en")
+	backdate(t, s, ctx, ok.ID, 31*24*time.Hour)
+	mark(ok.ID)
+
+	// DISCARD NOW goes early on purpose, and is not a violation.
+	early := newTranscribableMemo(t, s, ctx, "pm-rule-discard@example.test")
+	durable(t, s, ctx, early.ID, "whisper.cpp/small.en")
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE tier2.memos SET retention = 'discard_now', audio_pruned_at = now() WHERE id = $1`, early.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := s.PruneMetrics(ctx, window)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Total != 2 || p.Violated() || len(p.ViolatingMemos) != 0 {
+		t.Fatalf("correct prunes were reported as violations: %+v", p)
+	}
+
+	// Rule 1: pruned while `forever`. The transcript is durable and the window
+	// has run, so only this rule can name it.
+	forever := newTranscribableMemo(t, s, ctx, "pm-rule-forever@example.test")
+	durable(t, s, ctx, forever.ID, "whisper.cpp/small.en")
+	backdate(t, s, ctx, forever.ID, 31*24*time.Hour)
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE tier2.memos SET retention = 'forever', audio_pruned_at = now() WHERE id = $1`, forever.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	p, err = s.PruneMetrics(ctx, window)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.PrunedWhileForever != 1 || p.PrunedInsideWindow != 0 || p.WithoutTranscript != 0 {
+		t.Errorf("after a forever prune: %+v, want exactly one pruned-while-forever", p)
+	}
+	if !p.Violated() {
+		t.Fatal("a forever memo with its audio pruned was not reported as a violation")
+	}
+
+	// Rule 2: pruned before the window under days_30. Durable transcript, and
+	// retention is not forever, so only this rule can name it.
+	inside := newTranscribableMemo(t, s, ctx, "pm-rule-inside@example.test")
+	durable(t, s, ctx, inside.ID, "whisper.cpp/small.en")
+	backdate(t, s, ctx, inside.ID, 10*24*time.Hour)
+	mark(inside.ID)
+
+	p, err = s.PruneMetrics(ctx, window)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.PrunedWhileForever != 1 || p.PrunedInsideWindow != 1 || p.WithoutTranscript != 0 {
+		t.Errorf("after a prune inside the window: %+v, want one of each retention rule", p)
+	}
+	named := map[uuid.UUID]bool{}
+	for _, id := range p.ViolatingMemos {
+		named[id] = true
+	}
+	for name, id := range map[string]uuid.UUID{
+		"pruned while forever": forever.ID, "pruned inside the window": inside.ID,
+	} {
+		if !named[id] {
+			t.Errorf("the %s memo is not among the named violations", name)
+		}
+	}
+	for name, id := range map[string]uuid.UUID{"days_30 after its window": ok.ID, "discard_now": early.ID} {
+		if named[id] {
+			t.Errorf("the correct prune (%s) is named as a violation", name)
+		}
+	}
+
+	// All three rules at once: a memo never transcribed joins the same list,
+	// and each count stays its own.
+	none := newTranscribableMemo(t, s, ctx, "pm-rule-none@example.test")
+	backdate(t, s, ctx, none.ID, 31*24*time.Hour)
+	mark(none.ID)
+	p, err = s.PruneMetrics(ctx, window)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.WithoutTranscript != 1 || p.PrunedWhileForever != 1 || p.PrunedInsideWindow != 1 || len(p.ViolatingMemos) != 3 {
+		t.Errorf("all three rules: %+v, want 1/1/1 and three memos named", p)
+	}
+}
+
+// A DISCARD NOW PRUNE INSIDE THE WINDOW IS THE JOB WORKING.
+//
+// The second retention rule is scoped to days_30 for this reason: DISCARD NOW
+// is meant to go at the next sweep, so a prune seconds after capture is correct
+// and has to read clean beside the rules that now do read retention.
+func TestPruneMetricsAnEarlyDiscardNowPruneIsClean(t *testing.T) {
 	s, ctx := newTestStore(t)
 	m := newTranscribableMemo(t, s, ctx, "pm-discard@example.test")
 	durable(t, s, ctx, m.ID, "whisper.cpp/small.en")
@@ -296,17 +400,11 @@ func TestPruneMetricsIgnoresRetentionAfterThePrune(t *testing.T) {
 		`UPDATE tier2.memos SET retention = 'discard_now', audio_pruned_at = now() WHERE id = $1`, m.ID); err != nil {
 		t.Fatal(err)
 	}
-	for _, retention := range []string{"discard_now", "forever"} {
-		if _, err := s.pool.Exec(ctx,
-			`UPDATE tier2.memos SET retention = $2 WHERE id = $1`, m.ID, retention); err != nil {
-			t.Fatal(err)
-		}
-		p, err := s.PruneMetrics(ctx, 30*24*time.Hour)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if p.Total != 1 || p.Violated() {
-			t.Fatalf("with retention %q after the prune: %+v", retention, p)
-		}
+	p, err := s.PruneMetrics(ctx, 30*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Total != 1 || p.Violated() {
+		t.Fatalf("a DISCARD NOW prune inside the window: %+v", p)
 	}
 }

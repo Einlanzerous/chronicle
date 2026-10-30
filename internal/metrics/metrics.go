@@ -167,8 +167,10 @@ func (s Snapshot) Alerts() []Alert {
 
 	if s.ok("prune") && s.Prune.Violated() {
 		out = append(out, Alert{slog.LevelError, "prune_violation", fmt.Sprintf(
-			"audio was pruned for %d memo(s) with no durable transcript; the recording was the only copy (memos %v)",
-			s.Prune.WithoutTranscript, s.Prune.ViolatingMemos)})
+			"audio was pruned wrongly: %d memo(s) with no durable transcript (the recording was the only copy), "+
+				"%d while retention is forever, %d inside their days_30 window (memos %v)",
+			s.Prune.WithoutTranscript, s.Prune.PrunedWhileForever, s.Prune.PrunedInsideWindow,
+			s.Prune.ViolatingMemos)})
 	}
 	if s.ok("queue") && s.Queue.OldestCapturedAt != nil {
 		if age := s.At.Sub(*s.Queue.OldestCapturedAt); age > QueueStall {
@@ -358,8 +360,10 @@ func (s Snapshot) Prometheus() string {
 		}
 		g("chronicle_prune_held_back", "memos past their window that the gate refuses to prune for want of a durable transcript")
 		v("chronicle_prune_held_back", "", p.HeldBack)
-		g("chronicle_prune_violations", "pruned memos with no durable transcript, by rule; should be 0 forever")
+		g("chronicle_prune_violations", "wrongly pruned memos, by rule; should be 0 forever")
 		v("chronicle_prune_violations", `rule="no_durable_transcript"`, p.WithoutTranscript)
+		v("chronicle_prune_violations", `rule="pruned_while_forever"`, p.PrunedWhileForever)
+		v("chronicle_prune_violations", `rule="pruned_inside_window"`, p.PrunedInsideWindow)
 	}
 	return b.String()
 }
