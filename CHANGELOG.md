@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.32.0](https://github.com/Einlanzerous/chronicle/compare/v1.31.0...v1.32.0) (2026-10-31)
+
+
+### Features
+
+* **metrics:** restore the two prune alarms CHRN-69 removed (CHRN-156) ([#180](https://github.com/Einlanzerous/chronicle/issues/180)) ([688ba71](https://github.com/Einlanzerous/chronicle/commit/688ba7194aeeecdd607400a68ecfb23320c7bd76))
+* **store:** freeze tier2.users id and kind with users_guard, CH110 (CHRN-157) ([#182](https://github.com/Einlanzerous/chronicle/issues/182)) ([cf65288](https://github.com/Einlanzerous/chronicle/commit/cf65288da5a5189b6ee02d1b4aa569fbf9be7455))
+
 ## [1.31.0](https://github.com/Einlanzerous/chronicle/compare/v1.30.0...v1.31.0) (2026-10-27)
 
 
