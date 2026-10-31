@@ -541,9 +541,9 @@ says **unverified**, names what would verify it, and is never promoted to
    A column, guard, trigger or constraint a ruling leans on either appears in
    a migration or does not. CHRN-95 ruling 9 was picked on a column that did
    not exist; CHRN-43 rev 1 called an agent-loop guard "structurally
-   impossible" on the strength of `users.kind`, which
-   `grep users_guard migrations/` shows nothing freezes. Blocking when the
-   recommended option depends on it.
+   impossible" on the strength of `users.kind`, which no migration froze
+   at the time (`grep users_guard migrations/` found nothing; `0019` added the
+   guard under CHRN-101). Blocking when the recommended option depends on it.
 3. **Migrations.** The next free `NNNN` is one past
    `ls migrations/*.up.sql | tail -1`, not the plan's say-so. Every `.up.sql` has a `.down.sql`, and up/down/up leaves
    the schema byte-identical — a `COMMENT ON` the up amends must be restored

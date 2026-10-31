@@ -398,10 +398,14 @@ func TestTheRuleRefusesOnlyTheLoop(t *testing.T) {
 
 // THE THREE CLAIMS, and the third is the one the ruling exists for.
 //
-// Nothing in any migration freezes tier2.users.kind. Had CH091 joined to it,
-// flipping an account person→agent would make a legal thread retroactively read
-// as the loop the rule forbids, and agent→person would make a real loop
-// retroactively legitimate. A safety property cannot rest on that.
+// tier2.users.kind has been frozen since 0019 (CH110), so an account cannot be
+// flipped by an UPDATE any more. The turn still carries its own copy, and this
+// test keeps proving the copy is a snapshot: had CH091 joined to the account,
+// flipping person→agent would make a legal thread retroactively read as the
+// loop the rule forbids, and agent→person would make a real loop retroactively
+// legitimate. A safety property cannot rest on that, so the flip below is done
+// with users_guard switched off for the one transaction, the way backdate in
+// metrics_test.go gets past memos_guard.
 func TestAuthorKindIsFrozenOnTheTurn(t *testing.T) {
 	s, ctx := newTestStore(t)
 	person := discPerson(t, s, ctx, "ten-p@example.com")
@@ -428,10 +432,7 @@ func TestAuthorKindIsFrozenOnTheTurn(t *testing.T) {
 	// 3 — CHANGING THE ACCOUNT AFTERWARDS CHANGES NOTHING. Flip the opener to
 	// an agent, then have a real agent reply: a guard reading users.kind live
 	// would now see agent-after-agent and refuse. The frozen column does not.
-	if _, err := s.pool.Exec(ctx,
-		`UPDATE tier2.users SET kind = 'agent' WHERE id = $1`, person); err != nil {
-		t.Fatalf("flip the account kind: %v", err)
-	}
+	flipKind(t, s, ctx, person, KindAgent)
 
 	after, err := s.Turns(ctx, d.ID)
 	if err != nil {
@@ -448,6 +449,33 @@ func TestAuthorKindIsFrozenOnTheTurn(t *testing.T) {
 	}
 	if reply.Seq != 2 {
 		t.Errorf("seq = %d, want 2", reply.Seq)
+	}
+}
+
+// flipKind changes an account's kind past users_guard, inside one transaction
+// that switches the guard off and back on before it commits, so the trigger is
+// never left disabled on the shared test database. The UPDATE runs on the
+// transaction's handle: ALTER TABLE ... DISABLE TRIGGER is session-visible
+// only to the transaction that took the lock, and s.pool would be a second
+// connection that still sees the guard.
+func flipKind(t *testing.T, s *Store, ctx context.Context, id uuid.UUID, kind string) {
+	t.Helper()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `ALTER TABLE tier2.users DISABLE TRIGGER users_guard`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE tier2.users SET kind = $2 WHERE id = $1`, id, kind); err != nil {
+		t.Fatalf("flip the account kind: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `ALTER TABLE tier2.users ENABLE TRIGGER users_guard`); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
 	}
 }
 

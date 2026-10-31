@@ -159,9 +159,11 @@ type DiscussionTurn struct {
 	AuthorID uuid.UUID
 
 	// AuthorKind is the author's kind AT THE TIME THE TURN WAS WRITTEN, set by
-	// the trigger from tier2.users.kind (ruling 5). Denormalised on purpose:
-	// CH091 is a safety rule and users.kind is mutable, so reading it live
-	// would let an account edit rewrite the verdict on turns already written.
+	// the trigger from tier2.users.kind (ruling 5). Kept on the turn on
+	// purpose: CH091 is a safety rule and a turn should not depend on a join to
+	// an account row. users.kind is frozen since 0019 (CH110), so the two agree
+	// for any account that exists; the copy stays a snapshot of what was true
+	// when the turn was written.
 	AuthorKind string
 
 	Body      string
