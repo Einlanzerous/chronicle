@@ -806,6 +806,27 @@ END
 $$;
 
 
+--
+-- Name: users_guard(); Type: FUNCTION; Schema: tier2; Owner: -
+--
+
+CREATE FUNCTION tier2.users_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF NEW.id IS DISTINCT FROM OLD.id THEN
+        RAISE EXCEPTION 'an account id is never changed'
+            USING ERRCODE = 'CH110';
+    END IF;
+    IF NEW.kind IS DISTINCT FROM OLD.kind THEN
+        RAISE EXCEPTION 'an account kind is set when the account is made and never changed (account %)', OLD.id
+            USING ERRCODE = 'CH110';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
@@ -1066,7 +1087,7 @@ COMMENT ON TABLE tier2.discussion_turns IS 'CHRN-43. One thing said in a thread.
 -- Name: COLUMN discussion_turns.author_kind; Type: COMMENT; Schema: tier2; Owner: -
 --
 
-COMMENT ON COLUMN tier2.discussion_turns.author_kind IS 'CHRN-43, ruling 5. The author''s kind AT THE TIME THE TURN WAS WRITTEN, set by discussion_turns_guard from tier2.users.kind and refused from a caller (CH092). Denormalised on purpose: CH091 is a safety rule and tier2.users.kind is mutable, so reading it live would let an account edit rewrite the verdict on turns already written.';
+COMMENT ON COLUMN tier2.discussion_turns.author_kind IS 'CHRN-43, ruling 5. The author''s kind AT THE TIME THE TURN WAS WRITTEN, set by discussion_turns_guard from tier2.users.kind and refused from a caller (CH092). Kept on the turn on purpose: CH091 is a safety rule and a turn should not depend on a join to an account row. tier2.users.kind is frozen since 0019 (CH110), so the two agree for any account that exists; the copy stays an independent snapshot of what was true when it was written.';
 
 
 --
@@ -1429,6 +1450,20 @@ CREATE TABLE tier2.users (
     CONSTRAINT users_kind_check CHECK ((kind = ANY (ARRAY['person'::text, 'agent'::text]))),
     CONSTRAINT users_owner_is_a_person CHECK (((NOT is_owner) OR (kind = 'person'::text)))
 );
+
+
+--
+-- Name: COLUMN users.id; Type: COMMENT; Schema: tier2; Owner: -
+--
+
+COMMENT ON COLUMN tier2.users.id IS 'CHRN-101. Never changed after the row exists (CH110, users_guard).';
+
+
+--
+-- Name: COLUMN users.kind; Type: COMMENT; Schema: tier2; Owner: -
+--
+
+COMMENT ON COLUMN tier2.users.kind IS 'CHRN-101. person or agent, set when the account is made and never changed (CH110, users_guard). A wrongly-made account is fixed by making a new one; the old one keeps its authored history. Seven guard functions read this live to decide whether an actor is a person.';
 
 
 --
@@ -2013,6 +2048,13 @@ CREATE TRIGGER pages_guard BEFORE INSERT OR UPDATE ON tier2.pages FOR EACH ROW E
 --
 
 CREATE TRIGGER transcripts_guard BEFORE INSERT OR UPDATE ON tier2.transcripts FOR EACH ROW EXECUTE FUNCTION tier2.transcripts_guard();
+
+
+--
+-- Name: users users_guard; Type: TRIGGER; Schema: tier2; Owner: -
+--
+
+CREATE TRIGGER users_guard BEFORE UPDATE ON tier2.users FOR EACH ROW EXECUTE FUNCTION tier2.users_guard();
 
 
 --

@@ -98,7 +98,7 @@ const (
 	//
 	// No CHxxx joins them, and the absence is the point: three read-only
 	// operations create no table, add no column and write nothing, so there is
-	// no rule for a table guard to enforce. The next free block is CH110.
+	// no rule for a table guard to enforce. The next free block is CH120.
 
 	// codeAudioPruned is the invariant on the wire: the recording was deleted
 	// by policy and the transcript remains. Distinct from not_found because

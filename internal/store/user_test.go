@@ -750,3 +750,58 @@ func TestExpiredSessionsAreNotListedOrCounted(t *testing.T) {
 		t.Errorf("owner SessionCount = %d, want 2; an expired row was counted", members[0].SessionCount)
 	}
 }
+
+// CHRN-101: id and kind are set when an account is made and never changed
+// (CH110, users_guard). Asserted on the SQLSTATE, never the message.
+func TestUsersGuardFreezesIDAndKind(t *testing.T) {
+	s, ctx := newTestStore(t)
+	person, err := s.CreateUser(ctx, "guard-person@example.com", "Person", KindPerson)
+	if err != nil {
+		t.Fatalf("CreateUser(person): %v", err)
+	}
+	agent, err := s.CreateUser(ctx, "guard-agent@example.com", "Agent", KindAgent)
+	if err != nil {
+		t.Fatalf("CreateUser(agent): %v", err)
+	}
+
+	for _, tc := range []struct {
+		name, sql string
+		id        uuid.UUID
+	}{
+		{"person to agent", `UPDATE tier2.users SET kind = 'agent' WHERE id = $1`, person.ID},
+		{"agent to person", `UPDATE tier2.users SET kind = 'person' WHERE id = $1`, agent.ID},
+		{"id of an unreferenced account", `UPDATE tier2.users SET id = gen_random_uuid() WHERE id = $1`, person.ID},
+	} {
+		_, err := s.Pool().Exec(ctx, tc.sql, tc.id)
+		if got := sqlstate(err); got != "CH110" {
+			t.Errorf("%s: SQLSTATE = %q (err %v), want CH110", tc.name, got, err)
+		}
+	}
+
+	// Ordinary writes still pass.
+	for _, q := range []string{
+		`UPDATE tier2.users SET display_name = 'Renamed' WHERE id = $1`,
+		`UPDATE tier2.users SET email = 'guard-renamed@example.com' WHERE id = $1`,
+		`UPDATE tier2.users SET kind = kind WHERE id = $1`,
+	} {
+		if _, err := s.Pool().Exec(ctx, q, person.ID); err != nil {
+			t.Errorf("%s: %v", q, err)
+		}
+	}
+	if _, err := s.EnsureAgent(ctx, "guard-ensure@example.com", "Ensured"); err != nil {
+		t.Errorf("EnsureAgent: %v", err)
+	}
+	owner, err := s.GetOwner(ctx)
+	if err != nil {
+		t.Fatalf("GetOwner: %v", err)
+	}
+	if _, err := s.ReconcileOwner(ctx, owner.Email, "Owner Again"); err != nil {
+		t.Errorf("ReconcileOwner: %v", err)
+	}
+
+	// The owner CHECK still speaks for is_owner: not CH110.
+	_, err = s.Pool().Exec(ctx, `UPDATE tier2.users SET is_owner = true WHERE id = $1`, agent.ID)
+	if got := sqlstate(err); got != "23514" {
+		t.Errorf("is_owner on an agent: SQLSTATE = %q (err %v), want 23514", got, err)
+	}
+}
