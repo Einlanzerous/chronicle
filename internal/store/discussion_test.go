@@ -455,9 +455,8 @@ func TestAuthorKindIsFrozenOnTheTurn(t *testing.T) {
 // flipKind changes an account's kind past users_guard, inside one transaction
 // that switches the guard off and back on before it commits, so the trigger is
 // never left disabled on the shared test database. The UPDATE runs on the
-// transaction's handle: ALTER TABLE ... DISABLE TRIGGER is session-visible
-// only to the transaction that took the lock, and s.pool would be a second
-// connection that still sees the guard.
+// transaction's handle: the ALTER holds ACCESS EXCLUSIVE on tier2.users until
+// commit, so an UPDATE on s.pool would block behind it.
 func flipKind(t *testing.T, s *Store, ctx context.Context, id uuid.UUID, kind string) {
 	t.Helper()
 	tx, err := s.pool.Begin(ctx)
