@@ -151,6 +151,61 @@ func TestHarnessRecordsWhatAToolDid(t *testing.T) {
 	}
 }
 
+// readDrivers is how each read tool is exercised through the harness: one entry
+// per tool in mcp.Tools() that does not Mutate. A tool added without an entry
+// fails TestEveryReadToolIsDrivenThroughTheHarness, which is what makes "proven
+// read-only by a test, not by the flag" a property of the registry and not a
+// habit. The entry calls the tool the way an agent would; the guard supplies
+// the recorder and the GET-only check.
+var readDrivers = map[string]func(t *testing.T, cs *sdk.ClientSession){
+	"whoami": func(t *testing.T, cs *sdk.ClientSession) { callWhoAmI(t, cs) },
+}
+
+func TestEveryReadToolIsDrivenThroughTheHarness(t *testing.T) {
+	w := newWorld(t)
+	bot, err := w.st.CreateUser(w.ctx, "bot@example.com", "Bot", store.KindAgent)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	registered := map[string]bool{}
+	for _, tool := range mcp.Tools() {
+		if tool.Mutates {
+			continue
+		}
+		registered[tool.Name] = true
+		driver, ok := readDrivers[tool.Name]
+		if !ok {
+			t.Errorf("read tool %q is not driven through the GET-only harness: add it to readDrivers", tool.Name)
+			continue
+		}
+		for _, tc := range []struct {
+			who       string
+			user      store.User
+			transport mcp.Transport
+		}{
+			{"a hosted person", w.owner, mcp.TransportHosted},
+			{"a stdio person", w.owner, mcp.TransportStdio},
+			{"a stdio agent", bot, mcp.TransportStdio},
+		} {
+			t.Run(tool.Name+" as "+tc.who, func(t *testing.T) {
+				cs, rec := w.session(t, tc.user, tc.transport)
+				rec.reset()
+				driver(t, cs)
+				rec.requireGETOnly(t)
+				if len(rec.paths()) == 0 {
+					t.Errorf("%s made no request: the driver did not reach the API", tool.Name)
+				}
+			})
+		}
+	}
+	for name := range readDrivers {
+		if !registered[name] {
+			t.Errorf("readDrivers has %q, which is not a read tool in mcp.Tools(): remove it", name)
+		}
+	}
+}
+
 // The failure path, which is the point of the harness: a request that is not a
 // GET is refused before it reaches the API, and recorded as a violation.
 func TestHarnessRefusesAnythingButGET(t *testing.T) {
