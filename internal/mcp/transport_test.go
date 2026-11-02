@@ -31,6 +31,7 @@ import (
 	"github.com/Einlanzerous/chronicle/internal/cfaccess/cfaccesstest"
 	"github.com/Einlanzerous/chronicle/internal/mcp"
 	"github.com/Einlanzerous/chronicle/internal/store"
+	"github.com/Einlanzerous/chronicle/internal/triage"
 )
 
 const (
@@ -80,11 +81,22 @@ func newWorld(t *testing.T) *world {
 	}
 
 	// The API as serve builds it for a deployment with both Access
-	// applications configured.
+	// applications configured, and with the stores the read tools reach: the
+	// wiki, the threads, and triage (CHRN-66). serve wires the first two
+	// unconditionally, so the real router cannot answer their 503s; triage is
+	// the one a deployment can lack.
+	triager, err := triage.New(triage.Options{
+		Store: w.st, Tier1: noProposals{}, Tickets: noTickets{}, Catalogue: noCatalogue{},
+		Proposer: "test@v0",
+	})
+	if err != nil {
+		t.Fatalf("triage.New: %v", err)
+	}
 	handler := api.NewRouter(api.Deps{
 		DB: w.st, Accounts: w.st, Version: "test", SecureCookies: true,
 		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 		CFAccess: w.iss.Verifier(webAUD, mcpAUD), MCPAudience: mcpAUD,
+		Wiki: w.st, Threads: w.st, Memos: w.st, Triage: triager,
 	})
 	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		w.mu.Lock()
