@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -15,6 +16,33 @@ import (
 // All three are GETs through the generated client. get_thread does not mark a
 // thread read: that is POST /discussions/{ref}/read, which no tool here calls,
 // so reading a thread as the owner leaves their unread count where it was.
+
+// The codes Chronicle itself puts on the 503 these routes answer when their
+// store is not wired (internal/api: threads.go and wiki.go). A 503 is "off in
+// this deployment" ONLY when the body says so in Chronicle's own words: a
+// proxy's plain-text 503 while the API redeploys, or the router's
+// accounts_unconfigured, is a failed call to retry and not a fact about the
+// deployment, and reporting it as one tells an agent a feature does not exist.
+const (
+	codeThreadsOff = "threads_unconfigured"
+	codeWikiOff    = "wiki_unconfigured"
+)
+
+// chronicleSaysOff reports whether a 503 body is Chronicle's own
+// `{"code": code}`. Anything else -- another code, a body that is not JSON --
+// is false.
+func chronicleSaysOff(body []byte, code string) bool {
+	var e struct {
+		Code string `json:"code"`
+	}
+	return json.Unmarshal(body, &e) == nil && e.Code == code
+}
+
+// notOff is the error a 503 that is not Chronicle's "off" becomes: retryable,
+// and said to be.
+func notOff(op string) error {
+	return fmt.Errorf("%s answered 503 without Chronicle's own unconfigured code: the API may be restarting, retry shortly", op)
+}
 
 // ThreadTurn is one turn of a thread as an agent reads it: raw markdown, in the
 // order the server assigned, with who wrote it and what kind of account they
@@ -71,6 +99,9 @@ var getThread = define("get_thread",
 		case NotFound:
 			return ThreadResult{Status: NotFound, Message: "no thread has the reference " + in.Ref}, nil
 		case Unconfigured:
+			if !chronicleSaysOff(resp.Body, codeThreadsOff) {
+				return ThreadResult{}, notOff("GET /discussions/{ref}")
+			}
 			return ThreadResult{Status: Unconfigured, Message: FeatureOff("Discussion threads")}, nil
 		case Withdrawn:
 			// The thread API does not withdraw; a 410 here is an API this
@@ -136,6 +167,9 @@ var listPages = define("list_pages",
 			return PagesResult{}, err
 		}
 		if avail == Unconfigured {
+			if !chronicleSaysOff(resp.Body, codeWikiOff) {
+				return PagesResult{}, notOff("GET /pages")
+			}
 			return PagesResult{Status: Unconfigured, Message: FeatureOff("The notes wiki")}, nil
 		}
 		if resp.JSON200 == nil {
@@ -201,6 +235,9 @@ var listThreads = define("list_threads",
 			out.Message = "no page has the path " + in.Page + "; list_pages lists the paths that exist"
 			return out, nil
 		case Unconfigured:
+			if !chronicleSaysOff(resp.Body, codeThreadsOff) {
+				return ThreadsResult{}, notOff("GET /discussions")
+			}
 			out.Message = FeatureOff("Discussion threads")
 			return out, nil
 		case Withdrawn:

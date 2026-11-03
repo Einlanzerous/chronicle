@@ -280,9 +280,15 @@ func stubSession(t *testing.T, handler http.HandlerFunc) *sdk.ClientSession {
 // fail the call.
 func TestThreadToolsSayWhenTheFeatureIsOff(t *testing.T) {
 	cs := stubSession(t, func(rw http.ResponseWriter, r *http.Request) {
+		// Each route answers the code Chronicle gives it: pages are the wiki's,
+		// discussions the threads'.
+		code := "threads_unconfigured"
+		if r.URL.Path == "/pages" {
+			code = "wiki_unconfigured"
+		}
 		rw.Header().Set("Content-Type", "application/json")
 		rw.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = rw.Write([]byte(`{"code":"threads_unconfigured","message":"off"}`))
+		_, _ = fmt.Fprintf(rw, `{"code":%q,"message":"off"}`, code)
 	})
 	if got := callThreadTool[mcp.ThreadResult](t, cs, "get_thread", map[string]any{"ref": "DSC-0001"}); got.Status != mcp.Unconfigured || got.Message == "" {
 		t.Errorf("get_thread = %+v", got)
@@ -331,5 +337,47 @@ func TestListThreadsReportsTheCurrentPathOfAMovedPage(t *testing.T) {
 	got := callThreadTool[mcp.ThreadsResult](t, cs, "list_threads", map[string]any{"page": "old/place"})
 	if got.Status != mcp.Available || got.Page != "new/place" || got.MovedFrom != "old/place" {
 		t.Errorf("result = %+v, want page new/place moved from old/place", got)
+	}
+}
+
+// A 503 that is not Chronicle saying its own store is off is a failed call to
+// retry, not a fact about the deployment: a proxy's plain-text 503 while the
+// API redeploys, the router's accounts_unconfigured, and the other store's
+// code on the wrong route all say nothing about whether threads or pages exist.
+func TestAForeignOrBareServiceUnavailableIsAnErrorNotFeatureOff(t *testing.T) {
+	for name, answer := range map[string]struct{ contentType, body string }{
+		"a proxy's plain text":        {"text/plain", "Service Unavailable"},
+		"the router's accounts code":  {"application/json", `{"code":"accounts_unconfigured","message":"no accounts"}`},
+		"the other store's code":      {"application/json", `{"code":"triage_unconfigured","message":"no scribe"}`},
+		"the wiki's code on a thread": {"application/json", `{"code":"wiki_unconfigured","message":"off"}`},
+		"an empty body":               {"", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cs := stubSession(t, func(rw http.ResponseWriter, r *http.Request) {
+				if answer.contentType != "" {
+					rw.Header().Set("Content-Type", answer.contentType)
+				}
+				rw.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = rw.Write([]byte(answer.body))
+			})
+			for tool, args := range map[string]any{
+				"get_thread":   map[string]any{"ref": "DSC-0001"},
+				"list_threads": map[string]any{"page": "x"},
+				"list_pages":   struct{}{},
+			} {
+				// list_pages is the wiki's, so the wiki's own code is the one
+				// answer that would be legitimate there; skip that pairing.
+				if tool == "list_pages" && name == "the wiki's code on a thread" {
+					continue
+				}
+				res, err := cs.CallTool(context.Background(), &sdk.CallToolParams{Name: tool, Arguments: args})
+				if err != nil {
+					t.Fatalf("%s: %v", tool, err)
+				}
+				if !res.IsError {
+					t.Errorf("%s answered %+v, want a retryable tool error and not a feature-off result", tool, res.StructuredContent)
+				}
+			}
+		})
 	}
 }
