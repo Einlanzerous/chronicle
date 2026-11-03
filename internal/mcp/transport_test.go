@@ -97,7 +97,7 @@ func newWorld(t *testing.T) *world {
 		DB: w.st, Accounts: w.st, Version: "test", SecureCookies: true,
 		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 		CFAccess: w.iss.Verifier(webAUD, mcpAUD), MCPAudience: mcpAUD,
-		Wiki: w.st, Threads: w.st, Memos: w.st, Triage: triager,
+		Wiki: w.st, Threads: w.st, Memos: w.st, Triage: triager, Keys: projectKeys(t),
 	})
 	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		w.mu.Lock()
