@@ -56,7 +56,13 @@ type world struct {
 	revokes   int
 }
 
-func newWorld(t *testing.T) *world {
+func newWorld(t *testing.T) *world { return buildWorld(t, true) }
+
+// newWorldWithoutTriage is the world for a deployment whose Scribe is not
+// configured: serve leaves Deps.Triage unset, and /triage/* answers 503.
+func newWorldWithoutTriage(t *testing.T) *world { return buildWorld(t, false) }
+
+func buildWorld(t *testing.T, withTriage bool) *world {
 	t.Helper()
 	dsn := strings.TrimSpace(os.Getenv("CHRONICLE_TEST_DATABASE_URL"))
 	if dsn == "" {
@@ -86,19 +92,23 @@ func newWorld(t *testing.T) *world {
 	// wiki, the threads, and triage (CHRN-66). serve wires the first two
 	// unconditionally, so the real router cannot answer their 503s; triage is
 	// the one a deployment can lack.
-	triager, err := triage.New(triage.Options{
-		Store: w.st, Tier1: noProposals{}, Tickets: noTickets{}, Catalogue: noCatalogue{},
-		Proposer: "test@v0",
-	})
-	if err != nil {
-		t.Fatalf("triage.New: %v", err)
-	}
-	handler := api.NewRouter(api.Deps{
+	deps := api.Deps{
 		DB: w.st, Accounts: w.st, Version: "test", SecureCookies: true,
 		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 		CFAccess: w.iss.Verifier(webAUD, mcpAUD), MCPAudience: mcpAUD,
-		Wiki: w.st, Threads: w.st, Memos: w.st, Triage: triager, Keys: projectKeys(t),
-	})
+		Wiki: w.st, Threads: w.st, Memos: w.st, Keys: projectKeys(t),
+	}
+	if withTriage {
+		triager, err := triage.New(triage.Options{
+			Store: w.st, Tier1: noProposals{}, Tickets: noTickets{}, Catalogue: noCatalogue{},
+			Proposer: "test@v0",
+		})
+		if err != nil {
+			t.Fatalf("triage.New: %v", err)
+		}
+		deps.Triage = triager
+	}
+	handler := api.NewRouter(deps)
 	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		w.mu.Lock()
 		switch {
