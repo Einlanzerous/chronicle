@@ -57,6 +57,9 @@ var searchNotes = define("search_notes", fmt.Sprintf(
 		if resp.StatusCode() == http.StatusBadRequest {
 			return out, refused("search_notes", resp.JSON400)
 		}
+		if err := notesOff("GET /notes/search", resp.StatusCode(), resp.JSON503); err != nil {
+			return out, err
+		}
 		av, err := Classify("GET /notes/search", resp.StatusCode())
 		if err != nil {
 			return out, err
@@ -158,6 +161,9 @@ var getNote = define("get_note", fmt.Sprintf(
 		if resp.StatusCode() == http.StatusBadRequest {
 			return out, refused("get_note", resp.JSON400)
 		}
+		if err := notesOff("GET /notes/{ref}", resp.StatusCode(), resp.JSON503); err != nil {
+			return out, err
+		}
 		av, err := Classify("GET /notes/{ref}", resp.StatusCode())
 		if err != nil {
 			return out, err
@@ -217,4 +223,21 @@ func refused(tool string, e *apiclient.Error) error {
 		return fmt.Errorf("%s: Chronicle refused the call: %s", tool, e.Message)
 	}
 	return fmt.Errorf("%s: Chronicle refused the call", tool)
+}
+
+// notesOff lets a 503 through to Classify only when Chronicle itself said the
+// notes store is not wired (`wiki_unconfigured`). Any other 503 -- Traefik's
+// plain-text one while the container restarts, the router's own
+// `accounts_unconfigured` -- is a failure to retry, not a fact about the
+// deployment, and reporting it as "notes are not turned on" would teach an
+// agent the wrong thing. The generated client fills JSON503 only for a JSON
+// body, so a proxy's page leaves it nil.
+func notesOff(op string, status int, body *apiclient.Error) error {
+	if status != http.StatusServiceUnavailable {
+		return nil
+	}
+	if body != nil && body.Code == "wiki_unconfigured" {
+		return nil
+	}
+	return fmt.Errorf("%s answered 503 and Chronicle did not say notes are off: a proxy or a restart, so retry rather than conclude anything", op)
 }

@@ -352,3 +352,99 @@ func connectSession(t *testing.T, sess mcp.Session) *sdk.ClientSession {
 	t.Cleanup(func() { _ = cs.Close() })
 	return cs
 }
+
+// A 2xx that is not a JSON 200 -- an HTML page from a proxy, a 204 -- leaves the
+// generated client's typed body nil. The SDK does not recover a handler panic,
+// so on mcp-serve one dereference would drop every hosted session: the tools
+// must answer an error instead.
+func TestNotesToolsSurviveA2xxThatIsNotJSON(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		ctype  string
+		body   string
+	}{
+		{"an HTML 200", http.StatusOK, "text/html", "<html>captive portal</html>"},
+		{"a 204", http.StatusNoContent, "", ""},
+		{"a JSON 200 that is not the shape", http.StatusOK, "text/plain", "ok"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+				if tc.ctype != "" {
+					rw.Header().Set("Content-Type", tc.ctype)
+				}
+				rw.WriteHeader(tc.status)
+				_, _ = rw.Write([]byte(tc.body))
+			}))
+			t.Cleanup(stub.Close)
+			api, err := mcp.NewAPI(stub.URL, "token", &http.Client{Timeout: 10 * time.Second})
+			if err != nil {
+				t.Fatalf("NewAPI: %v", err)
+			}
+			cs := connectSession(t, mcp.Session{Identity: mcp.Identity{Transport: mcp.TransportStdio, Kind: "agent"}, API: api})
+			for name, args := range map[string]map[string]any{
+				"search_notes": {"query": "x"}, "get_note": {"ref": "CHR-0001"},
+			} {
+				if msg := callToolErr(t, cs, name, args); !strings.Contains(msg, "no body") {
+					t.Errorf("%s: error %q, want it to say the answer had no body", name, msg)
+				}
+			}
+		})
+	}
+}
+
+// A 410 whose body is not a tombstone is still a withdrawn note, just without
+// the who and when; the typed body being nil must not be dereferenced.
+func TestGetNoteSurvivesA410WithoutATombstone(t *testing.T) {
+	stub := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "text/html")
+		rw.WriteHeader(http.StatusGone)
+		_, _ = rw.Write([]byte("<html>gone</html>"))
+	}))
+	t.Cleanup(stub.Close)
+	api, err := mcp.NewAPI(stub.URL, "token", &http.Client{Timeout: 10 * time.Second})
+	if err != nil {
+		t.Fatalf("NewAPI: %v", err)
+	}
+	cs := connectSession(t, mcp.Session{Identity: mcp.Identity{Transport: mcp.TransportStdio, Kind: "agent"}, API: api})
+	var got mcp.GetNoteResult
+	callTool(t, cs, "get_note", map[string]any{"ref": "CHR-0001"}, &got)
+	if got.Availability != mcp.Withdrawn || got.WithdrawnBy != "" || got.WithdrawnAt != nil {
+		t.Errorf("got %+v, want withdrawn with no who or when", got)
+	}
+}
+
+// Only Chronicle's own wiki_unconfigured 503 means the feature is off. A
+// proxy's plain-text 503 and the router's accounts_unconfigured are failures to
+// retry, and must not be reported as a successful "not turned on".
+func TestNotesToolsOnlyCallA503OffWhenChronicleSaidSo(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		ctype string
+		body  string
+	}{
+		{"a proxy's plain-text 503", "text/plain", "Service Unavailable"},
+		{"the router's accounts_unconfigured", "application/json", `{"code":"accounts_unconfigured","message":"no accounts"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+				rw.Header().Set("Content-Type", tc.ctype)
+				rw.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = rw.Write([]byte(tc.body))
+			}))
+			t.Cleanup(stub.Close)
+			api, err := mcp.NewAPI(stub.URL, "token", &http.Client{Timeout: 10 * time.Second})
+			if err != nil {
+				t.Fatalf("NewAPI: %v", err)
+			}
+			cs := connectSession(t, mcp.Session{Identity: mcp.Identity{Transport: mcp.TransportStdio, Kind: "agent"}, API: api})
+			for name, args := range map[string]map[string]any{
+				"search_notes": {"query": "x"}, "get_note": {"ref": "CHR-0001"},
+			} {
+				if msg := callToolErr(t, cs, name, args); !strings.Contains(msg, "retry") {
+					t.Errorf("%s: error %q, want a retryable failure", name, msg)
+				}
+			}
+		})
+	}
+}
