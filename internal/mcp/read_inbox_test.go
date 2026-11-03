@@ -276,39 +276,100 @@ func TestReadInboxAnswersAnErrorNotAPanicToAnUnexpectedSuccess(t *testing.T) {
 		{"JSON that is not the batch", http.StatusOK, "application/json", `"nope"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			stub := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-				if tc.contentType != "" {
-					rw.Header().Set("Content-Type", tc.contentType)
-				}
-				rw.WriteHeader(tc.status)
-				_, _ = io.WriteString(rw, tc.body)
-			}))
-			t.Cleanup(stub.Close)
-
-			api, err := mcp.NewAPI(stub.URL, "token", nil)
-			if err != nil {
-				t.Fatalf("NewAPI: %v", err)
-			}
-			sess := mcp.Session{
-				Identity: mcp.Identity{Transport: mcp.TransportStdio, Kind: mcp.KindPerson},
-				API:      api,
-			}
-			server := mcp.BuildServer(mcp.Build{Version: "test"}, sess, nil)
-			ctx, cancel := context.WithCancel(context.Background())
-			serverSide, clientSide := sdk.NewInMemoryTransports()
-			done := make(chan error, 1)
-			go func() { done <- server.Run(ctx, serverSide) }()
-			t.Cleanup(func() { cancel(); <-done })
-			cs, err := sdk.NewClient(&sdk.Implementation{Name: "test", Version: "0"}, nil).Connect(ctx, clientSide, nil)
-			if err != nil {
-				t.Fatalf("connect: %v", err)
-			}
-			t.Cleanup(func() { _ = cs.Close() })
-
+			cs := stubInbox(t, tc.status, tc.contentType, tc.body)
+			ctx := context.Background()
 			res, err := cs.CallTool(ctx, &sdk.CallToolParams{Name: "read_inbox"})
 			if err == nil && !res.IsError {
 				t.Fatalf("read_inbox answered %+v to a response that is not a batch, want an error", res.StructuredContent)
 			}
 		})
 	}
+}
+
+// A 503 is "triage is off" only with Chronicle's own triage_unconfigured code.
+// A proxy's plain-text 503 and the router's accounts_unconfigured are failures
+// to retry, not a feature that is off; the stub also pins the positive case.
+func TestReadInboxTrustsOnlyChroniclesOwn503(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		contentType string
+		body        string
+		wantOff     bool
+	}{
+		{"Chronicle's triage_unconfigured", "application/json", `{"code":"triage_unconfigured","message":"triage is not configured"}`, true},
+		{"a proxy's plain-text 503", "text/plain", "upstream connect error or disconnect/reset before headers", false},
+		{"a proxy's HTML 503", "text/html", "<html>503 Service Unavailable</html>", false},
+		{"accounts_unconfigured", "application/json", `{"code":"accounts_unconfigured","message":"accounts are not configured"}`, false},
+		{"a 503 JSON with no code", "application/json", `{}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cs := stubInbox(t, http.StatusServiceUnavailable, tc.contentType, tc.body)
+			res, err := cs.CallTool(context.Background(), &sdk.CallToolParams{Name: "read_inbox"})
+			if err != nil {
+				t.Fatalf("read_inbox: %v", err)
+			}
+			if tc.wantOff {
+				if res.IsError {
+					t.Fatalf("answered an error to triage_unconfigured: %+v", res.Content)
+				}
+				raw, _ := json.Marshal(res.StructuredContent)
+				var got mcp.Inbox
+				if err := json.Unmarshal(raw, &got); err != nil {
+					t.Fatalf("decode: %v", err)
+				}
+				if !got.Unconfigured || !strings.Contains(got.Note, "not turned on") {
+					t.Errorf("inbox = %+v, want unconfigured with the feature-off note", got)
+				}
+				return
+			}
+			if !res.IsError {
+				t.Fatalf("a 503 that is not Chronicle's triage_unconfigured came back as success: %+v", res.StructuredContent)
+			}
+			var text string
+			for _, c := range res.Content {
+				if tc, ok := c.(*sdk.TextContent); ok {
+					text += tc.Text
+				}
+			}
+			if !strings.Contains(text, "try again") {
+				t.Errorf("error = %q, want it to say the failure is retryable", text)
+			}
+		})
+	}
+}
+
+// stubInbox is a session whose API is a stub answering every request with the
+// given status and body, so a response the real handler never produces can be
+// put in front of the tool. It needs no database.
+func stubInbox(t *testing.T, status int, contentType, body string) *sdk.ClientSession {
+	t.Helper()
+	stub := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if contentType != "" {
+			rw.Header().Set("Content-Type", contentType)
+		}
+		rw.WriteHeader(status)
+		_, _ = io.WriteString(rw, body)
+	}))
+	t.Cleanup(stub.Close)
+
+	api, err := mcp.NewAPI(stub.URL, "token", nil)
+	if err != nil {
+		t.Fatalf("NewAPI: %v", err)
+	}
+	sess := mcp.Session{
+		Identity: mcp.Identity{Transport: mcp.TransportStdio, Kind: mcp.KindPerson},
+		API:      api,
+	}
+	server := mcp.BuildServer(mcp.Build{Version: "test"}, sess, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	serverSide, clientSide := sdk.NewInMemoryTransports()
+	done := make(chan error, 1)
+	go func() { done <- server.Run(ctx, serverSide) }()
+	t.Cleanup(func() { cancel(); <-done })
+	cs, err := sdk.NewClient(&sdk.Implementation{Name: "test", Version: "0"}, nil).Connect(ctx, clientSide, nil)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+	return cs
 }

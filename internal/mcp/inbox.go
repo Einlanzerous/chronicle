@@ -2,7 +2,9 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/Einlanzerous/chronicle/internal/apiclient"
@@ -36,6 +38,12 @@ type Inbox struct {
 	Note         string      `json:"note,omitempty" jsonschema:"what to make of an empty or unavailable answer"`
 }
 
+// codeTriageUnconfigured is the code internal/api answers with when no triage
+// service is wired (apierr.go). Restated here because internal/mcp may not
+// import internal/api; TestReadInboxSaysWhenTriageIsOff drives the real handler,
+// so a change to the code fails there.
+const codeTriageUnconfigured = "triage_unconfigured"
+
 // emptyForAgent is said when an agent account's inbox comes back empty, because
 // that is the answer an agent will most often get and the one it is likeliest
 // to misread as "nothing is waiting".
@@ -66,18 +74,26 @@ var readInbox = define("read_inbox",
 		if err != nil {
 			return Inbox{}, fmt.Errorf("reach the Chronicle API: %w", err)
 		}
+		out := Inbox{Memos: []InboxMemo{}, Limit: limit, LimitClamped: clamped}
+		// A 503 is "triage is off in this deployment" ONLY when Chronicle says
+		// so in its own words. A proxy's plain-text 503 during a redeploy, or
+		// the router's accounts_unconfigured, is a failure to retry, and
+		// reporting it as a feature that is off would tell an agent to stop
+		// asking about something that is merely restarting.
+		if resp.StatusCode() == http.StatusServiceUnavailable {
+			if resp.JSON503 != nil && resp.JSON503.Code == codeTriageUnconfigured {
+				out.Unconfigured = true
+				out.Note = FeatureOff("Triage")
+				return out, nil
+			}
+			return Inbox{}, errors.New("GET /triage/batch answered 503 without Chronicle's triage_unconfigured code: " +
+				"the API or a proxy in front of it is unavailable; try again shortly")
+		}
 		av, err := Classify("GET /triage/batch", resp.StatusCode())
 		if err != nil {
 			return Inbox{}, err
 		}
-		out := Inbox{Memos: []InboxMemo{}, Limit: limit, LimitClamped: clamped}
-		switch av {
-		case Unconfigured:
-			out.Unconfigured = true
-			out.Note = FeatureOff("Triage")
-			return out, nil
-		case Available:
-		default:
+		if av != Available {
 			return Inbox{}, fmt.Errorf("GET /triage/batch answered %s", av)
 		}
 		if resp.JSON200 == nil {
