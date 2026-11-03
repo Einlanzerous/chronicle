@@ -159,6 +159,15 @@ func TestHarnessRecordsWhatAToolDid(t *testing.T) {
 // the recorder and the GET-only check.
 var readDrivers = map[string]func(t *testing.T, cs *sdk.ClientSession){
 	"whoami": func(t *testing.T, cs *sdk.ClientSession) { callWhoAmI(t, cs) },
+	"get_thread": func(t *testing.T, cs *sdk.ClientSession) {
+		callThreadTool[mcp.ThreadResult](t, cs, "get_thread", map[string]any{"ref": "DSC-0001"})
+	},
+	"list_pages": func(t *testing.T, cs *sdk.ClientSession) {
+		callThreadTool[mcp.PagesResult](t, cs, "list_pages", struct{}{})
+	},
+	"list_threads": func(t *testing.T, cs *sdk.ClientSession) {
+		callThreadTool[mcp.ThreadsResult](t, cs, "list_threads", map[string]any{"page": "nowhere"})
+	},
 }
 
 func TestEveryReadToolIsDrivenThroughTheHarness(t *testing.T) {

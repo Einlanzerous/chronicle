@@ -20,6 +20,7 @@ const (
 	// names no limit, or names one that is not positive.
 	DefaultSearchLimit = 10
 	DefaultInboxLimit  = 10
+	DefaultListLimit   = 10
 
 	// APISearchCap, APITriageCap and APIListCap restate what the API clamps
 	// to, so a limit over them is clamped here, echoed, and never sent to be

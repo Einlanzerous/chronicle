@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -201,6 +202,19 @@ func callWhoAmI(t *testing.T, cs *sdk.ClientSession) mcp.WhoAmI {
 	return out
 }
 
+// registeredReadTools is every tool a session of any kind is offered today,
+// sorted: the registry has no write tool, so it is all of them.
+func registeredReadTools() []string {
+	var names []string
+	for _, tool := range mcp.Tools() {
+		if !tool.Mutates {
+			names = append(names, tool.Name)
+		}
+	}
+	slices.Sort(names)
+	return names
+}
+
 func toolNames(t *testing.T, cs *sdk.ClientSession) []string {
 	t.Helper()
 	res, err := cs.ListTools(context.Background(), nil)
@@ -211,6 +225,7 @@ func toolNames(t *testing.T, cs *sdk.ClientSession) []string {
 	for _, tool := range res.Tools {
 		names = append(names, tool.Name)
 	}
+	slices.Sort(names)
 	return names
 }
 
@@ -338,8 +353,8 @@ func TestHostedSessionActsAsThePersonAndExchangesOnce(t *testing.T) {
 	cs := connect(t, endpoint, w.assertion(t, w.owner.Email, mcpAUD))
 	defer func() { _ = cs.Close() }()
 
-	if names := toolNames(t, cs); len(names) != 1 || names[0] != "whoami" {
-		t.Fatalf("tools = %v, want exactly whoami", names)
+	if names, want := toolNames(t, cs), registeredReadTools(); !slices.Equal(names, want) {
+		t.Fatalf("tools = %v, want exactly the registry's read tools %v", names, want)
 	}
 	for i := 0; i < 3; i++ {
 		who := callWhoAmI(t, cs)
@@ -637,8 +652,8 @@ func TestStdioRunsAsTheAccountItsTokenNames(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cs := stdio(t, mcp.StdioConfig{BaseURL: w.apiURL, Token: w.sessionFor(t, tc.user, "mcp-stdio")})
 
-			if names := toolNames(t, cs); len(names) != 1 || names[0] != "whoami" {
-				t.Fatalf("tools = %v, want exactly whoami", names)
+			if names, want := toolNames(t, cs), registeredReadTools(); !slices.Equal(names, want) {
+				t.Fatalf("tools = %v, want exactly the registry's read tools %v", names, want)
 			}
 			who := callWhoAmI(t, cs)
 			if who.Kind != tc.kind || who.Transport != "stdio" || who.Email != tc.user.Email {
