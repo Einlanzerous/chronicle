@@ -168,6 +168,14 @@ var readDrivers = map[string]func(t *testing.T, cs *sdk.ClientSession){
 	"list_threads": func(t *testing.T, cs *sdk.ClientSession) {
 		callThreadTool[mcp.ThreadsResult](t, cs, "list_threads", map[string]any{"page": "nowhere"})
 	},
+	"search_notes": func(t *testing.T, cs *sdk.ClientSession) {
+		var out mcp.SearchNotesResult
+		callTool(t, cs, "search_notes", map[string]any{"query": "anything"}, &out)
+	},
+	"get_note": func(t *testing.T, cs *sdk.ClientSession) {
+		var out mcp.GetNoteResult
+		callTool(t, cs, "get_note", map[string]any{"ref": "CHR-0001"}, &out)
+	},
 }
 
 func TestEveryReadToolIsDrivenThroughTheHarness(t *testing.T) {
