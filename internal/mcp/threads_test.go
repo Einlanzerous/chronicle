@@ -251,15 +251,12 @@ func TestListThreadsClampsItsLimit(t *testing.T) {
 	}
 }
 
-// serve always wires the wiki and the threads, so the real router cannot
-// answer their 503s; a stub API can, and the tools must say the feature is
-// off rather than fail the call.
-func TestThreadToolsSayWhenTheFeatureIsOff(t *testing.T) {
-	stub := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		rw.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = rw.Write([]byte(`{"code":"threads_unconfigured","message":"off"}`))
-	}))
+// stubSession is a session whose API is handler, for the answers the real
+// router cannot produce: serve always wires the wiki and the threads, and
+// never answers a 2xx that is not the documented JSON.
+func stubSession(t *testing.T, handler http.HandlerFunc) *sdk.ClientSession {
+	t.Helper()
+	stub := httptest.NewServer(handler)
 	t.Cleanup(stub.Close)
 	api, err := mcp.NewAPI(stub.URL, "token", &http.Client{Timeout: 10 * time.Second})
 	if err != nil {
@@ -275,7 +272,18 @@ func TestThreadToolsSayWhenTheFeatureIsOff(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(func() { _ = cs.Close() })
+	return cs
+}
 
+// The wiki and the threads are always wired by serve, so the real router
+// cannot answer their 503s; the tools must say the feature is off rather than
+// fail the call.
+func TestThreadToolsSayWhenTheFeatureIsOff(t *testing.T) {
+	cs := stubSession(t, func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		rw.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = rw.Write([]byte(`{"code":"threads_unconfigured","message":"off"}`))
+	})
 	if got := callThreadTool[mcp.ThreadResult](t, cs, "get_thread", map[string]any{"ref": "DSC-0001"}); got.Status != mcp.Unconfigured || got.Message == "" {
 		t.Errorf("get_thread = %+v", got)
 	}
@@ -284,5 +292,44 @@ func TestThreadToolsSayWhenTheFeatureIsOff(t *testing.T) {
 	}
 	if got := callThreadTool[mcp.ThreadsResult](t, cs, "list_threads", map[string]any{"page": "x"}); got.Status != mcp.Unconfigured || got.Message == "" {
 		t.Errorf("list_threads = %+v", got)
+	}
+}
+
+// A 2xx that is not the documented JSON 200 (a 204, or an HTML page from
+// something between the client and the API) is a failed call. It must not
+// reach a nil body: the SDK does not recover a handler panic, so on mcp-serve
+// that would take every hosted session down with it.
+func TestThreadToolsFailCleanlyOnAnUndocumentedSuccess(t *testing.T) {
+	cs := stubSession(t, func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "text/html")
+		_, _ = rw.Write([]byte("<html>not the API</html>"))
+	})
+	for name, args := range map[string]any{
+		"get_thread":   map[string]any{"ref": "DSC-0001"},
+		"list_pages":   struct{}{},
+		"list_threads": map[string]any{"page": "x"},
+	} {
+		res, err := cs.CallTool(context.Background(), &sdk.CallToolParams{Name: name, Arguments: args})
+		if err != nil {
+			t.Fatalf("%s: %v (the session should survive a bad answer)", name, err)
+		}
+		if !res.IsError {
+			t.Errorf("%s = %+v, want a tool error", name, res.StructuredContent)
+		}
+	}
+}
+
+// Asked for an old path, the API answers the page's CURRENT path and the one
+// asked for as moved_from. The tool must hand the agent the new one, or it
+// learns that the page moved and not where to.
+func TestListThreadsReportsTheCurrentPathOfAMovedPage(t *testing.T) {
+	cs := stubSession(t, func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(rw, `{"items":[],"moved_from":"old/place","page":{"id":%q,"path":"new/place","slug":"place",`+
+			`"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}}`, uuid.New())
+	})
+	got := callThreadTool[mcp.ThreadsResult](t, cs, "list_threads", map[string]any{"page": "old/place"})
+	if got.Status != mcp.Available || got.Page != "new/place" || got.MovedFrom != "old/place" {
+		t.Errorf("result = %+v, want page new/place moved from old/place", got)
 	}
 }

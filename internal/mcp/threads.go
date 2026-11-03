@@ -77,6 +77,9 @@ var getThread = define("get_thread",
 			// build does not know, and saying so beats guessing.
 			return ThreadResult{}, fmt.Errorf("GET /discussions/{ref} answered 410, which this tool does not know")
 		}
+		if resp.JSON200 == nil {
+			return ThreadResult{}, fmt.Errorf("GET /discussions/{ref} answered %d with no thread", resp.StatusCode())
+		}
 		return threadResult(resp.JSON200), nil
 	})
 
@@ -192,7 +195,7 @@ var listThreads = define("list_threads",
 		if err != nil {
 			return ThreadsResult{}, err
 		}
-		out := ThreadsResult{Status: avail, Page: in.Page, Limit: limit, LimitClamped: clamped}
+		out := ThreadsResult{Status: avail, Limit: limit, LimitClamped: clamped}
 		switch avail {
 		case NotFound:
 			out.Message = "no page has the path " + in.Page + "; list_pages lists the paths that exist"
@@ -207,6 +210,7 @@ var listThreads = define("list_threads",
 			return ThreadsResult{}, fmt.Errorf("GET /discussions answered %d with no list", resp.StatusCode())
 		}
 		list := resp.JSON200
+		out.Page = list.Page.Path
 		if list.MovedFrom != nil {
 			out.MovedFrom = *list.MovedFrom
 		}
