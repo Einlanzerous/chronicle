@@ -24,7 +24,7 @@ type InboxMemo struct {
 	CapturedAt     time.Time `json:"captured_at" jsonschema:"when the recording was captured"`
 	DurationMs     int       `json:"duration_ms,omitempty" jsonschema:"how long the recording is, when anything has measured it"`
 	Excerpt        string    `json:"excerpt" jsonschema:"the start of the transcript: what was said"`
-	ProposalStatus string    `json:"proposal_status" jsonschema:"where the Scribe's routing proposal stands: absent, proposed, needs_input, or an error state"`
+	ProposalStatus string    `json:"proposal_status" jsonschema:"where the Scribe's routing proposal stands: valid (a usable proposal), needs_input (a usable one that wants a person to finish it), invalid (no usable proposal; see proposal_error) or absent (the Scribe has not looked at it)"`
 	ProposalError  string    `json:"proposal_error,omitempty" jsonschema:"why there is no usable proposal, when there is none"`
 	PreAcceptable  bool      `json:"pre_acceptable" jsonschema:"whether the proposal clears the confidence threshold a person's screen pre-fills from"`
 }
@@ -66,7 +66,7 @@ var readInbox = define("read_inbox",
 		"and the result says which), so a full list may not be the whole inbox. "+
 		"This puts transcript text in front of you: expect a few hundred characters per memo. "+
 		"Reads only -- it does not accept, defer or route anything. "+
-		"To find something already filed as a note, search notes (search_notes) instead.",
+		"A memo leaves the inbox once it is routed, and is found as a note, not here.",
 	false,
 	func(ctx context.Context, sess Session, in InboxInput) (Inbox, error) {
 		limit, clamped := ClampLimit(in.Limit, DefaultInboxLimit, APITriageCap)
