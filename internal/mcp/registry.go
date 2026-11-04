@@ -46,7 +46,7 @@ func define[In, Out any](name, description string, mutates bool,
 // adds the reads here and CHRN-67 the writes; which of them a given session is
 // offered is BuildServer's decision and not theirs.
 func Tools() []Tool {
-	return []Tool{whoami, getThread, listPages, listThreads, searchNotes, getNote}
+	return []Tool{whoami, getThread, listPages, listThreads, searchNotes, getNote, readInbox}
 }
 
 // BuildServer returns an MCP server for one session, carrying the tools that

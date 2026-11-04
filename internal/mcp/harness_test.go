@@ -176,6 +176,7 @@ var readDrivers = map[string]func(t *testing.T, cs *sdk.ClientSession){
 		var out mcp.GetNoteResult
 		callTool(t, cs, "get_note", map[string]any{"ref": "CHR-0001"}, &out)
 	},
+	"read_inbox": func(t *testing.T, cs *sdk.ClientSession) { callReadInbox(t, cs, 0) },
 }
 
 func TestEveryReadToolIsDrivenThroughTheHarness(t *testing.T) {
