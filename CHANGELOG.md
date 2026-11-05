@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.33.0](https://github.com/Einlanzerous/chronicle/compare/v1.32.0...v1.33.0) (2026-11-04)
+
+
+### Features
+
+* **mcp:** get_thread, list_pages and list_threads (CHRN-166) ([#185](https://github.com/Einlanzerous/chronicle/issues/185)) ([9ceb543](https://github.com/Einlanzerous/chronicle/commit/9ceb543801ac1141c0e80510f095cd7dac1cb165))
+* **mcp:** read_inbox, the memos awaiting triage for the account a session acts as (CHRN-167) ([#187](https://github.com/Einlanzerous/chronicle/issues/187)) ([63037b0](https://github.com/Einlanzerous/chronicle/commit/63037b0a897921b2ebf65d0475e97701ca266d18))
+* **mcp:** search_notes and get_note, the first read tools (CHRN-165) ([#186](https://github.com/Einlanzerous/chronicle/issues/186)) ([f39aaab](https://github.com/Einlanzerous/chronicle/commit/f39aaabcce306e1e982fcac93eea35499f4bff76))
+* **mcp:** the plumbing the read tools share, and a GET-only harness (CHRN-164) ([#183](https://github.com/Einlanzerous/chronicle/issues/183)) ([88f9528](https://github.com/Einlanzerous/chronicle/commit/88f9528c05a27ae874efe0a65656b0b8840419bc))
+
 ## [1.32.0](https://github.com/Einlanzerous/chronicle/compare/v1.31.0...v1.32.0) (2026-10-31)
 
 
