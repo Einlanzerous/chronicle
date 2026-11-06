@@ -16,6 +16,7 @@ import '../../router/router.dart';
 import '../../theme/theme.dart';
 import '../../theme/tokens.dart';
 
+/// The tab bar, plus a SIGN IN tab while the device cannot send.
 ///
 /// A device that is not ready to send (no address or no credential) gets a
 /// third tab, SIGN IN. Capture and queue are reachable without a credential and
@@ -31,31 +32,31 @@ class BottomCaptureQueueTabs extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final ready = ref.watch(hasServerProvider) && ref.watch(isSignedInProvider);
     return DecoratedBox(
-        decoration: const BoxDecoration(
-          color: chBase,
-          border: Border(top: BorderSide(color: chLine)),
-        ),
-        child: Row(
-          children: [
+      decoration: const BoxDecoration(
+        color: chBase,
+        border: Border(top: BorderSide(color: chLine)),
+      ),
+      child: Row(
+        children: [
+          _Tab(
+            label: 'CAPTURE',
+            active: current == captureRoute,
+            onTap: () => context.go(captureRoute),
+          ),
+          _Tab(
+            label: 'QUEUE',
+            active: current == queueRoute,
+            onTap: () => context.go(queueRoute),
+          ),
+          if (!ready)
             _Tab(
-              label: 'CAPTURE',
-              active: current == captureRoute,
-              onTap: () => context.go(captureRoute),
+              label: 'SIGN IN',
+              active: false,
+              onTap: () => context.go(signInRoute),
             ),
-            _Tab(
-              label: 'QUEUE',
-              active: current == queueRoute,
-              onTap: () => context.go(queueRoute),
-            ),
-            if (!ready)
-              _Tab(
-                label: 'SIGN IN',
-                active: false,
-                onTap: () => context.go(signInRoute),
-              ),
-          ],
-        ),
-      );
+        ],
+      ),
+    );
   }
 }
 
