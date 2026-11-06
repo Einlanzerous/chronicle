@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.33.1](https://github.com/Einlanzerous/chronicle/compare/v1.33.0...v1.33.1) (2026-11-06)
+
+
+### Maintenance
+
+* **main:** release mobile 0.5.1 ([#189](https://github.com/Einlanzerous/chronicle/issues/189)) ([592b9c5](https://github.com/Einlanzerous/chronicle/commit/592b9c500e5b323634858a0ed07c27b169352d74))
+
 ## [1.33.0](https://github.com/Einlanzerous/chronicle/compare/v1.32.0...v1.33.0) (2026-11-04)
 
 
