@@ -50,6 +50,10 @@ const captureRoute = '/capture';
 /// this gone anywhere" -- not a reason to bounce the screen that says so.
 const queueRoute = '/queue';
 
+/// The front door. Reachable only without a credential; a signed-in device is
+/// redirected off it.
+const signInRoute = '/sign-in';
+
 /// CHRN-63's batch triage. Unlike capture and queue it needs a credential.
 const triageRoute = '/triage';
 

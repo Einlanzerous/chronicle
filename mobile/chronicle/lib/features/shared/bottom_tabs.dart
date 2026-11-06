@@ -7,39 +7,57 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../api/server_url.dart';
+import '../../api/session.dart';
 import '../../router/router.dart';
 import '../../theme/theme.dart';
 import '../../theme/tokens.dart';
 
-class BottomCaptureQueueTabs extends StatelessWidget {
+/// The tab bar, plus a SIGN IN tab while the device cannot send.
+///
+/// A device that is not ready to send (no address or no credential) gets a
+/// third tab, SIGN IN. Capture and queue are reachable without a credential and
+/// `go` leaves nothing to pop back to, so without it a device that recorded
+/// before signing in had no way to the front door (CHRN-170).
+class BottomCaptureQueueTabs extends ConsumerWidget {
   const BottomCaptureQueueTabs({super.key, required this.current});
 
   /// [captureRoute] or [queueRoute].
   final String current;
 
   @override
-  Widget build(BuildContext context) => DecoratedBox(
-        decoration: const BoxDecoration(
-          color: chBase,
-          border: Border(top: BorderSide(color: chLine)),
-        ),
-        child: Row(
-          children: [
+  Widget build(BuildContext context, WidgetRef ref) {
+    final ready = ref.watch(hasServerProvider) && ref.watch(isSignedInProvider);
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        color: chBase,
+        border: Border(top: BorderSide(color: chLine)),
+      ),
+      child: Row(
+        children: [
+          _Tab(
+            label: 'CAPTURE',
+            active: current == captureRoute,
+            onTap: () => context.go(captureRoute),
+          ),
+          _Tab(
+            label: 'QUEUE',
+            active: current == queueRoute,
+            onTap: () => context.go(queueRoute),
+          ),
+          if (!ready)
             _Tab(
-              label: 'CAPTURE',
-              active: current == captureRoute,
-              onTap: () => context.go(captureRoute),
+              label: 'SIGN IN',
+              active: false,
+              onTap: () => context.go(signInRoute),
             ),
-            _Tab(
-              label: 'QUEUE',
-              active: current == queueRoute,
-              onTap: () => context.go(queueRoute),
-            ),
-          ],
-        ),
-      );
+        ],
+      ),
+    );
+  }
 }
 
 class _Tab extends StatelessWidget {
