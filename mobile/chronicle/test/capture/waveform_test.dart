@@ -8,6 +8,8 @@ library;
 import 'dart:async';
 import 'dart:io';
 
+import 'package:chronicle/api/server_url.dart';
+import 'package:chronicle/api/session.dart';
 import 'package:chronicle/capture/capture_channel.dart';
 import 'package:chronicle/capture/capture_controller.dart';
 import 'package:chronicle/features/capture/capture_screen.dart';
@@ -46,6 +48,9 @@ void main() {
       overrides: [
         capturePlatformProvider.overrideWithValue(feed),
         captureOwnerProvider.overrideWithValue(NoOwner()),
+        // The tabs read these to decide whether to offer SIGN IN (CHRN-170).
+        hasServerProvider.overrideWithValue(true),
+        isSignedInProvider.overrideWithValue(true),
       ],
     );
     addTearDown(container.dispose);

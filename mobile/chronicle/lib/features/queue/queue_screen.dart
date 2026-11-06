@@ -10,6 +10,7 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../capture/capture_controller.dart';
 import '../../capture/capture_record.dart';
@@ -266,6 +267,12 @@ class _Banner extends StatelessWidget {
             ),
             if (deviceBlock == null)
               TextButton(onPressed: onRetry, child: const Text('RETRY')),
+            // The banner names the remedy; it has to offer it (CHRN-170).
+            if (deviceBlock?.reason == DeviceBlockReason.signedOut)
+              TextButton(
+                onPressed: () => context.go(signInRoute),
+                child: Text('SIGN IN', style: microLabel(color: chSignal, size: sizeXxs)),
+              ),
           ],
         ),
       ),
