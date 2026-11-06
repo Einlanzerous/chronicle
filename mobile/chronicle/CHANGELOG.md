@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/Einlanzerous/chronicle/compare/mobile-v0.5.0...mobile-v0.5.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **mobile:** a signed-out device can reach sign-in from capture and queue (CHRN-170) ([#188](https://github.com/Einlanzerous/chronicle/issues/188)) ([3852d51](https://github.com/Einlanzerous/chronicle/commit/3852d51c84ae9a2798dd81961ea072f81eec5881))
+
 ## [0.5.0](https://github.com/Einlanzerous/chronicle/compare/mobile-v0.4.0...mobile-v0.5.0) (2026-10-09)
 
 
