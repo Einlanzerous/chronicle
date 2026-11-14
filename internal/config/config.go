@@ -106,6 +106,21 @@ type Config struct {
 	// to verify each request before it ever calls the exchange.
 	MCPCFAccessAUD string
 
+	// GatewayCFAccessAUD is the estate MCP gateway's Access application
+	// (SERV-266, ruling 4 of SERV-257's plan): the gateway verifies a caller's
+	// assertion against its own audience and forwards it unchanged, so the
+	// assertions it delivers carry the GATEWAY's tag. It is an MCP-only
+	// audience, treated exactly as MCPCFAccessAUD is: accepted on the sign-in
+	// exchange, where it is owed the bounded hosted session and never the
+	// browser's, and by `chronicle mcp-serve`. Empty -- the default -- means the
+	// exchange refuses it like any other audience it does not know.
+	//
+	// Load refuses it in CFAccessAUD for the reason it refuses MCPCFAccessAUD
+	// there, and refuses it equal to MCPCFAccessAUD: two applications sharing
+	// one tag is the single-static-audience failure per-application tags exist
+	// to prevent.
+	GatewayCFAccessAUD string
+
 	// MobileBaseURL is the origin baked into an invite's sign-in link, and the
 	// only origin a phone is told about. Empty omits the link.
 	MobileBaseURL string
@@ -322,11 +337,21 @@ func (c Config) SSOEnabled() bool {
 }
 
 // AccessAudiences is every audience tag the sign-in exchange accepts: the web
-// application's, then the hosted MCP endpoint's when one is configured.
+// application's, then the MCP-only ones (MCPAudiences).
 func (c Config) AccessAudiences() []string {
-	out := append([]string(nil), c.CFAccessAUD...)
-	if c.MCPCFAccessAUD != "" {
-		out = append(out, c.MCPCFAccessAUD)
+	return append(append([]string(nil), c.CFAccessAUD...), c.MCPAudiences()...)
+}
+
+// MCPAudiences is every MCP-only audience tag configured: the hosted MCP
+// endpoint's own, then the estate gateway's (SERV-266). An assertion matching
+// one of these is an MCP conversation and is never owed a browser's session.
+// Empty when neither is set.
+func (c Config) MCPAudiences() []string {
+	var out []string
+	for _, aud := range []string{c.MCPCFAccessAUD, c.GatewayCFAccessAUD} {
+		if aud != "" {
+			out = append(out, aud)
+		}
 	}
 	return out
 }
@@ -542,6 +567,14 @@ func Load() (Config, error) {
 		}
 	}
 
+	// SERV-266. The same three refusals for the same reasons, plus one: the
+	// gateway is its own Access application, so its tag equal to the MCP
+	// endpoint's would mean two applications on one audience.
+	c.GatewayCFAccessAUD = strings.TrimSpace(os.Getenv("CHRONICLE_CF_ACCESS_GATEWAY_AUD"))
+	if err := checkGatewayAudience(c.GatewayCFAccessAUD, c.SSOEnabled(), c.CFAccessAUD, c.MCPCFAccessAUD); err != nil {
+		return c, err
+	}
+
 	c.SecureCookies = true
 	if v := strings.TrimSpace(os.Getenv("CHRONICLE_COOKIE_SECURE")); v != "" {
 		c.SecureCookies, err = strconv.ParseBool(v)
@@ -589,6 +622,41 @@ func parseLevel(s string) (slog.Level, error) {
 	default:
 		return 0, fmt.Errorf("config: CHRONICLE_LOG_LEVEL %q is not debug/info/warn/error", s)
 	}
+}
+
+// checkGatewayAudience refuses a gateway audience tag (SERV-266) that could
+// widen anything. Empty is always fine: it is the feature switched off.
+//
+// ssoEnabled is whether this process can verify an assertion at all; web is
+// the web application's tag list (nil where the process does not read it,
+// which is mcp-serve); mcp is the hosted MCP endpoint's own tag.
+func checkGatewayAudience(gateway string, ssoEnabled bool, web []string, mcp string) error {
+	if gateway == "" {
+		return nil
+	}
+	// One application, one tag. A list here would be a second rotation knob
+	// nobody asked for, and a comma inside one tag matches no assertion.
+	if strings.Contains(gateway, ",") {
+		return fmt.Errorf("config: CHRONICLE_CF_ACCESS_GATEWAY_AUD is one audience tag, not a list")
+	}
+	if !ssoEnabled {
+		return fmt.Errorf("config: CHRONICLE_CF_ACCESS_GATEWAY_AUD is set but Cloudflare Access SSO is not " +
+			"(set CHRONICLE_CF_ACCESS_TEAM_DOMAIN and CHRONICLE_CF_ACCESS_AUD, or unset it)")
+	}
+	// The criterion-5 refusal. A gateway tag in the web list would match as
+	// the WEB audience, which the exchange checks first, and every assertion
+	// the gateway forwards would be handed a browser's durable session.
+	for _, w := range web {
+		if w == gateway {
+			return fmt.Errorf("config: CHRONICLE_CF_ACCESS_GATEWAY_AUD also appears in CHRONICLE_CF_ACCESS_AUD; " +
+				"the gateway's tag is an MCP-only audience and must never be in the web list")
+		}
+	}
+	if mcp != "" && mcp == gateway {
+		return fmt.Errorf("config: CHRONICLE_CF_ACCESS_GATEWAY_AUD equals CHRONICLE_MCP_CF_ACCESS_AUD; " +
+			"the gateway and the MCP endpoint are separate Access applications and cannot share a tag")
+	}
+	return nil
 }
 
 // splitList parses a comma-separated environment value, dropping blanks so a

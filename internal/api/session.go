@@ -358,13 +358,29 @@ func (a *api) CreateSessionFromAccess(w http.ResponseWriter, r *http.Request) {
 
 	// Which application the assertion was issued for decides the session. The
 	// tag comes from the verifier, which only ever reports one it was
-	// configured with, and config.Load refuses a tag present in both lists --
-	// so this comparison cannot be satisfied by a browser's assertion.
-	if a.mcpAudience != "" && id.Audience == a.mcpAudience {
+	// configured with, and config.Load refuses an MCP-only tag (the MCP
+	// endpoint's or the gateway's) that is also in the web list -- so this
+	// comparison cannot be satisfied by a browser's assertion.
+	if a.isMCPAudience(id.Audience) {
 		a.completeHostedSignIn(w, r, u)
 		return
 	}
 	a.completeCFAccessSignIn(w, r, u)
+}
+
+// isMCPAudience reports whether aud is one of the configured MCP-only tags.
+// An empty tag is never one: "nothing configured" must not match a token the
+// verifier reported no audience for.
+func (a *api) isMCPAudience(aud string) bool {
+	if aud == "" {
+		return false
+	}
+	for _, m := range a.mcpAudiences {
+		if m == aud {
+			return true
+		}
+	}
+	return false
 }
 
 // completeHostedSignIn mints the session for one hosted MCP conversation.

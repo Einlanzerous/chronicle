@@ -262,12 +262,20 @@ revoked when the session ends, and offered no write tool.
 | `CHRONICLE_CF_ACCESS_TEAM_DOMAIN` | the same value `serve` has |
 | `CHRONICLE_MCP_CF_ACCESS_AUD` | the **MCP** Access application's audience tag |
 | `CHRONICLE_MCP_PORT` | default `4080`; nothing publishes it |
+| `CHRONICLE_CF_ACCESS_GATEWAY_AUD` | optional: the estate MCP gateway's Access application tag (SERV-266). Empty, the default, accepts nothing beyond the MCP tag |
 
 Three things about that audience tag that are not derivable from the block:
 
 - **It is set in two places and they must agree:** on `chronicle-mcp`, which verifies every request against it, and on `chronicle` itself, which is what makes the exchange mint the bounded session rather than refuse the assertion.
 - **It must not also be put in `CHRONICLE_CF_ACCESS_AUD`.** That list is the web application's. A tag in both would match as a browser and be handed a non-expiring session, so `serve` refuses to boot on the overlap — and on the MCP tag being set with no web SSO at all.
 - **Unset on `chronicle`, nothing changes:** the exchange refuses the MCP audience like any other it does not know, and `mcp-serve` sessions fail at initialize with a 401.
+
+The **gateway audience** (`CHRONICLE_CF_ACCESS_GATEWAY_AUD`, SERV-266) is a second MCP-only audience, for the estate MCP gateway of SERV-257. That gateway verifies a caller's assertion against its own application and forwards it unchanged, so what arrives here carries the gateway's tag. The same three rules apply, plus one:
+
+- **Set it on both `chronicle` and `chronicle-mcp`, to the same value.** `construct-server`'s `check-edge-auth.sh` asserts that every reader of a `*CF_ACCESS_GATEWAY_AUD` agrees. If the two disagree, every gateway session gets a 401 at initialize.
+- **It must never be in `CHRONICLE_CF_ACCESS_AUD`.** `serve` refuses to boot on that overlap. It also refuses to boot when the tag equals `CHRONICLE_MCP_CF_ACCESS_AUD` (two applications cannot share a tag), and when the tag is set without web SSO.
+- **A gateway assertion is owed exactly what an MCP one is:** the bounded hosted session, with no cookie, offered no write tool, and revoked when the gateway closes the session.
+- **Unset, nothing changes.** It is unset by default, and its assertions are refused like any other unknown audience.
 
 The container needs a stop grace of at least Docker's default 10 s: on
 `SIGTERM` it revokes every open session's token, concurrently, with a 5 s

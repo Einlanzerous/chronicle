@@ -28,18 +28,22 @@ const (
 )
 
 // accessRouter serves the exchange for a verifier that accepts the web
-// audience and, when mcpAudience is non-empty, that one as well -- the two
-// shapes cmd/chronicle builds from config.
-func accessRouter(t *testing.T, f *fakeAccounts, mcpAudience string) (http.Handler, *cfaccesstest.Issuer) {
+// audience and every non-empty MCP-only audience given (the MCP endpoint's,
+// the gateway's) -- the shapes cmd/chronicle builds from config.
+func accessRouter(t *testing.T, f *fakeAccounts, mcpAudiences ...string) (http.Handler, *cfaccesstest.Issuer) {
 	t.Helper()
 	iss := cfaccesstest.New(t)
 	auds := []string{testWebAUD}
-	if mcpAudience != "" {
-		auds = append(auds, mcpAudience)
+	var mcp []string
+	for _, a := range mcpAudiences {
+		if a != "" {
+			auds = append(auds, a)
+			mcp = append(mcp, a)
+		}
 	}
 	return NewRouter(Deps{
 		DB: fakePinger{}, Accounts: f, Logger: discardLogger(), Version: "test", SecureCookies: true,
-		CFAccess: iss.Verifier(auds...), MCPAudience: mcpAudience,
+		CFAccess: iss.Verifier(auds...), MCPAudiences: mcp,
 	}), iss
 }
 

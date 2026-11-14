@@ -155,7 +155,8 @@ ONE account: set CHRONICLE_URL (for an agent outside the network, the direct
 host) and CHRONICLE_TOKEN (that account's session token, from a redeemed
 invite). It asks the API whose token it holds before it starts, and exits if it
 cannot find out. mcp-serve takes NO token: each request's Cloudflare Access
-assertion is verified against CHRONICLE_MCP_CF_ACCESS_AUD and exchanged once per
+assertion is verified against CHRONICLE_MCP_CF_ACCESS_AUD (and, when it is set,
+the estate gateway's CHRONICLE_CF_ACCESS_GATEWAY_AUD) and exchanged once per
 session for that person's own short-lived session. It needs
 CHRONICLE_MCP_API_URL, CHRONICLE_MCP_PUBLIC_URL and
 CHRONICLE_CF_ACCESS_TEAM_DOMAIN as well; CHRONICLE_MCP_PORT defaults to 4080.
@@ -729,7 +730,7 @@ func runServe(args []string) error {
 
 	if cfg.SSOEnabled() {
 		deps.CFAccess = cfaccess.New(cfg.CFAccessTeamDomain, cfg.AccessAudiences())
-		deps.MCPAudience = cfg.MCPCFAccessAUD
+		deps.MCPAudiences = cfg.MCPAudiences()
 	}
 	handler := api.NewRouter(deps)
 	srv := &http.Server{

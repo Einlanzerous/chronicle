@@ -55,6 +55,12 @@ type MCPHosted struct {
 	// variable serve reads as MCPCFAccessAUD: one value, two readers. It is
 	// NOT serve's CHRONICLE_CF_ACCESS_AUD, which is the web application's.
 	CFAccessAUD string
+	// GatewayCFAccessAUD is the estate MCP gateway's Access application tag
+	// (SERV-266) -- the same variable serve reads, one value, two readers.
+	// The gateway forwards its callers' assertions unchanged, so they carry
+	// its tag rather than CFAccessAUD's. Empty (the default) accepts nothing
+	// beyond CFAccessAUD.
+	GatewayCFAccessAUD string
 	// PublicURL is the MCP endpoint as clients reach it. Configured, never
 	// derived from the Host header.
 	PublicURL string
@@ -63,6 +69,17 @@ type MCPHosted struct {
 // DefaultMCPPort is the hosted transport's in-container port. Nothing
 // publishes it; the edge reaches it by service name.
 const DefaultMCPPort = 4080
+
+// Audiences is every audience tag the hosted transport accepts: its own
+// application's, then the gateway's when one is configured. Never the web
+// application's.
+func (c MCPHosted) Audiences() []string {
+	out := []string{c.CFAccessAUD}
+	if c.GatewayCFAccessAUD != "" {
+		out = append(out, c.GatewayCFAccessAUD)
+	}
+	return out
+}
 
 // LoadMCPHosted reads the hosted transport's configuration.
 func LoadMCPHosted() (MCPHosted, error) {
@@ -85,6 +102,12 @@ func LoadMCPHosted() (MCPHosted, error) {
 	if c.CFAccessAUD == "" {
 		return c, fmt.Errorf("config: CHRONICLE_MCP_CF_ACCESS_AUD is required " +
 			"(the MCP Access application's own audience tag, not CHRONICLE_CF_ACCESS_AUD)")
+	}
+	// The web tag is deliberately not read here, so the overlap this process
+	// can see is with its own tag; serve refuses the web overlap at its boot.
+	c.GatewayCFAccessAUD = strings.TrimSpace(os.Getenv("CHRONICLE_CF_ACCESS_GATEWAY_AUD"))
+	if err := checkGatewayAudience(c.GatewayCFAccessAUD, true, nil, c.CFAccessAUD); err != nil {
+		return c, err
 	}
 
 	port := DefaultMCPPort
