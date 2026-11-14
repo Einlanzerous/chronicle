@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.34.0](https://github.com/Einlanzerous/chronicle/compare/v1.33.0...v1.34.0) (2026-11-14)
+
+
+### Features
+
+* **auth:** accept the estate MCP gateway's Access audience as MCP-only (SERV-266) ([#191](https://github.com/Einlanzerous/chronicle/issues/191)) ([9949000](https://github.com/Einlanzerous/chronicle/commit/99490001f5ccf86341ef8de66cf651e455bb41e9))
+
+
+### Maintenance
+
+* **main:** release mobile 0.5.1 ([#189](https://github.com/Einlanzerous/chronicle/issues/189)) ([592b9c5](https://github.com/Einlanzerous/chronicle/commit/592b9c500e5b323634858a0ed07c27b169352d74))
+
 ## [1.33.0](https://github.com/Einlanzerous/chronicle/compare/v1.32.0...v1.33.0) (2026-11-04)
 
 
