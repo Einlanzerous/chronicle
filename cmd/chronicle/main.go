@@ -741,7 +741,11 @@ func runServe(args []string) error {
 
 	logger.Info("chronicle starting",
 		"version", buildVersion(), "addr", cfg.Addr, "log_format", cfg.LogFormat,
-		"sso", cfg.SSOEnabled())
+		"sso", cfg.SSOEnabled(),
+		// Presence only, never the tags: when the API and mcp-serve disagree
+		// about an MCP-only audience, these two lines say which side lacks it.
+		"mcp_aud_configured", cfg.MCPCFAccessAUD != "",
+		"gateway_aud_configured", cfg.GatewayCFAccessAUD != "")
 
 	// The watcher shares the server's context, so SIGTERM stops both. It is
 	// waited on rather than abandoned: a scan is mid-copy often enough that

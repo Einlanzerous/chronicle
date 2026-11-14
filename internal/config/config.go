@@ -567,9 +567,10 @@ func Load() (Config, error) {
 		}
 	}
 
-	// SERV-266. The same three refusals for the same reasons, plus one: the
-	// gateway is its own Access application, so its tag equal to the MCP
-	// endpoint's would mean two applications on one audience.
+	// SERV-266. The MCP tag's two refusals above (no SSO, overlap with the web
+	// list) for the same reasons, plus two: a comma list, which matches no
+	// assertion, and equality with the MCP endpoint's tag, which would mean two
+	// Access applications on one audience.
 	c.GatewayCFAccessAUD = strings.TrimSpace(os.Getenv("CHRONICLE_CF_ACCESS_GATEWAY_AUD"))
 	if err := checkGatewayAudience(c.GatewayCFAccessAUD, c.SSOEnabled(), c.CFAccessAUD, c.MCPCFAccessAUD); err != nil {
 		return c, err

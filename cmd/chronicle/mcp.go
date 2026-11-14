@@ -89,7 +89,7 @@ func runMCPServe(args []string) error {
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
 	logger.Info("mcp: hosted transport listening", "addr", cfg.Addr, "public", cfg.PublicURL, "api", cfg.APIURL,
-		"version", buildVersion())
+		"version", buildVersion(), "gateway_aud_configured", cfg.GatewayCFAccessAUD != "")
 
 	select {
 	case err := <-errc:
