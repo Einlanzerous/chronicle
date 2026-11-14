@@ -6,62 +6,33 @@ into a **note**, a **ticket** or a **discussion**, and lands in a corpus that
 links out to Switchyard and Amber rather than absorbing them. Single static Go
 binary, sibling to the other construct-server Go services.
 
-Tracked in Switchyard under the **CHRN** project — 11 epics (`CHRN-1`…`CHRN-10`
-plus `CHRN-96`, keyed `E7.5`), tickets numbered from `CHRN-11` on. It graduated
-there from `IDEA-21`. The key is `CHRN` and not `CHR` because the estate wiki's
-own note IDs are `CHR-####` and the two namespaces would collide.
+Tracked in Switchyard under the **CHRN** project.
 
 ## Layout
 
-- `cmd/chronicle/` — entrypoint + subcommands (`serve`, `migrate`, `version`).
-  Composition root: `setup()` wires store + services + router.
-- `asr/` — the shared estate ASR service: the pinned whisper.cpp image, the
-  job contract (`asr/openapi.yaml`) and `asrd` over it. A **sealed subtree**
-  with its own database, role, migrator and release (`asr-v*` tags): nothing
-  under it imports anything outside it. If it ever becomes its own repository,
-  the move is `git filter-repo --subdirectory-filter asr`, a `go mod init`, and
-  a rewrite of its own import paths — and nothing else, because nothing else
-  reaches into it. `asr/asrtest` is the one exported
-  doorway in, for Chronicle's integration test. Decided in
-  `docs/decisions/chrn-82-asr-subtree-and-publish.md`.
-- `internal/config/` — env-only config, `CHRONICLE_`-prefixed.
-- `internal/store/` — pgx pool, embedded migrator, repo queries, and the
-  domain types themselves. Types sit beside the queries that return them
-  rather than in a separate `internal/model/`: CHRN-71 put `User` in
-  `user.go` and CHRN-18 put `Memo` in `memo.go`, and a types-only package
-  with two files in it earns nothing.
-- `internal/api/` — HTTP surface.
-- `internal/mcp/` — the MCP server (E10): one tool registry behind two
-  transports, `chronicle mcp` (stdio, as the one account a token names) and
-  `chronicle mcp-serve` (hosted HTTP behind Cloudflare Access, no token). It
-  is a **client of the HTTP API**: it reaches Chronicle only through
-  `internal/apiclient/`, the Go client generated from `openapi.yaml` by
-  `scripts/gen-apiclient.sh`, and may import neither `internal/api` nor
-  `internal/store` — `verify.sh`'s `mcp boundary` step and its `ci.yml` mirror
-  enforce that. `internal/cfaccess/` is the Access JWT verifier both it and
-  the API's sign-in exchange use.
-- `web/` — the web client (E8). Vue + Vite; its API types are generated from
-  `openapi.yaml` by `scripts/gen-webapi.sh`.
-- `mobile/chronicle/` — the Android client (E9). Flutter, on the Argosy/Lyceum
-  stack; its API package is generated from the same `openapi.yaml` by
-  `scripts/gen-dartapi.sh`, and its checks are `.github/workflows/mobile.yml`
-  rather than `verify.sh`, which should not need a JDK to run.
-- `migrations/` — `NNNN_name.up.sql` / `.down.sql`, embedded, auto-applied on boot.
-- `deploy/` — `Dockerfile`, database provisioning, and the deploy **decisions**. The configuration itself is not here: `construct-server` declares the service block and every router, and CHRN-89 removed this repo's copies after they drifted from it.
-- `docs/` — architecture, plus `docs/salvage/` and `docs/benchmarks/`, which are
-  the recovered and measured inputs the plan rests on. Read them before
-  re-deriving anything they already answer.
+The tree is derivable; these are the parts it does not tell you.
 
-## Conventions (match the construct-server house style)
+- `asr/` is the shared estate ASR service: a **sealed subtree** with its own
+  database, role, migrator and release (`asr-v*` tags). Nothing under it imports
+  anything outside it; `asr/asrtest` is the one exported doorway, for
+  Chronicle's integration test (`docs/decisions/chrn-82-asr-subtree-and-publish.md`).
+- `internal/mcp/` is a **client of the HTTP API**: it reaches Chronicle only
+  through `internal/apiclient/` (generated from `openapi.yaml` by
+  `scripts/gen-apiclient.sh`) and may import neither `internal/api` nor
+  `internal/store`. `verify.sh`'s `mcp boundary` step and its `ci.yml` mirror
+  enforce it.
+- `web/` and `mobile/chronicle/` generate their API types from `openapi.yaml`
+  (`scripts/gen-webapi.sh`, `scripts/gen-dartapi.sh`). Mobile checks run in
+  `.github/workflows/mobile.yml`, not `verify.sh`, which must not need a JDK.
+- `deploy/` holds the Dockerfile, database provisioning and deploy decisions.
+  The service block and routers live in `construct-server`, not here.
+- `docs/salvage/` and `docs/benchmarks/` are recovered and measured inputs the
+  plan rests on; read them before re-deriving anything.
 
-- Go 1.26, `pgx/v5`, `google/uuid`. No ORM. No external migration tool — an
-  in-process migrator applies embedded SQL.
-- Config is env-only, `CHRONICLE_`-prefixed, with a `DATABASE_URL` fallback. No
-  config files.
-- Logs: structured, to stdout, in a shape Dozzle and Datadog can read.
-  Health: `GET /healthz` and `GET /readyz`.
-- Release-please + GHCR image `ghcr.io/einlanzerous/chronicle`. Conventional
-  commits.
+## Conventions
+
+- Go, `pgx/v5`, no ORM, and an in-process migrator over embedded SQL.
+- Config is env-only, `CHRONICLE_`-prefixed. No config files.
 - Its own database and its own role on the shared Postgres 16. Credentials live
   in Signet, never in a compose file.
 
@@ -98,15 +69,12 @@ no user-visible warning, and it is the single worst thing this system can do.
 ### 2 · Switchyard and Amber are linked, never copied.
 
 A ticket or an Amber item **resolves at render time** and is never written into
-Chronicle's tables. Amber holds the durable archive as its source of truth;
-Switchyard owns the work ledger. Copy either one here and there is a third
-source of truth that goes stale silently — the exact failure the tier split
-exists to prevent, reintroduced one convenience at a time.
+Chronicle's tables. Copy either one here and there is a third source of truth that goes stale
+silently.
 
-A reference renders as a live card carrying **upstream** state — `SY-412 · IN
-PROGRESS`, `AMB-2291 · SEALED` — under the label `LINKED · NOT COPIED`, with an
-outbound arrow. Colour is an estate-wide rule, not a Chronicle choice: **coral
-is Switchyard, gold is Amber**, anywhere either resolves.
+A reference renders as a live card carrying **upstream** state under the label
+`LINKED · NOT COPIED`. Colour is estate-wide: **coral is Switchyard, gold is
+Amber**, anywhere either resolves.
 
 A cache is not a copy — but **a cache with no visible staleness is a copy that
 lies.** Cached state carries its age, and when the upstream is unreachable the
@@ -114,11 +82,7 @@ card says so rather than showing a confident stale value.
 
 ## Working agreement
 
-Reviewing sixty diffs does not scale, and long autonomous runs accumulate
-unreviewed *decisions* rather than unreviewed lines — by the time a PR appears,
-three of them are load-bearing. So review mode is chosen per ticket from
-`metadata.tier`, and decisions are written down at ticket boundaries as they
-happen, never batched to the end of an epic.
+Review mode is chosen per ticket from `metadata.tier`.
 
 | mode | what the reviewer sees | tickets |
 |---|---|---|
@@ -132,20 +96,6 @@ CHRN-65 (MCP transport), CHRN-67 (MCP write scopes), CHRN-120 (the phone's own
 prune of its local audio). The rule that generates that
 list: *anything that can destroy authored data, or hand an agent write access to
 it.* CHRN-68's restore drill is reviewed as a result rather than as a diff.
-
-> CHRN-16 was Mode C in the original six and was moved to Mode A by decision on
-> 2026-08-23. Recorded here so the change reads as a decision rather than drift.
-
-> CHRN-120 was added as the sixth by decision on 2026-09-25 (ruling 1 of its
-> approved plan). It deletes the phone's copy of a recording — the only copy
-> until the server has one — and it does so on the server's own prune, so its
-> bug surface is new Dart (a wrong response read, a mark/unlink ordering, the
-> wrong file) that CHRN-22's Mode C review never saw. Recorded here for the same
-> reason as the note above.
-
-Mode B is where the leverage is. Discovering in a 900-line diff that the wrong
-idempotency key was chosen is the most expensive possible moment to find out;
-the decision costs one message to review before the code exists.
 
 ### Mechanics
 
@@ -167,10 +117,3 @@ the decision costs one message to review before the code exists.
 - or the change wants to touch something outside its own epic.
 
 Everything else runs to completion and is reviewed afterwards.
-
-## Testing
-
-`go test ./...`, plus `./verify.sh` for the full non-hardware suite. CI builds
-the binary, runs tests and lint, and fails when the schema and the migrations
-disagree — a generated artefact with no guard is a generated artefact someone
-hand-edits.
