@@ -69,10 +69,11 @@ func runMCPServe(args []string) error {
 
 	hosted, err := mcp.NewHosted(mcp.HostedConfig{
 		APIURL: cfg.APIURL, PublicURL: cfg.PublicURL, TeamDomain: cfg.CFAccessTeamDomain,
-		// This endpoint's own audience and no other: an assertion issued for
-		// the web application is somebody's browser, and must not open a
-		// session here.
-		Verifier: cfaccess.New(cfg.CFAccessTeamDomain, []string{cfg.CFAccessAUD}),
+		// This endpoint's own audience, and the estate gateway's when one is
+		// configured (SERV-266) -- both MCP-only. Never the web application's:
+		// an assertion issued for it is somebody's browser, and must not open
+		// a session here.
+		Verifier: cfaccess.New(cfg.CFAccessTeamDomain, cfg.Audiences()),
 		Build:    mcp.Build{Version: buildVersion(), Commit: commit},
 		Logger:   logger,
 	})
@@ -88,7 +89,7 @@ func runMCPServe(args []string) error {
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
 	logger.Info("mcp: hosted transport listening", "addr", cfg.Addr, "public", cfg.PublicURL, "api", cfg.APIURL,
-		"version", buildVersion())
+		"version", buildVersion(), "gateway_aud_configured", cfg.GatewayCFAccessAUD != "")
 
 	select {
 	case err := <-errc:

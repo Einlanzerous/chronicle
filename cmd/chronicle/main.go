@@ -155,7 +155,8 @@ ONE account: set CHRONICLE_URL (for an agent outside the network, the direct
 host) and CHRONICLE_TOKEN (that account's session token, from a redeemed
 invite). It asks the API whose token it holds before it starts, and exits if it
 cannot find out. mcp-serve takes NO token: each request's Cloudflare Access
-assertion is verified against CHRONICLE_MCP_CF_ACCESS_AUD and exchanged once per
+assertion is verified against CHRONICLE_MCP_CF_ACCESS_AUD (and, when it is set,
+the estate gateway's CHRONICLE_CF_ACCESS_GATEWAY_AUD) and exchanged once per
 session for that person's own short-lived session. It needs
 CHRONICLE_MCP_API_URL, CHRONICLE_MCP_PUBLIC_URL and
 CHRONICLE_CF_ACCESS_TEAM_DOMAIN as well; CHRONICLE_MCP_PORT defaults to 4080.
@@ -729,7 +730,7 @@ func runServe(args []string) error {
 
 	if cfg.SSOEnabled() {
 		deps.CFAccess = cfaccess.New(cfg.CFAccessTeamDomain, cfg.AccessAudiences())
-		deps.MCPAudience = cfg.MCPCFAccessAUD
+		deps.MCPAudiences = cfg.MCPAudiences()
 	}
 	handler := api.NewRouter(deps)
 	srv := &http.Server{
@@ -740,7 +741,11 @@ func runServe(args []string) error {
 
 	logger.Info("chronicle starting",
 		"version", buildVersion(), "addr", cfg.Addr, "log_format", cfg.LogFormat,
-		"sso", cfg.SSOEnabled())
+		"sso", cfg.SSOEnabled(),
+		// Presence only, never the tags: when the API and mcp-serve disagree
+		// about an MCP-only audience, these two lines say which side lacks it.
+		"mcp_aud_configured", cfg.MCPCFAccessAUD != "",
+		"gateway_aud_configured", cfg.GatewayCFAccessAUD != "")
 
 	// The watcher shares the server's context, so SIGTERM stops both. It is
 	// waited on rather than abandoned: a scan is mid-copy often enough that

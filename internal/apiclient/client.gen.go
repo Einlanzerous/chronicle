@@ -3102,10 +3102,11 @@ type ClientInterface interface {
 	// **Which session depends on which Access application the assertion was
 	// issued for** (CHRN-65). The web application's is a browser: a durable
 	// session, plus the cookie, and a session the caller already presents is
-	// reused rather than minted again. The hosted MCP endpoint's is one
-	// conversation: a session that **expires** — `expires_at` says when — with
-	// no cookie and no reuse, which the endpoint revokes at
-	// `DELETE /auth/session` when the conversation ends.
+	// reused rather than minted again. The hosted MCP endpoint's — and the
+	// estate MCP gateway's (SERV-266), which forwards its callers' assertions
+	// unchanged — is one conversation: a session that **expires** —
+	// `expires_at` says when — with no cookie and no reuse, which the endpoint
+	// revokes at `DELETE /auth/session` when the conversation ends.
 	//
 	// **Only a person signs in here.** An agent account answers `403
 	// sso_agent_account` for either application; an agent signs in by invite.
@@ -4486,10 +4487,11 @@ func (c *Client) RevokeSession(ctx context.Context, id SessionId, reqEditors ...
 // **Which session depends on which Access application the assertion was
 // issued for** (CHRN-65). The web application's is a browser: a durable
 // session, plus the cookie, and a session the caller already presents is
-// reused rather than minted again. The hosted MCP endpoint's is one
-// conversation: a session that **expires** — `expires_at` says when — with
-// no cookie and no reuse, which the endpoint revokes at
-// `DELETE /auth/session` when the conversation ends.
+// reused rather than minted again. The hosted MCP endpoint's — and the
+// estate MCP gateway's (SERV-266), which forwards its callers' assertions
+// unchanged — is one conversation: a session that **expires** —
+// `expires_at` says when — with no cookie and no reuse, which the endpoint
+// revokes at `DELETE /auth/session` when the conversation ends.
 //
 // **Only a person signs in here.** An agent account answers `403
 // sso_agent_account` for either application; an agent signs in by invite.
@@ -8374,10 +8376,11 @@ type ClientWithResponsesInterface interface {
 	// **Which session depends on which Access application the assertion was
 	// issued for** (CHRN-65). The web application's is a browser: a durable
 	// session, plus the cookie, and a session the caller already presents is
-	// reused rather than minted again. The hosted MCP endpoint's is one
-	// conversation: a session that **expires** — `expires_at` says when — with
-	// no cookie and no reuse, which the endpoint revokes at
-	// `DELETE /auth/session` when the conversation ends.
+	// reused rather than minted again. The hosted MCP endpoint's — and the
+	// estate MCP gateway's (SERV-266), which forwards its callers' assertions
+	// unchanged — is one conversation: a session that **expires** —
+	// `expires_at` says when — with no cookie and no reuse, which the endpoint
+	// revokes at `DELETE /auth/session` when the conversation ends.
 	//
 	// **Only a person signs in here.** An agent account answers `403
 	// sso_agent_account` for either application; an agent signs in by invite.
@@ -13934,10 +13937,11 @@ func (c *ClientWithResponses) RevokeSessionWithResponse(ctx context.Context, id 
 // **Which session depends on which Access application the assertion was
 // issued for** (CHRN-65). The web application's is a browser: a durable
 // session, plus the cookie, and a session the caller already presents is
-// reused rather than minted again. The hosted MCP endpoint's is one
-// conversation: a session that **expires** — `expires_at` says when — with
-// no cookie and no reuse, which the endpoint revokes at
-// `DELETE /auth/session` when the conversation ends.
+// reused rather than minted again. The hosted MCP endpoint's — and the
+// estate MCP gateway's (SERV-266), which forwards its callers' assertions
+// unchanged — is one conversation: a session that **expires** —
+// `expires_at` says when — with no cookie and no reuse, which the endpoint
+// revokes at `DELETE /auth/session` when the conversation ends.
 //
 // **Only a person signs in here.** An agent account answers `403
 // sso_agent_account` for either application; an agent signs in by invite.

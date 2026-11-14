@@ -41,6 +41,7 @@ func TestLoadMCPHosted(t *testing.T) {
 		t.Setenv("CHRONICLE_CF_ACCESS_TEAM_DOMAIN", "team.cloudflareaccess.com")
 		t.Setenv("CHRONICLE_MCP_CF_ACCESS_AUD", "mcp-tag")
 		t.Setenv("CHRONICLE_MCP_PORT", "")
+		t.Setenv("CHRONICLE_CF_ACCESS_GATEWAY_AUD", "")
 	}
 
 	good(t)
@@ -79,6 +80,45 @@ func TestLoadMCPHosted(t *testing.T) {
 		t.Setenv("CHRONICLE_CF_ACCESS_AUD", "web-tag")
 		if _, err := LoadMCPHosted(); err == nil {
 			t.Error("the web application's audience was accepted for the MCP endpoint")
+		}
+	})
+	// SERV-266. Unset is the default and accepts nothing beyond the
+	// endpoint's own tag; set, the gateway's tag is accepted after it -- and
+	// the web application's is still not among them.
+	t.Run("the gateway audience is off by default", func(t *testing.T) {
+		good(t)
+		c, err := LoadMCPHosted()
+		if err != nil {
+			t.Fatalf("LoadMCPHosted: %v", err)
+		}
+		if got := c.Audiences(); len(got) != 1 || got[0] != "mcp-tag" {
+			t.Errorf("Audiences = %v, want the endpoint's own tag alone", got)
+		}
+	})
+	t.Run("the gateway audience is accepted after the endpoint's own", func(t *testing.T) {
+		good(t)
+		t.Setenv("CHRONICLE_CF_ACCESS_AUD", "web-tag")
+		t.Setenv("CHRONICLE_CF_ACCESS_GATEWAY_AUD", " gateway-tag ")
+		c, err := LoadMCPHosted()
+		if err != nil {
+			t.Fatalf("LoadMCPHosted: %v", err)
+		}
+		got := c.Audiences()
+		if len(got) != 2 || got[0] != "mcp-tag" || got[1] != "gateway-tag" {
+			t.Errorf("Audiences = %v, want [mcp-tag gateway-tag]", got)
+		}
+		for _, a := range got {
+			if a == "web-tag" {
+				t.Error("the web application's audience reached the MCP endpoint's verifier")
+			}
+		}
+	})
+	t.Run("a gateway audience equal to the endpoint's own is refused", func(t *testing.T) {
+		good(t)
+		t.Setenv("CHRONICLE_CF_ACCESS_GATEWAY_AUD", "mcp-tag")
+		_, err := LoadMCPHosted()
+		if err == nil || !strings.Contains(err.Error(), "CHRONICLE_CF_ACCESS_GATEWAY_AUD") {
+			t.Errorf("err = %v, want a refusal naming CHRONICLE_CF_ACCESS_GATEWAY_AUD", err)
 		}
 	})
 	t.Run("a public URL with no path", func(t *testing.T) {

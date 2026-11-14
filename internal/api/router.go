@@ -65,12 +65,13 @@ type Deps struct {
 	// client can tell "not configured here" from "wrong URL".
 	CFAccess *cfaccess.Verifier
 
-	// MCPAudience is the hosted MCP endpoint's Access audience tag (CHRN-65).
-	// An assertion CFAccess reports as matching it is one MCP conversation,
-	// not a browser, and is minted a different session. Empty means no such
+	// MCPAudiences are the MCP-only Access audience tags: the hosted MCP
+	// endpoint's own (CHRN-65) and the estate gateway's (SERV-266). An
+	// assertion CFAccess reports as matching one is an MCP conversation, not a
+	// browser, and is minted a different session. Empty means no such
 	// application is configured; CFAccess must then not have been built to
 	// accept one either.
-	MCPAudience string
+	MCPAudiences []string
 
 	// MobileBaseURL is the origin baked into an invite's sign-in link. Empty
 	// omits the link, leaving clients on their own fallback.
@@ -205,7 +206,7 @@ type api struct {
 	commit        string
 	logger        *slog.Logger
 	cfAccess      *cfaccess.Verifier
-	mcpAudience   string
+	mcpAudiences  []string
 	mobileBaseURL string
 	secureCookies bool
 	proxySecret   string
@@ -263,7 +264,7 @@ func NewRouter(d Deps) http.Handler {
 		commit:        d.Commit,
 		logger:        d.Logger,
 		cfAccess:      d.CFAccess,
-		mcpAudience:   d.MCPAudience,
+		mcpAudiences:  d.MCPAudiences,
 		mobileBaseURL: d.MobileBaseURL,
 		secureCookies: d.SecureCookies,
 		proxySecret:   d.ProxySecret,

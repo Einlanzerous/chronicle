@@ -62,7 +62,10 @@ func newWorld(t *testing.T) *world { return buildWorld(t, true) }
 // configured: serve leaves Deps.Triage unset, and /triage/* answers 503.
 func newWorldWithoutTriage(t *testing.T) *world { return buildWorld(t, false) }
 
-func buildWorld(t *testing.T, withTriage bool) *world {
+// buildWorld's extraMCP are MCP-only audiences the API accepts beyond the MCP
+// endpoint's own -- the estate gateway's (SERV-266), for the tests that need
+// a deployment with it configured.
+func buildWorld(t *testing.T, withTriage bool, extraMCP ...string) *world {
 	t.Helper()
 	dsn := strings.TrimSpace(os.Getenv("CHRONICLE_TEST_DATABASE_URL"))
 	if dsn == "" {
@@ -94,9 +97,10 @@ func buildWorld(t *testing.T, withTriage bool) *world {
 	// the one a deployment can lack.
 	deps := api.Deps{
 		DB: w.st, Accounts: w.st, Version: "test", SecureCookies: true,
-		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
-		CFAccess: w.iss.Verifier(webAUD, mcpAUD), MCPAudience: mcpAUD,
-		Wiki: w.st, Threads: w.st, Memos: w.st, Keys: projectKeys(t),
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		CFAccess:     w.iss.Verifier(append([]string{webAUD, mcpAUD}, extraMCP...)...),
+		MCPAudiences: append([]string{mcpAUD}, extraMCP...),
+		Wiki:         w.st, Threads: w.st, Memos: w.st, Keys: projectKeys(t),
 	}
 	if withTriage {
 		triager, err := triage.New(triage.Options{
@@ -156,9 +160,16 @@ func (w *world) assertion(t *testing.T, email, aud string) string {
 // against the MCP application's audience alone.
 func (w *world) hosted(t *testing.T) (*mcp.Hosted, string) {
 	t.Helper()
+	return w.hostedFor(t, mcpAUD)
+}
+
+// hostedFor starts a hosted transport whose verifier accepts exactly auds --
+// the shape cmd/chronicle builds from config.MCPHosted.Audiences.
+func (w *world) hostedFor(t *testing.T, auds ...string) (*mcp.Hosted, string) {
+	t.Helper()
 	h, err := mcp.NewHosted(mcp.HostedConfig{
 		APIURL: w.apiURL, PublicURL: publicURL, TeamDomain: cfaccesstest.Team,
-		Verifier: w.iss.Verifier(mcpAUD), Build: mcp.Build{Version: "1.2.3", Commit: "abc123"},
+		Verifier: w.iss.Verifier(auds...), Build: mcp.Build{Version: "1.2.3", Commit: "abc123"},
 	})
 	if err != nil {
 		t.Fatalf("NewHosted: %v", err)

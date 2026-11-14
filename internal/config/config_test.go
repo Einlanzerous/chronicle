@@ -736,3 +736,118 @@ func TestLoadMCPAccessAudience(t *testing.T) {
 		}
 	})
 }
+
+// SERV-266 — the estate MCP gateway's audience tag. Off by default; set, it is
+// an MCP-only audience, and every way of letting it reach a browser's session
+// is refused at boot, because none of them would ever fail a request.
+func TestLoadGatewayAccessAudience(t *testing.T) {
+	base := func(t *testing.T) {
+		withOwner(t)
+		t.Setenv("CHRONICLE_DATABASE_URL", "postgres://x/y")
+		t.Setenv("CHRONICLE_CF_ACCESS_TEAM_DOMAIN", "team.cloudflareaccess.com")
+		t.Setenv("CHRONICLE_CF_ACCESS_AUD", "web-tag, old-web-tag")
+		t.Setenv("CHRONICLE_MCP_CF_ACCESS_AUD", "mcp-tag")
+		t.Setenv("CHRONICLE_CF_ACCESS_GATEWAY_AUD", "")
+	}
+
+	t.Run("unset changes nothing", func(t *testing.T) {
+		base(t)
+		c, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if c.GatewayCFAccessAUD != "" {
+			t.Errorf("GatewayCFAccessAUD = %q, want empty", c.GatewayCFAccessAUD)
+		}
+		if got := c.AccessAudiences(); len(got) != 3 || got[2] != "mcp-tag" {
+			t.Errorf("AccessAudiences = %v, want the web list then mcp-tag, as before SERV-266", got)
+		}
+		if got := c.MCPAudiences(); len(got) != 1 || got[0] != "mcp-tag" {
+			t.Errorf("MCPAudiences = %v, want [mcp-tag]", got)
+		}
+	})
+
+	t.Run("set is an MCP-only audience, never a web one", func(t *testing.T) {
+		base(t)
+		t.Setenv("CHRONICLE_CF_ACCESS_GATEWAY_AUD", " gateway-tag ")
+		c, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if got := c.MCPAudiences(); len(got) != 2 || got[0] != "mcp-tag" || got[1] != "gateway-tag" {
+			t.Errorf("MCPAudiences = %v, want [mcp-tag gateway-tag]", got)
+		}
+		if got := c.AccessAudiences(); len(got) != 4 || got[3] != "gateway-tag" {
+			t.Errorf("AccessAudiences = %v, want the web list, mcp-tag, then gateway-tag", got)
+		}
+		for _, w := range c.CFAccessAUD {
+			if w == "gateway-tag" {
+				t.Error("the gateway tag was added to the web list")
+			}
+		}
+	})
+
+	t.Run("set without the MCP endpoint's tag is fine", func(t *testing.T) {
+		base(t)
+		t.Setenv("CHRONICLE_MCP_CF_ACCESS_AUD", "")
+		t.Setenv("CHRONICLE_CF_ACCESS_GATEWAY_AUD", "gateway-tag")
+		c, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if got := c.MCPAudiences(); len(got) != 1 || got[0] != "gateway-tag" {
+			t.Errorf("MCPAudiences = %v, want [gateway-tag]", got)
+		}
+	})
+
+	// Criterion 5 of SERV-257's plan: the gateway's tag in the web list would
+	// match as the web audience, which the exchange checks first, and every
+	// assertion the gateway forwards would get a browser's durable session.
+	for name, web := range map[string]string{
+		"the only web tag":        "gateway-tag",
+		"one of several web tags": "web-tag, gateway-tag",
+	} {
+		t.Run("in the web list ("+name+") refuses to boot", func(t *testing.T) {
+			base(t)
+			t.Setenv("CHRONICLE_CF_ACCESS_AUD", web)
+			t.Setenv("CHRONICLE_CF_ACCESS_GATEWAY_AUD", "gateway-tag")
+			_, err := Load()
+			if err == nil {
+				t.Fatal("a gateway tag that is also a web tag was accepted")
+			}
+			for _, n := range []string{"CHRONICLE_CF_ACCESS_GATEWAY_AUD", "CHRONICLE_CF_ACCESS_AUD"} {
+				if !strings.Contains(err.Error(), n) {
+					t.Errorf("error %q does not name %s", err, n)
+				}
+			}
+		})
+	}
+
+	t.Run("equal to the MCP endpoint's tag refuses to boot", func(t *testing.T) {
+		base(t)
+		t.Setenv("CHRONICLE_CF_ACCESS_GATEWAY_AUD", "mcp-tag")
+		_, err := Load()
+		if err == nil || !strings.Contains(err.Error(), "CHRONICLE_MCP_CF_ACCESS_AUD") {
+			t.Errorf("err = %v, want a refusal naming CHRONICLE_MCP_CF_ACCESS_AUD", err)
+		}
+	})
+
+	t.Run("without web SSO refuses to boot", func(t *testing.T) {
+		base(t)
+		t.Setenv("CHRONICLE_CF_ACCESS_TEAM_DOMAIN", "")
+		t.Setenv("CHRONICLE_CF_ACCESS_AUD", "")
+		t.Setenv("CHRONICLE_MCP_CF_ACCESS_AUD", "")
+		t.Setenv("CHRONICLE_CF_ACCESS_GATEWAY_AUD", "gateway-tag")
+		if _, err := Load(); err == nil {
+			t.Error("a gateway audience with no team domain to verify it against was accepted")
+		}
+	})
+
+	t.Run("a list is refused", func(t *testing.T) {
+		base(t)
+		t.Setenv("CHRONICLE_CF_ACCESS_GATEWAY_AUD", "gateway-tag,other-tag")
+		if _, err := Load(); err == nil {
+			t.Error("a comma-separated gateway audience was accepted")
+		}
+	})
+}
