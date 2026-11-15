@@ -378,6 +378,7 @@ paths:
                 $ref: "#/components/schemas/User"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ReadOnlySession" }
         "413": { $ref: "#/components/responses/TooLarge" }
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
         "500": { $ref: "#/components/responses/InternalError" }
@@ -400,6 +401,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Invite"
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ReadOnlySession" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /auth/sessions:
@@ -422,6 +424,7 @@ paths:
                 items:
                   $ref: "#/components/schemas/DeviceSession"
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ReadOnlySession" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /auth/sessions/{id}:
@@ -440,6 +443,7 @@ paths:
         "204": { description: "revoked, or already gone" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ReadOnlySession" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -619,6 +623,7 @@ paths:
                 $ref: "#/components/schemas/UploadState"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ReadOnlySession" }
         "409": { $ref: "#/components/responses/UploadConflict" }
         "413": { $ref: "#/components/responses/TooLarge" }
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
@@ -653,6 +658,7 @@ paths:
                 $ref: "#/components/schemas/UploadState"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ReadOnlySession" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/UploadConflict" }
         "422": { $ref: "#/components/responses/Unprocessable" }
@@ -701,6 +707,7 @@ paths:
                 $ref: "#/components/schemas/UploadState"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ReadOnlySession" }
         "404": { $ref: "#/components/responses/NotFound" }
         "408": { $ref: "#/components/responses/TransferCut" }
         "409": { $ref: "#/components/responses/UploadConflict" }
@@ -729,6 +736,7 @@ paths:
         "204": { description: "abandoned, or already gone" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ReadOnlySession" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
         "503": { $ref: "#/components/responses/UploadsUnconfigured" }
@@ -798,6 +806,7 @@ paths:
                 $ref: "#/components/schemas/MemoTranscript"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ReadOnlySession" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
         "503": { $ref: "#/components/responses/MemosUnconfigured" }
@@ -912,6 +921,7 @@ paths:
             ETag: { $ref: "#/components/headers/AudioETag" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ReadOnlySession" }
         "404": { $ref: "#/components/responses/NotFound" }
         "410":
           description: |
@@ -1006,6 +1016,7 @@ paths:
                 $ref: "#/components/schemas/RetentionState"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ReadOnlySession" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: |
@@ -1094,6 +1105,7 @@ paths:
                 $ref: "#/components/schemas/TriageResults"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ReadOnlySession" }
         "413": { $ref: "#/components/responses/TooLarge" }
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
         "500": { $ref: "#/components/responses/InternalError" }
@@ -1127,6 +1139,7 @@ paths:
                 $ref: "#/components/schemas/DeferredItem"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ReadOnlySession" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: |
@@ -1157,6 +1170,7 @@ paths:
         "204": { description: released }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ReadOnlySession" }
         "404": { $ref: "#/components/responses/NotFound" }
         "413": { $ref: "#/components/responses/TooLarge" }
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
@@ -1184,6 +1198,7 @@ paths:
                 $ref: "#/components/schemas/DeferredList"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ReadOnlySession" }
         "500": { $ref: "#/components/responses/InternalError" }
         "503": { $ref: "#/components/responses/TriageUnconfigured" }
 
@@ -1282,6 +1297,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ReadOnlySession" }
         "413": { $ref: "#/components/responses/TooLarge" }
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
         "500": { $ref: "#/components/responses/InternalError" }
@@ -1347,6 +1363,7 @@ paths:
                 $ref: "#/components/schemas/Page"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ReadOnlySession" }
         "404":
           description: the parent path names no page
           content:
@@ -1407,6 +1424,7 @@ paths:
                 $ref: "#/components/schemas/NoteList"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ReadOnlySession" }
         "404":
           description: no page at that path, live or redirected
           content:
@@ -1581,6 +1599,7 @@ paths:
                 $ref: "#/components/schemas/RevisionList"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ReadOnlySession" }
         "404": { $ref: "#/components/responses/NotFound" }
         "410": { $ref: "#/components/responses/Gone" }
         "500": { $ref: "#/components/responses/InternalError" }
@@ -1678,6 +1697,7 @@ paths:
                 $ref: "#/components/schemas/BacklinkList"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ReadOnlySession" }
         "404": { $ref: "#/components/responses/NotFound" }
         "410": { $ref: "#/components/responses/Gone" }
         "500": { $ref: "#/components/responses/InternalError" }
@@ -1747,6 +1767,7 @@ paths:
                 $ref: "#/components/schemas/ProvenanceList"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ReadOnlySession" }
         "404": { $ref: "#/components/responses/NotFound" }
         "410": { $ref: "#/components/responses/Gone" }
         "500": { $ref: "#/components/responses/InternalError" }
@@ -1884,6 +1905,7 @@ paths:
                 $ref: "#/components/schemas/Thread"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ReadOnlySession" }
         "404":
           description: the page path names no page
           content:
@@ -1917,6 +1939,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/UnreadList"
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ReadOnlySession" }
         "500": { $ref: "#/components/responses/InternalError" }
         "503": { $ref: "#/components/responses/ThreadsUnconfigured" }
 
@@ -1988,6 +2011,7 @@ paths:
                 $ref: "#/components/schemas/Turn"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ReadOnlySession" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/TurnRefused" }
         "413": { $ref: "#/components/responses/TooLarge" }
@@ -2026,8 +2050,9 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403":
           description: |
-            not a participant of this thread, or an agent — which carries no
-            marker. The `code` says which.
+            not a participant of this thread, an agent — which carries no
+            marker — or a read-only session (`read_only_session`). The `code`
+            says which.
           content:
             application/json:
               schema:
@@ -2201,6 +2226,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Tier1PageList"
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ReadOnlySession" }
         "500": { $ref: "#/components/responses/InternalError" }
         "503": { $ref: "#/components/responses/Tier1Unconfigured" }
 
@@ -2229,6 +2255,7 @@ paths:
                 $ref: "#/components/schemas/Tier1Page"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ReadOnlySession" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
         "503": { $ref: "#/components/responses/Tier1Unconfigured" }
@@ -2538,6 +2565,9 @@ components:
         person. `note_revisions_guard` (CH041) refuses the write in the store;
         this is that refusal, answered before the round trip where the kind is
         already known and by the store where it is not.
+
+        A read-only session (`read_only_session`, see `ReadOnlySession`) is refused
+        on this route too, before either of those.
       content:
         application/json:
           schema:
@@ -2626,8 +2656,23 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    ReadOnlySession:
+      description: |
+        the credential this request carried is read-only (`read_only_session`):
+        a hosted MCP session, minted for one conversation, which may call only
+        the enumerated read routes and `DELETE /auth/session`. Any other route
+        is refused whatever the account behind it could do. Fail-closed: a route
+        added to this document is refused to a read-only session until it is
+        listed beside `routePolicy` in `internal/api/policy.go`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
     Forbidden:
-      description: a valid session, on an account that may not do this
+      description: |
+        a valid session, on an account that may not do this. A read-only session
+        (`read_only_session`, see `ReadOnlySession`) is refused here too, on any
+        route outside its allowlist.
       content:
         application/json:
           schema:

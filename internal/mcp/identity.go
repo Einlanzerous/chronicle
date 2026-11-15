@@ -72,6 +72,11 @@ type Identity struct {
 // This governs which tools a session is OFFERED. It is not the enforcement:
 // the API authorizes every call on the credential it carries, whatever this
 // package believed about it.
+// For a hosted session that is now literally true (SERV-307): its token is
+// minted read_only, and the API refuses it on every route outside
+// readOnlyRoutes (internal/api/policy.go), so a write tool added to this
+// registry would not work for a hosted session even if the gate here were
+// bypassed.
 func (i Identity) MayWrite() bool {
 	return i.Transport == TransportStdio && i.Kind == KindAgent
 }

@@ -211,6 +211,17 @@ func (a *api) requireUser(next http.HandlerFunc) http.HandlerFunc {
 			a.serverError(w, r, "resolve session token", err)
 			return
 		}
+		// A read-only credential (SERV-307) gets the enumerated routes and
+		// nothing else. r.Pattern is the pattern the generated registration
+		// matched, so it is exactly a readOnlyRoutes key; a request reaching
+		// here by any path that did not set it has an empty pattern, which is not
+		// listed, which is refused. Checked after the credential resolves and
+		// before the handler, so a refused route costs no parameter binding.
+		if u.SessionReadOnly && !readOnlyRoutes[r.Pattern] {
+			writeError(w, http.StatusForbidden, codeReadOnlySession,
+				"this session is read-only and may not call this route")
+			return
+		}
 		next(w, r.WithContext(withUser(r.Context(), u)))
 	}
 }

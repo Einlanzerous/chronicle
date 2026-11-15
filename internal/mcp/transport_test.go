@@ -714,3 +714,47 @@ func TestStdioRefusesToStartWithoutAnIdentity(t *testing.T) {
 		})
 	}
 }
+
+// SERV-307: the token a hosted session holds is refused writes by the API
+// itself, whatever the MCP server offered. Here the credential is the one
+// MintHostedSession really issues, against the real router.
+func TestAHostedTokenIsRefusedWritesByTheAPIItself(t *testing.T) {
+	w := newWorld(t)
+	token, _, err := w.st.MintHostedSession(w.ctx, w.owner.ID)
+	if err != nil {
+		t.Fatalf("MintHostedSession: %v", err)
+	}
+	do := func(method, path, body string) (int, string) {
+		t.Helper()
+		req, _ := http.NewRequest(method, w.apiURL+path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+
+	for _, wr := range []struct{ method, path, body string }{
+		{"POST", "/auth/invite", ``},
+		{"POST", "/pages", `{"title":"x"}`},
+		{"PATCH", "/auth/me", `{"display_name":"x"}`},
+		{"POST", "/memos/uploads", `{}`},
+	} {
+		if code, body := do(wr.method, wr.path, wr.body); code != http.StatusForbidden || !strings.Contains(body, "read_only_session") {
+			t.Errorf("%s %s = %d %s, want 403 read_only_session", wr.method, wr.path, code, body)
+		}
+	}
+	if code, _ := do("GET", "/auth/me", ``); code != http.StatusOK {
+		t.Errorf("GET /auth/me = %d, want 200", code)
+	}
+	if code, _ := do("DELETE", "/auth/session", ``); code != http.StatusNoContent {
+		t.Errorf("DELETE /auth/session = %d, want 204", code)
+	}
+	if code, _ := do("GET", "/auth/me", ``); code != http.StatusUnauthorized {
+		t.Errorf("after self-revoke GET /auth/me = %d, want 401", code)
+	}
+}

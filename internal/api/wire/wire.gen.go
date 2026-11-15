@@ -2415,6 +2415,9 @@ type PersonRequired = Error
 // RateLimited defines model for RateLimited.
 type RateLimited = Error
 
+// ReadOnlySession defines model for ReadOnlySession.
+type ReadOnlySession = Error
+
 // ReferencesUnconfigured defines model for ReferencesUnconfigured.
 type ReferencesUnconfigured = Error
 

@@ -91,11 +91,23 @@ func (r *recorder) requireGETOnly(t *testing.T) {
 // what a real session of that identity is offered; only the HTTP client
 // differs. The hosted transport's own exchange and revoke are POST and DELETE
 // by design and are not tool calls, so a hosted session is represented by its
-// Identity over a session token and not by running the exchange.
+// Identity over a hosted (read-only) session token and not by running the
+// exchange.
 func (w *world) session(t *testing.T, user store.User, transport mcp.Transport) (*sdk.ClientSession, *recorder) {
 	t.Helper()
 	rec := newRecorder()
-	api, err := mcp.NewAPI(w.apiURL, w.sessionFor(t, user, "mcp-harness"),
+	// A hosted session holds what MintHostedSession really mints -- a READ-ONLY
+	// token (SERV-307) -- so every read tool driven through here as a hosted
+	// session succeeds, or fails, under the credential the API refuses writes
+	// on and not under a durable session that would let a wrong route through.
+	token := w.sessionFor(t, user, "mcp-harness")
+	if transport == mcp.TransportHosted {
+		var err error
+		if token, _, err = w.st.MintHostedSession(w.ctx, user.ID); err != nil {
+			t.Fatalf("MintHostedSession: %v", err)
+		}
+	}
+	api, err := mcp.NewAPI(w.apiURL, token,
 		&http.Client{Transport: rec, Timeout: 30 * time.Second})
 	if err != nil {
 		t.Fatalf("NewAPI: %v", err)

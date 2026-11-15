@@ -3207,6 +3207,9 @@ export interface components {
          *     person. `note_revisions_guard` (CH041) refuses the write in the store;
          *     this is that refusal, answered before the round trip where the kind is
          *     already known and by the store where it is not.
+         *
+         *     A read-only session (`read_only_session`, see `ReadOnlySession`) is refused
+         *     on this route too, before either of those.
          */
         PersonRequired: {
             headers: {
@@ -3331,7 +3334,27 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
-        /** @description a valid session, on an account that may not do this */
+        /**
+         * @description the credential this request carried is read-only (`read_only_session`):
+         *     a hosted MCP session, minted for one conversation, which may call only
+         *     the enumerated read routes and `DELETE /auth/session`. Any other route
+         *     is refused whatever the account behind it could do. Fail-closed: a route
+         *     added to this document is refused to a read-only session until it is
+         *     listed beside `routePolicy` in `internal/api/policy.go`.
+         */
+        ReadOnlySession: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /**
+         * @description a valid session, on an account that may not do this. A read-only session
+         *     (`read_only_session`, see `ReadOnlySession`) is refused here too, on any
+         *     route outside its allowlist.
+         */
         Forbidden: {
             headers: {
                 [name: string]: unknown;
@@ -3715,6 +3738,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReadOnlySession"];
             413: components["responses"]["TooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
             500: components["responses"]["InternalError"];
@@ -3739,6 +3763,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReadOnlySession"];
             500: components["responses"]["InternalError"];
         };
     };
@@ -3761,6 +3786,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReadOnlySession"];
             500: components["responses"]["InternalError"];
         };
     };
@@ -3785,6 +3811,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReadOnlySession"];
             404: components["responses"]["NotFound"];
             500: components["responses"]["InternalError"];
         };
@@ -3955,6 +3982,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReadOnlySession"];
             409: components["responses"]["UploadConflict"];
             413: components["responses"]["TooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
@@ -3987,6 +4015,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReadOnlySession"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["UploadConflict"];
             422: components["responses"]["Unprocessable"];
@@ -4014,6 +4043,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReadOnlySession"];
             404: components["responses"]["NotFound"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["UploadsUnconfigured"];
@@ -4049,6 +4079,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReadOnlySession"];
             404: components["responses"]["NotFound"];
             408: components["responses"]["TransferCut"];
             409: components["responses"]["UploadConflict"];
@@ -4097,6 +4128,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReadOnlySession"];
             404: components["responses"]["NotFound"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["MemosUnconfigured"];
@@ -4177,6 +4209,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReadOnlySession"];
             404: components["responses"]["NotFound"];
             /**
              * @description the recording was deleted by policy and the transcript remains. The
@@ -4262,6 +4295,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReadOnlySession"];
             404: components["responses"]["NotFound"];
             /**
              * @description the level asked for is below the memo's current one, code
@@ -4353,6 +4387,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReadOnlySession"];
             413: components["responses"]["TooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
             500: components["responses"]["InternalError"];
@@ -4383,6 +4418,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReadOnlySession"];
             404: components["responses"]["NotFound"];
             /**
              * @description this memo is not in a state that can be deferred — it has already
@@ -4424,6 +4460,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReadOnlySession"];
             404: components["responses"]["NotFound"];
             413: components["responses"]["TooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
@@ -4461,6 +4498,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReadOnlySession"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["TriageUnconfigured"];
         };
@@ -4528,6 +4566,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReadOnlySession"];
             413: components["responses"]["TooLarge"];
             415: components["responses"]["UnsupportedMediaType"];
             500: components["responses"]["InternalError"];
@@ -4581,6 +4620,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReadOnlySession"];
             /** @description the parent path names no page */
             404: {
                 headers: {
@@ -4643,6 +4683,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReadOnlySession"];
             /** @description no page at that path, live or redirected */
             404: {
                 headers: {
@@ -4821,6 +4862,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReadOnlySession"];
             404: components["responses"]["NotFound"];
             410: components["responses"]["Gone"];
             500: components["responses"]["InternalError"];
@@ -4911,6 +4953,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReadOnlySession"];
             404: components["responses"]["NotFound"];
             410: components["responses"]["Gone"];
             500: components["responses"]["InternalError"];
@@ -4944,6 +4987,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReadOnlySession"];
             404: components["responses"]["NotFound"];
             410: components["responses"]["Gone"];
             500: components["responses"]["InternalError"];
@@ -5062,6 +5106,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReadOnlySession"];
             /** @description the page path names no page */
             404: {
                 headers: {
@@ -5097,6 +5142,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReadOnlySession"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["ThreadsUnconfigured"];
         };
@@ -5156,6 +5202,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReadOnlySession"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["TurnRefused"];
             413: components["responses"]["TooLarge"];
@@ -5190,8 +5237,9 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             /**
-             * @description not a participant of this thread, or an agent — which carries no
-             *     marker. The `code` says which.
+             * @description not a participant of this thread, an agent — which carries no
+             *     marker — or a read-only session (`read_only_session`). The `code`
+             *     says which.
              */
             403: {
                 headers: {
@@ -5355,6 +5403,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReadOnlySession"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["Tier1Unconfigured"];
         };
@@ -5386,6 +5435,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReadOnlySession"];
             404: components["responses"]["NotFound"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["Tier1Unconfigured"];

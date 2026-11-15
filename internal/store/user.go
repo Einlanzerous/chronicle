@@ -99,6 +99,13 @@ type User struct {
 	Kind        string
 	IsOwner     bool
 	CreatedAt   time.Time
+
+	// SessionReadOnly is a property of the CREDENTIAL a request presented and not
+	// of the account (SERV-307): the API refuses a read-only token on every route
+	// outside its read allowlist. It is set only by UserByToken and is false on
+	// every User from any other query, so a User obtained any other way must
+	// never be read for it.
+	SessionReadOnly bool
 }
 
 // IsAdmin reports whether this account may reach the /admin surface. Ownership
@@ -126,9 +133,9 @@ type Member struct {
 
 const userColumns = `id, email, display_name, kind, is_owner, created_at`
 
-func scanUser(row pgx.Row) (User, error) {
+func scanUser(row pgx.Row, extra ...any) (User, error) {
 	var u User
-	err := row.Scan(&u.ID, &u.Email, &u.DisplayName, &u.Kind, &u.IsOwner, &u.CreatedAt)
+	err := row.Scan(append([]any{&u.ID, &u.Email, &u.DisplayName, &u.Kind, &u.IsOwner, &u.CreatedAt}, extra...)...)
 	return u, err
 }
 
@@ -506,6 +513,9 @@ const HostedSessionTTL = 12 * time.Hour
 // Unlike every other session it EXPIRES, because nothing shows it to a person
 // who could notice it had been left behind: a conversation is not a device.
 //
+// And it is READ-ONLY at the API (SERV-307): every hosted mint sets read_only,
+// so the refusal to write does not rest on which tools the MCP server offered.
+//
 // The same statement deletes this account's hosted rows that have already
 // expired, so a transport that died without revoking does not leave them to
 // accumulate. The delete is constrained three ways and needs all three: the
@@ -527,8 +537,8 @@ func (s *Store) MintHostedSession(ctx context.Context, userID uuid.UUID) (string
 		        AND label = $3
 		        AND expires_at < now()
 		 )
-		 INSERT INTO tier2.user_tokens (user_id, kind, token_hash, label, expires_at)
-		 VALUES ($1, 'session', $2, $3, now() + $4::interval)
+		 INSERT INTO tier2.user_tokens (user_id, kind, token_hash, label, expires_at, read_only)
+		 VALUES ($1, 'session', $2, $3, now() + $4::interval, true)
 		 RETURNING expires_at`,
 		userID, hashToken(plaintext), HostedSessionLabel, HostedSessionTTL.String()).Scan(&expiresAt); err != nil {
 		return "", time.Time{}, fmt.Errorf("store: mint hosted session: %w", err)
@@ -553,9 +563,10 @@ func (s *Store) UserByToken(ctx context.Context, plaintext string) (User, error)
 	// The UPDATE is a data-modifying CTE that Postgres runs whether or not the
 	// final SELECT references it, and it is gated on sessionTouchInterval so a
 	// busy client is not rewriting the same row on every request.
+	var readOnly bool
 	u, err := scanUser(s.pool.QueryRow(ctx,
 		`WITH tok AS (
-		     SELECT id, user_id, last_used_at FROM tier2.user_tokens
+		     SELECT id, user_id, last_used_at, read_only FROM tier2.user_tokens
 		      WHERE token_hash = $1
 		        AND kind = 'session'
 		        AND (expires_at IS NULL OR expires_at > now())
@@ -565,14 +576,15 @@ func (s *Store) UserByToken(ctx context.Context, plaintext string) (User, error)
 		      WHERE t.id = tok.id
 		        AND (tok.last_used_at IS NULL OR tok.last_used_at < now() - $2::interval)
 		 )
-		 SELECT `+userColumns+` FROM tier2.users WHERE id = (SELECT user_id FROM tok)`,
-		hashToken(plaintext), sessionTouchInterval.String()))
+		 SELECT `+userColumns+`, (SELECT read_only FROM tok) FROM tier2.users WHERE id = (SELECT user_id FROM tok)`,
+		hashToken(plaintext), sessionTouchInterval.String()), &readOnly)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
 	if err != nil {
 		return User{}, fmt.Errorf("store: user by token: %w", err)
 	}
+	u.SessionReadOnly = readOnly
 	return u, nil
 }
 
