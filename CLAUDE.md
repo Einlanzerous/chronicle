@@ -6,7 +6,9 @@ into a **note**, a **ticket** or a **discussion**, and lands in a corpus that
 links out to Switchyard and Amber rather than absorbing them. Single static Go
 binary, sibling to the other construct-server Go services.
 
-Tracked in Switchyard under the **CHRN** project.
+Tracked in Switchyard under the **CHRN** project. The key is `CHRN` and not
+`CHR` because the estate wiki's own note IDs are `CHR-####` and the two
+namespaces would collide.
 
 ## Layout
 
@@ -31,7 +33,9 @@ The tree is derivable; these are the parts it does not tell you.
 
 ## Conventions
 
-- Go, `pgx/v5`, no ORM, and an in-process migrator over embedded SQL.
+- Go, `pgx/v5`, `google/uuid`, no ORM, and an in-process migrator over embedded
+  SQL. The dependency list is short on purpose.
+- Logs are structured, to stdout, in a shape Dozzle and Datadog can read.
 - Config is env-only, `CHRONICLE_`-prefixed. No config files.
 - Its own database and its own role on the shared Postgres 16. Credentials live
   in Signet, never in a compose file.
@@ -73,8 +77,8 @@ Chronicle's tables. Copy either one here and there is a third source of truth th
 silently.
 
 A reference renders as a live card carrying **upstream** state under the label
-`LINKED · NOT COPIED`. Colour is estate-wide: **coral is Switchyard, gold is
-Amber**, anywhere either resolves.
+`LINKED · NOT COPIED`, with an outbound arrow. Colour is estate-wide: **coral is
+Switchyard, gold is Amber**, anywhere either resolves.
 
 A cache is not a copy — but **a cache with no visible staleness is a copy that
 lies.** Cached state carries its age, and when the upstream is unreachable the
@@ -82,7 +86,8 @@ card says so rather than showing a confident stale value.
 
 ## Working agreement
 
-Review mode is chosen per ticket from `metadata.tier`.
+Review mode is chosen per ticket from `metadata.tier`, and decisions are written
+down at ticket boundaries as they happen, never batched to the end of an epic.
 
 | mode | what the reviewer sees | tickets |
 |---|---|---|
@@ -101,7 +106,8 @@ it.* CHRN-68's restore drill is reviewed as a result rather than as a diff.
 
 - One worktree per epic. Branch `chrn-NN-description` per ticket, so per-ticket
   spend attributes correctly. Release-please reads the commit message, so the
-  `feat:` / `fix:` prefix belongs there and not in the branch name.
+  `feat:` / `fix:` prefix belongs there and not in the branch name. Commits are
+  conventional.
 - `./verify.sh` green before anything is handed over: every check that does not
   need hardware, in one command.
 - Every ticket closes with a Switchyard transition **and** a comment carrying its
