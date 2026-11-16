@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/Einlanzerous/chronicle/compare/mobile-v0.5.1...mobile-v0.6.0) (2026-11-16)
+
+
+### Features
+
+* **auth:** accept the estate MCP gateway's Access audience as MCP-only (SERV-266) ([#191](https://github.com/Einlanzerous/chronicle/issues/191)) ([9949000](https://github.com/Einlanzerous/chronicle/commit/99490001f5ccf86341ef8de66cf651e455bb41e9))
+
 ## [0.5.1](https://github.com/Einlanzerous/chronicle/compare/mobile-v0.5.0...mobile-v0.5.1) (2026-11-06)
 
 
