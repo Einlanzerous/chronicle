@@ -805,3 +805,68 @@ func TestUsersGuardFreezesIDAndKind(t *testing.T) {
 		t.Errorf("is_owner on an agent: SQLSTATE = %q (err %v), want 23514", got, err)
 	}
 }
+
+// SERV-307: read_only is a property of the credential. Every hosted mint sets
+// it; a durable session -- a cookie's, an invite redeemed on a device, a token
+// minted by hand -- does not, and the account behind them is the same person.
+func TestOnlyAHostedMintIsReadOnly(t *testing.T) {
+	s, ctx := newTestStore(t)
+	owner, err := s.GetOwner(ctx)
+	if err != nil {
+		t.Fatalf("GetOwner: %v", err)
+	}
+
+	hosted, _, err := s.MintHostedSession(ctx, owner.ID)
+	if err != nil {
+		t.Fatalf("MintHostedSession: %v", err)
+	}
+	invite, err := s.MintInvite(ctx, owner.ID, InviteLabelIssued)
+	if err != nil {
+		t.Fatalf("MintInvite: %v", err)
+	}
+	_, redeemed, err := s.RedeemInvite(ctx, invite, "phone")
+	if err != nil {
+		t.Fatalf("RedeemInvite: %v", err)
+	}
+	cookie, err := s.MintToken(ctx, owner.ID, TokenSession, "Cloudflare Access", nil)
+	if err != nil {
+		t.Fatalf("MintToken: %v", err)
+	}
+	// Even a durable session that borrows the hosted label is not read-only: the
+	// flag is set by the mint, not inferred from the label.
+	sameLabel, err := s.MintToken(ctx, owner.ID, TokenSession, HostedSessionLabel, nil)
+	if err != nil {
+		t.Fatalf("MintToken(same label): %v", err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		token string
+		want  bool
+	}{
+		{"hosted mint", hosted, true},
+		{"invite-redeemed session", redeemed, false},
+		{"cookie (Cloudflare Access) session", cookie, false},
+		{"durable session with the hosted label", sameLabel, false},
+	} {
+		u, err := s.UserByToken(ctx, tc.token)
+		if err != nil {
+			t.Fatalf("%s: UserByToken: %v", tc.name, err)
+		}
+		if u.ID != owner.ID {
+			t.Errorf("%s: resolved to %v, want the owner", tc.name, u.ID)
+		}
+		if u.SessionReadOnly != tc.want {
+			t.Errorf("%s: SessionReadOnly = %v, want %v", tc.name, u.SessionReadOnly, tc.want)
+		}
+	}
+
+	// The flag is on the row, and a user read any other way never carries it.
+	got, err := s.GetUser(ctx, owner.ID)
+	if err != nil {
+		t.Fatalf("GetUser: %v", err)
+	}
+	if got.SessionReadOnly {
+		t.Error("GetUser reported SessionReadOnly: it is only ever set by UserByToken")
+	}
+}

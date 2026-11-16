@@ -1432,8 +1432,16 @@ CREATE TABLE tier2.user_tokens (
     last_used_at timestamp with time zone,
     used_at timestamp with time zone,
     expires_at timestamp with time zone,
+    read_only boolean DEFAULT false NOT NULL,
     CONSTRAINT user_tokens_kind_check CHECK ((kind = ANY (ARRAY['invite'::text, 'session'::text])))
 );
+
+
+--
+-- Name: COLUMN user_tokens.read_only; Type: COMMENT; Schema: tier2; Owner: -
+--
+
+COMMENT ON COLUMN tier2.user_tokens.read_only IS 'SERV-307. The API refuses this credential on every route outside the read allowlist (internal/api/policy.go). Set by MintHostedSession; never set on a cookie or invite-redeemed session.';
 
 
 --

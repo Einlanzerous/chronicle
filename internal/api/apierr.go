@@ -23,8 +23,11 @@ import (
 const (
 	codeUnauthorized = "unauthorized"
 	codeOwnerOnly    = "owner_only"
-	codeRateLimited  = "rate_limited"
-	codeInternal     = "internal"
+	// codeReadOnlySession is a read-only credential (SERV-307) on a route outside
+	// readOnlyRoutes.
+	codeReadOnlySession = "read_only_session"
+	codeRateLimited     = "rate_limited"
+	codeInternal        = "internal"
 
 	// codeInvalidParameter is the GENERATED wrapper's error, not a handler's.
 	// See bindError.

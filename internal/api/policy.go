@@ -201,6 +201,48 @@ var routePolicy = map[string]policy{
 	"GET /tier1/page":  policyMember,
 }
 
+// readOnlyRoutes is the ENUMERATED set of routes a read-only credential may
+// call (SERV-307, plan SERV-293 Row 2). Every route NOT listed is refused with
+// 403 `read_only_session` by requireUser, before the handler or any parameter
+// binding runs.
+//
+// IT IS A LIST AND NOT A RULE. "Every GET" would have been shorter and wrong: a
+// GET that reads a surface no MCP read tool offers (every author's transcripts,
+// audio bytes, the account's device list, the owner's storage report) would be
+// handed to a credential that a hosted conversation holds in memory. Each entry
+// below is a route the offered MCP read tools actually call, found by reading
+// internal/mcp, plus the two the transport itself needs.
+//
+// FAIL-CLOSED: a route added to openapi.yaml is absent from here, so a
+// read-only credential is refused on it until somebody lists it on purpose --
+// the opposite default from "it is a GET, so it must be fine".
+//
+// WHO HOLDS ONE: every hosted MCP session (MintHostedSession), for a person
+// today and for an agent's service-token principal after SERV-308. A cookie
+// session and an invite-redeemed session are not read-only and this table never
+// applies to them.
+//
+// WHICH TOOLS: read_inbox's route, GET /triage/batch, is listed because a
+// person's hosted session is offered read_inbox. Withholding read_inbox from an
+// agent's session is the tool registry's call (SERV-308), not this table's: the
+// credential is the same kind either way.
+var readOnlyRoutes = map[string]bool{
+	// The transport's own two calls. GET /auth/me is how the hosted transport
+	// learns who the session is (internal/mcp.resolve) before it registers a
+	// single tool; DELETE /auth/session is how it revokes its token when the
+	// conversation ends, which a read-only credential must still be able to do.
+	"GET /auth/me":         true,
+	"DELETE /auth/session": true,
+
+	// search_notes, get_note, list_pages, list_threads, get_thread, read_inbox.
+	"GET /notes/search":      true,
+	"GET /notes/{ref}":       true,
+	"GET /pages":             true,
+	"GET /discussions":       true,
+	"GET /discussions/{ref}": true,
+	"GET /triage/batch":      true,
+}
+
 // policyRouter is the ServeMux the generated registration writes into.
 //
 // It satisfies wire.ServeMux (HandleFunc + ServeHTTP) and delegates to a real

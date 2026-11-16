@@ -740,6 +740,15 @@ func TestEveryOperationDeclaresWhatItsSharedCodeCanAnswer(t *testing.T) {
 				}
 			}
 
+			// SERV-307: requireUser answers 403 read_only_session on every
+			// credentialed route outside readOnlyRoutes, so each of those
+			// declares a 403. The listed routes cannot answer it and are not
+			// required to.
+			if credentialed(pol) && !readOnlyRoutes[pattern] && !declares(http.StatusForbidden) {
+				t.Errorf("%s declares no 403: requireUser refuses a read-only session on every "+
+					"route outside readOnlyRoutes", pattern)
+			}
+
 			// The group's own guard, if it has one.
 			for _, tag := range op.Tags {
 				fn, ok := groupGuard[tag]
