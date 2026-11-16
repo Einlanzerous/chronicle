@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.35.0](https://github.com/Einlanzerous/chronicle/compare/v1.34.0...v1.35.0) (2026-11-16)
+
+
+### Features
+
+* **api:** read-only hosted tokens, refused by the API outside an enumerated allowlist (SERV-307) ([#195](https://github.com/Einlanzerous/chronicle/issues/195)) ([d0c333a](https://github.com/Einlanzerous/chronicle/commit/d0c333aca86e0dfe7b965c955c3bb11d01465fdf))
+
+
+### Maintenance
+
+* **docs:** cut CLAUDE.md to the rules an agent cannot see from the code (SERV-317) ([#193](https://github.com/Einlanzerous/chronicle/issues/193)) ([382b294](https://github.com/Einlanzerous/chronicle/commit/382b294d40850f77247b2f2eca4b85d355bc99a3))
+
 ## [1.34.0](https://github.com/Einlanzerous/chronicle/compare/v1.33.0...v1.34.0) (2026-11-14)
 
 
