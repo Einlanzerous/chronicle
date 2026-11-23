@@ -21,6 +21,14 @@ const TriageView = () => import('./views/TriageView.vue')
 const AccountView = () => import('./views/AccountView.vue')
 const SignIn = () => import('./views/SignIn.vue')
 
+// A tab left open across a release asks for `assets/<View>-<oldhash>.js`,
+// which no longer exists; the server answers that path with index.html, so the
+// module import fails and the navigation is dropped silently. Recover with a
+// full load of the target, which fetches the new index and its new chunks.
+// Guarded to once per target so a genuinely broken chunk cannot loop.
+const CHUNK_ERROR = /dynamically imported module|importing a module script failed|Unable to preload/i
+const RELOAD_KEY = 'ch-chunk-reload'
+
 // History base matches vite.config.ts's `base` and web/embed.go's mount
 // point (CHRN-53's decision comment): the API owns the root -- GET
 // /notes/{ref} is JSON, so a client route like /app/notes/CHR-0311 cannot
@@ -64,4 +72,11 @@ export const router = createRouter({
     // sidebar to draw for someone who is not signed in.
     { path: '/sign-in', name: 'sign-in', meta: { title: 'Sign in' }, component: SignIn },
   ],
+})
+
+router.onError((err, to) => {
+  if (!CHUNK_ERROR.test(String((err as Error)?.message ?? err))) return
+  if (sessionStorage.getItem(RELOAD_KEY) === to.fullPath) return
+  sessionStorage.setItem(RELOAD_KEY, to.fullPath)
+  window.location.assign(router.resolve(to.fullPath).href)
 })

@@ -288,6 +288,17 @@ describe('TriageView -- forty memos at a keyboard', () => {
     wrapper.unmount()
   })
 
+  it('an Enter that commits an IME composition decides nothing', async () => {
+    const server = fakeServer([memo(1), memo(2)])
+    const wrapper = await mountView()
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true }))
+    await flushPromises()
+    expect(server.decisions).toHaveLength(0)
+    await press('Enter')
+    expect(server.decisions).toHaveLength(1)
+    wrapper.unmount()
+  })
+
   it('esc cancels an edit and sends nothing', async () => {
     const server = fakeServer([memo(1)])
     const wrapper = await mountView()

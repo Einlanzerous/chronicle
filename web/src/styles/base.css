@@ -15,8 +15,8 @@ body {
 }
 
 /* Declared once so native controls -- select popups, textareas, scrollbars,
- * autofill, the audio element -- draw dark like the page around them
- * (CHRN-171). Also lives in tokens.css's :root; Chronicle has one theme. */
+ * autofill -- draw dark like the page around them (CHRN-171). Chronicle has
+ * one theme. (NoteView's audio element sets its own, scoped.) */
 :root {
   color-scheme: dark;
 }
