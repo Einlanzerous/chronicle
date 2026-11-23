@@ -141,12 +141,19 @@ watch(
 const now = ref(Date.now())
 let nowTimer: ReturnType<typeof setInterval> | undefined
 onMounted(() => {
+  // A hidden tab has nobody reading the ages: skip the tick, and catch the
+  // clock up the moment the tab is shown again (CHRN-171).
   nowTimer = setInterval(() => {
-    now.value = Date.now()
+    if (!document.hidden) now.value = Date.now()
   }, 30_000)
+  document.addEventListener('visibilitychange', syncNow)
 })
+function syncNow(): void {
+  if (!document.hidden) now.value = Date.now()
+}
 onUnmounted(() => {
   if (nowTimer) clearInterval(nowTimer)
+  document.removeEventListener('visibilitychange', syncNow)
 })
 
 const revisionsCount = computed(() => (note.value ? revisionsCountLabel(note.value.revision.seq) : ''))

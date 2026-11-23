@@ -409,6 +409,8 @@ function candidateCard(key: string) {
 
 // ── Keyboard: J/K ⏎ E H D A R esc ────────────────────────────────────────
 function onKey(e: KeyboardEvent): void {
+  // An Enter that commits an IME composition is the IME's, not a decision.
+  if (e.isComposing) return
   if (e.metaKey || e.ctrlKey || e.altKey) return
   const t = e.target as HTMLElement | null
   const typing = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)
@@ -513,14 +515,23 @@ onMounted(() => {
   window.addEventListener('keydown', onKey)
   void loadBatch()
   void loadDeferred()
+  // The clock repaint pauses while the tab is hidden (CHRN-171). The flush
+  // does not: a discard whose undo window has closed is a decision the person
+  // made, and a hidden tab may be closed before it is ever shown again.
   ticker = setInterval(() => {
-    now.value = Date.now()
+    if (!document.hidden) now.value = Date.now()
     void flushDiscards(false)
   }, 15_000)
+  document.addEventListener('visibilitychange', syncNow)
 })
+
+function syncNow(): void {
+  if (!document.hidden) now.value = Date.now()
+}
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKey)
+  document.removeEventListener('visibilitychange', syncNow)
   if (ticker) clearInterval(ticker)
   // Leaving the screen ends the undo window: the row said DISCARDED, and
   // there is nowhere left to undo it from.
@@ -810,6 +821,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .ch-tri {
   min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
   font-family: var(--ch-font-sans);
@@ -920,7 +932,6 @@ onBeforeUnmount(() => {
 .ch-tri-quiet:focus-visible,
 .ch-tri-quiet[aria-pressed='true'] {
   color: var(--ch-signal);
-  outline: none;
 }
 
 /* ── The table ──────────────────────────────────────────────────────── */

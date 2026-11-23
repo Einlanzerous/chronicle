@@ -14,6 +14,13 @@ body {
   height: 100%;
 }
 
+/* Declared once so native controls -- select popups, textareas, scrollbars,
+ * autofill, the audio element -- draw dark like the page around them
+ * (CHRN-171). Also lives in tokens.css's :root; Chronicle has one theme. */
+:root {
+  color-scheme: dark;
+}
+
 body {
   margin: 0;
   /* Explicit, per CHRN-54's Done-when: the body background is not left to
@@ -39,4 +46,32 @@ input,
 textarea {
   font: inherit;
   color: inherit;
+}
+
+/* Keyboard focus baseline (CHRN-171). Screens that draw their own ring keep
+ * it -- their rules are more specific -- but nothing is left with no ring. */
+:focus-visible {
+  outline: 2px solid var(--ch-signal);
+  outline-offset: 2px;
+}
+
+/* Invalid-field styling, once the person has interacted (:user-invalid,
+ * Firefox 88+); `required` alone no longer needs a JS class to show it. */
+input:user-invalid,
+textarea:user-invalid,
+select:user-invalid {
+  border-color: var(--ch-signal);
+  border-bottom-width: 2px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }

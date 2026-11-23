@@ -20,6 +20,12 @@ const BACKEND = process.env.CHRONICLE_BACKEND ?? 'http://localhost:4009'
 export default defineConfig({
   base: BASE,
   plugins: [vue()],
+  build: {
+    // Firefox is the primary browser: Baseline Widely available plus Firefox 160,
+    // the estate floor (CLAUDE.md, Browser target). Anything newer is progressive
+    // enhancement behind @supports or feature detection.
+    target: ['es2022', 'firefox160', 'chrome120', 'safari17'],
+  },
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),

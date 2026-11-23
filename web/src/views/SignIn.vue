@@ -77,14 +77,14 @@ async function submit(): Promise<void> {
           v-model="token"
           class="ch-sign-in-input"
           :class="{ 'is-error': failed }"
-          type="text"
-          autocomplete="off"
+          type="password"
+          autocomplete="one-time-code"
           autocapitalize="off"
           spellcheck="false"
           :disabled="submitting"
           required
         />
-        <p v-if="failed" class="ch-sign-in-error">That token did not work.</p>
+        <p v-if="failed" class="ch-sign-in-error" role="alert">That token did not work.</p>
       </div>
 
       <div class="ch-sign-in-field">
@@ -114,6 +114,7 @@ async function submit(): Promise<void> {
 <style scoped>
 .ch-sign-in {
   min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -172,7 +173,6 @@ async function submit(): Promise<void> {
 }
 
 .ch-sign-in-input:focus {
-  outline: none;
   border-color: var(--ch-signal);
 }
 

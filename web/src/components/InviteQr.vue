@@ -13,7 +13,7 @@
 // hardcoded fallback either -- and means a token swap in tokens.css still
 // repaints every QR drawn after it, same as everything else on the page.
 import { ref, watchEffect } from 'vue'
-import QRCode, { type QRCodeToDataURLOptions } from 'qrcode'
+import type { QRCodeToDataURLOptions } from 'qrcode'
 
 const props = defineProps<{ url: string }>()
 
@@ -43,6 +43,10 @@ watchEffect(async () => {
     // falling through to the library's own built-in default is safer than a
     // hardcoded hex literal here would be.
     if (dark && light) options.color = { dark, light }
+    // Loaded on first draw, not with the Account screen's chunk (CHRN-171):
+    // the encoder is the heaviest dependency here and only a revealed invite
+    // needs it.
+    const { default: QRCode } = await import('qrcode')
     const dataUrl = await QRCode.toDataURL(url, options)
     if (seq !== renderSeq) return
     src.value = dataUrl
