@@ -298,7 +298,6 @@ function submit(): void {
 }
 
 .ch-tri-input:focus-visible {
-  outline: none;
   border-color: var(--ch-signal);
 }
 
@@ -369,7 +368,6 @@ function submit(): void {
 .ch-tri-quiet:hover,
 .ch-tri-quiet:focus-visible {
   color: var(--ch-signal);
-  outline: none;
 }
 
 .ch-tri-primary {

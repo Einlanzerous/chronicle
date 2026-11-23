@@ -84,6 +84,10 @@ A cache is not a copy — but **a cache with no visible staleness is a copy that
 lies.** Cached state carries its age, and when the upstream is unreachable the
 card says so rather than showing a confident stale value.
 
+## Browser target
+
+Firefox is the primary browser. Floor: Firefox 160 (the Firefox release when this was set; the quarterly `frontend-audit` run raises it). Anything newer is progressive enhancement behind `@supports` or feature detection.
+
 ## Working agreement
 
 Review mode is chosen per ticket from `metadata.tier`, and decisions are written

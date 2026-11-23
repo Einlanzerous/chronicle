@@ -239,6 +239,7 @@ const triageCountTitle = computed(() => {
 <style scoped>
 .ch-shell {
   min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   grid-template-columns: 236px 1fr;
   align-items: stretch;
@@ -258,6 +259,7 @@ const triageCountTitle = computed(() => {
   position: sticky;
   top: 0;
   height: 100vh;
+  height: 100dvh;
   overflow-y: auto;
 }
 
@@ -303,10 +305,6 @@ const triageCountTitle = computed(() => {
 
 .ch-shell-search-input::placeholder {
   color: var(--ch-text-meta);
-}
-
-.ch-shell-search-input:focus {
-  outline: none;
 }
 
 .ch-shell-triage {

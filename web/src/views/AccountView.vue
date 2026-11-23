@@ -178,7 +178,7 @@ onMounted(async () => {
     <!-- ── Account ──────────────────────────────────────────────────── -->
     <section class="ch-account-section">
       <div class="ch-account-section-label">ACCOUNT</div>
-      <div class="ch-account-name-row">
+      <form class="ch-account-name-row" @submit.prevent="saveDisplayName">
         <div class="ch-account-name-field">
           <div class="ch-account-field-label">DISPLAY NAME</div>
           <input
@@ -187,18 +187,17 @@ onMounted(async () => {
             type="text"
             maxlength="200"
             :disabled="savingName"
-            @keyup.enter="saveDisplayName"
           />
         </div>
-        <button type="button" class="ch-account-save" :disabled="!canSaveName" @click="saveDisplayName">
+        <button type="submit" class="ch-account-save" :disabled="!canSaveName">
           {{ savingName ? 'SAVING…' : 'SAVE' }}
         </button>
         <div class="ch-account-tags">
           <span v-if="me?.is_owner" class="ch-account-tag ch-account-tag--owner">OWNER</span>
           <span class="ch-account-tag">{{ kindTag }}</span>
         </div>
-      </div>
-      <p v-if="nameError" class="ch-account-error">{{ nameError }}</p>
+      </form>
+      <p v-if="nameError" class="ch-account-error" role="alert">{{ nameError }}</p>
 
       <div class="ch-account-identity">
         <div class="ch-account-field-label">ALSO YOUR ACCESS IDENTITY</div>
@@ -420,7 +419,6 @@ onMounted(async () => {
 }
 
 .ch-account-name-input:focus {
-  outline: none;
   border-color: var(--ch-signal);
 }
 
@@ -732,7 +730,6 @@ onMounted(async () => {
 }
 
 .ch-account-new-person-input:focus {
-  outline: none;
   border-color: var(--ch-signal);
 }
 

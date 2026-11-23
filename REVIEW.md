@@ -450,6 +450,17 @@ finding. Config that changes behaviour when unset should log which branch it
 took at boot — the estate's cautionary tale is an integration that was a silent
 no-op in production for weeks and looked like a working feature.
 
+## Frontend (diffs touching `web/` `.vue` / `.css`)
+
+Firefox is the primary browser (CLAUDE.md, "Browser target"; floor Firefox 160). Flag:
+
+- motion not gated on `prefers-reduced-motion`
+- a modal that is not a `<dialog>` opened with `showModal()`
+- an Enter handler that does not guard `isComposing` (prefer a `<form @submit.prevent>`)
+- `outline: none` without a `:focus-visible` ring
+- a CSS feature Firefox 160 lacks, outside `@supports`
+- a `::-webkit-` rule without its standard property
+
 ## Verification bar
 
 Report a finding only when you can point at the line that causes it and name the

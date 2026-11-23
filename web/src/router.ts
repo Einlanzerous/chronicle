@@ -1,14 +1,33 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import AppShell from './layouts/AppShell.vue'
-import PageTreeView from './views/PageTreeView.vue'
-import Tier1PageView from './views/Tier1PageView.vue'
-import SearchView from './views/SearchView.vue'
-import NoteView from './views/NoteView.vue'
-import DiscussionsListView from './views/DiscussionsListView.vue'
-import DiscussionView from './views/DiscussionView.vue'
-import TriageView from './views/TriageView.vue'
-import AccountView from './views/AccountView.vue'
-import SignIn from './views/SignIn.vue'
+
+declare module 'vue-router' {
+  interface RouteMeta {
+    /** Page name, announced to screen readers on navigation (App.vue). */
+    title?: string
+  }
+}
+
+// Every screen is a lazy chunk (CHRN-171): the shell and the active route load
+// first, and the rest -- TriageView alone is 1300+ lines, and AccountView
+// pulls in the QR encoder -- load on first visit rather than in the entry.
+const AppShell = () => import('./layouts/AppShell.vue')
+const PageTreeView = () => import('./views/PageTreeView.vue')
+const Tier1PageView = () => import('./views/Tier1PageView.vue')
+const SearchView = () => import('./views/SearchView.vue')
+const NoteView = () => import('./views/NoteView.vue')
+const DiscussionsListView = () => import('./views/DiscussionsListView.vue')
+const DiscussionView = () => import('./views/DiscussionView.vue')
+const TriageView = () => import('./views/TriageView.vue')
+const AccountView = () => import('./views/AccountView.vue')
+const SignIn = () => import('./views/SignIn.vue')
+
+// A tab left open across a release asks for `assets/<View>-<oldhash>.js`,
+// which no longer exists; the server answers that path with index.html, so the
+// module import fails and the navigation is dropped silently. Recover with a
+// full load of the target, which fetches the new index and its new chunks.
+// Guarded to once per target so a genuinely broken chunk cannot loop.
+const CHUNK_ERROR = /dynamically imported module|importing a module script failed|Unable to preload/i
+const RELOAD_KEY = 'ch-chunk-reload'
 
 // History base matches vite.config.ts's `base` and web/embed.go's mount
 // point (CHRN-53's decision comment): the API owns the root -- GET
@@ -31,26 +50,45 @@ export const router = createRouter({
         // signed in (CHRN-53's decision comment; src/auth/index.ts is what
         // gates "signed in" before this router ever renders).
         { path: '', redirect: '/pages' },
-        { path: 'pages/:pathMatch(.*)*', name: 'pages', component: PageTreeView },
-        { path: 'tier1/:pathMatch(.*)*', name: 'tier1', component: Tier1PageView },
-        { path: 'search', name: 'search', component: SearchView },
+        { path: 'pages/:pathMatch(.*)*', name: 'pages', meta: { title: 'Pages' }, component: PageTreeView },
+        { path: 'tier1/:pathMatch(.*)*', name: 'tier1', meta: { title: 'Estate page' }, component: Tier1PageView },
+        { path: 'search', name: 'search', meta: { title: 'Search' }, component: SearchView },
         // CHRN-56/57/55/106 build these; each is a minimal placeholder
         // inside the shell for now, named after the ticket that owns it.
-        { path: 'notes/:ref', name: 'note', component: NoteView },
+        { path: 'notes/:ref', name: 'note', meta: { title: 'Note' }, component: NoteView },
         // CHRN-57: the DISCUSSIONS sidebar row links to the bare 'discussions'
         // list; 'discussions/:ref' is a thread. Order matters only in that
         // the exact path must be registered -- vue-router does not treat
         // 'discussions' as matching ':ref' of the row below it.
-        { path: 'discussions', name: 'discussions', component: DiscussionsListView },
-        { path: 'discussions/:ref', name: 'discussion', component: DiscussionView },
-        { path: 'triage', name: 'triage', component: TriageView },
-        { path: 'account', name: 'account', component: AccountView },
+        { path: 'discussions', name: 'discussions', meta: { title: 'Discussions' }, component: DiscussionsListView },
+        { path: 'discussions/:ref', name: 'discussion', meta: { title: 'Discussion' }, component: DiscussionView },
+        { path: 'triage', name: 'triage', meta: { title: 'Evening triage' }, component: TriageView },
+        { path: 'account', name: 'account', meta: { title: 'Account' }, component: AccountView },
       ],
     },
     // CHRN-106 builds the real sign-in screen; this is only the fork
     // src/auth/index.ts routes to when nobody is signed in and Cloudflare
     // Access has nothing to offer either. Outside the shell: there is no
     // sidebar to draw for someone who is not signed in.
-    { path: '/sign-in', name: 'sign-in', component: SignIn },
+    { path: '/sign-in', name: 'sign-in', meta: { title: 'Sign in' }, component: SignIn },
   ],
+})
+
+/** Reload once for a stale-chunk failure on `target`; false when it already did. */
+export function recoverFromStaleChunk(err: unknown, target: string, reload: (target: string) => void): boolean {
+  if (!CHUNK_ERROR.test(String((err as Error)?.message ?? err))) return false
+  if (sessionStorage.getItem(RELOAD_KEY) === target) return false
+  sessionStorage.setItem(RELOAD_KEY, target)
+  reload(target)
+  return true
+}
+
+router.onError((err, to) => {
+  recoverFromStaleChunk(err, to.fullPath, (t) => window.location.assign(router.resolve(t).href))
+})
+
+// The guard above only has to stop a loop on one reload. A navigation that
+// succeeds proves the chunks are good, so a later release gets its own reload.
+router.afterEach((_to, _from, failure) => {
+  if (!failure) sessionStorage.removeItem(RELOAD_KEY)
 })
