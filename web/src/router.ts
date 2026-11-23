@@ -74,9 +74,21 @@ export const router = createRouter({
   ],
 })
 
+/** Reload once for a stale-chunk failure on `target`; false when it already did. */
+export function recoverFromStaleChunk(err: unknown, target: string, reload: (target: string) => void): boolean {
+  if (!CHUNK_ERROR.test(String((err as Error)?.message ?? err))) return false
+  if (sessionStorage.getItem(RELOAD_KEY) === target) return false
+  sessionStorage.setItem(RELOAD_KEY, target)
+  reload(target)
+  return true
+}
+
 router.onError((err, to) => {
-  if (!CHUNK_ERROR.test(String((err as Error)?.message ?? err))) return
-  if (sessionStorage.getItem(RELOAD_KEY) === to.fullPath) return
-  sessionStorage.setItem(RELOAD_KEY, to.fullPath)
-  window.location.assign(router.resolve(to.fullPath).href)
+  recoverFromStaleChunk(err, to.fullPath, (t) => window.location.assign(router.resolve(t).href))
+})
+
+// The guard above only has to stop a loop on one reload. A navigation that
+// succeeds proves the chunks are good, so a later release gets its own reload.
+router.afterEach((_to, _from, failure) => {
+  if (!failure) sessionStorage.removeItem(RELOAD_KEY)
 })
