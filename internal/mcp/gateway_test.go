@@ -1,6 +1,7 @@
 package mcp_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"slices"
 	"testing"
@@ -136,4 +137,51 @@ func TestAGatewayAudienceTheAPIDoesNotKnowOpensNothing(t *testing.T) {
 	if h.SessionCount() != 0 {
 		t.Errorf("SessionCount = %d", h.SessionCount())
 	}
+}
+
+// SERV-340 (CHRN-172) -- the gateway audience is a second way in, so it must
+// not be a second way to get an account. An assertion on it whose email has no
+// user is refused by the API's exchange with 403 sso_no_account, the transport
+// passes that through without a session id, and no user is provisioned. This
+// mirrors the stranger case of TestHostedPassesThroughTheExchangesRefusal, which
+// covers the MCP audience only.
+func TestHostedRefusesAnUnknownEmailOnTheGatewayAudience(t *testing.T) {
+	w := buildWorld(t, true, gatewayAUD)
+	h, endpoint := w.hostedFor(t, mcpAUD, gatewayAUD)
+
+	before, err := w.st.CountUsers(w.ctx)
+	if err != nil {
+		t.Fatalf("CountUsers: %v", err)
+	}
+
+	resp := raw(t, http.MethodPost, endpoint, initializeBody,
+		map[string]string{"Cf-Access-Jwt-Assertion": w.assertion(t, "stranger@example.com", gatewayAUD)})
+	var body struct {
+		Code string `json:"code"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if resp.StatusCode != http.StatusForbidden || body.Code != "sso_no_account" {
+		t.Errorf("status = %d, code %q, want 403 sso_no_account", resp.StatusCode, body.Code)
+	}
+	if resp.Header.Get("Mcp-Session-Id") != "" {
+		t.Error("an email with no account was given a session id")
+	}
+	if ex, _ := w.counts(); ex != 1 {
+		t.Errorf("exchanges = %d, want the one refused attempt", ex)
+	}
+	if n := w.liveHosted(t); n != 0 {
+		t.Errorf("%d hosted sessions minted for an email with no account", n)
+	}
+	if h.SessionCount() != 0 {
+		t.Errorf("SessionCount = %d", h.SessionCount())
+	}
+	after, err := w.st.CountUsers(w.ctx)
+	if err != nil {
+		t.Fatalf("CountUsers: %v", err)
+	}
+	if after != before {
+		t.Errorf("tier2.users = %d after the refusal, was %d: the gateway audience provisioned an account", after, before)
+	}
+	t.Logf("gateway audience, unknown email: status=%d code=%s session_id=none exchanges=1 tier2.users before=%d after=%d",
+		resp.StatusCode, body.Code, before, after)
 }
