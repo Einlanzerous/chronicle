@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.35.1](https://github.com/Einlanzerous/chronicle/compare/v1.35.0...v1.35.1) (2026-11-27)
+
+
+### Maintenance
+
+* **mcp:** test that an unknown email on the gateway audience is refused (CHRN-172) ([#198](https://github.com/Einlanzerous/chronicle/issues/198)) ([29c45c0](https://github.com/Einlanzerous/chronicle/commit/29c45c0cdcdf11d8f215425617a72060d2d6a05a))
+
 ## [1.35.0](https://github.com/Einlanzerous/chronicle/compare/v1.34.0...v1.35.0) (2026-11-23)
 
 
